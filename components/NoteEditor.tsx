@@ -30,6 +30,8 @@ import {
   PenLine,
   Check,
   Menu,
+  Undo2,
+  Redo2,
 } from "lucide-react";
 import AudioPlayer from "./AudioPlayer";
 import ColorPicker from "./ColorPicker";
@@ -67,6 +69,18 @@ export default function NoteEditor({
   const [isRecording, setIsRecording] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved">("saved");
+
+  // Pilha de Desfazer (Ctrl+Z) e Refazer (Ctrl+Y / Ctrl+Shift+Z)
+  interface HistorySnapshot {
+    body: string;
+    cursorStart?: number;
+    cursorEnd?: number;
+  }
+  const undoStackRef = useRef<HistorySnapshot[]>([]);
+  const redoStackRef = useRef<HistorySnapshot[]>([]);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+  const typingTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Modo de visualização estilo Joplin/Obsidian: "split" (lado a lado), "edit" (foco na escrita) ou "preview" (leitura limpa)
   const [viewMode, setViewMode] = useState<"split" | "edit" | "preview">("split");
@@ -132,6 +146,12 @@ export default function NoteEditor({
       }
       prevNoteIdRef.current = note.id;
 
+      // Reseta pilhas de desfazer/refazer para a nova nota
+      undoStackRef.current = [];
+      redoStackRef.current = [];
+      setCanUndo(false);
+      setCanRedo(false);
+
       // Reseta estado com a nova nota
       setTitle(note.title);
       setBody(repairImageTitles(note.body));
@@ -171,13 +191,111 @@ export default function NoteEditor({
     }, 1200);
   }, [onUpdate]);
 
+  function pushHistory(prevBody: string, cursorStart?: number, cursorEnd?: number) {
+    undoStackRef.current.push({
+      body: prevBody,
+      cursorStart,
+      cursorEnd,
+    });
+    if (undoStackRef.current.length > 50) {
+      undoStackRef.current.shift();
+    }
+    redoStackRef.current = [];
+    setCanUndo(true);
+    setCanRedo(false);
+  }
+
+  const handleUndo = useCallback(() => {
+    if (undoStackRef.current.length === 0) return;
+
+    const previous = undoStackRef.current.pop()!;
+    redoStackRef.current.push({
+      body,
+      cursorStart: bodyTextareaRef.current?.selectionStart,
+      cursorEnd: bodyTextareaRef.current?.selectionEnd,
+    });
+
+    setBody(previous.body);
+    latestStateRef.current.body = previous.body;
+    setCanUndo(undoStackRef.current.length > 0);
+    setCanRedo(true);
+    queueAutoSave();
+
+    requestAnimationFrame(() => {
+      if (bodyTextareaRef.current && typeof previous.cursorStart === "number") {
+        bodyTextareaRef.current.focus();
+        bodyTextareaRef.current.setSelectionRange(
+          previous.cursorStart,
+          previous.cursorEnd ?? previous.cursorStart
+        );
+      }
+    });
+  }, [body, queueAutoSave]);
+
+  const handleRedo = useCallback(() => {
+    if (redoStackRef.current.length === 0) return;
+
+    const next = redoStackRef.current.pop()!;
+    undoStackRef.current.push({
+      body,
+      cursorStart: bodyTextareaRef.current?.selectionStart,
+      cursorEnd: bodyTextareaRef.current?.selectionEnd,
+    });
+
+    setBody(next.body);
+    latestStateRef.current.body = next.body;
+    setCanUndo(true);
+    setCanRedo(redoStackRef.current.length > 0);
+    queueAutoSave();
+
+    requestAnimationFrame(() => {
+      if (bodyTextareaRef.current && typeof next.cursorStart === "number") {
+        bodyTextareaRef.current.focus();
+        bodyTextareaRef.current.setSelectionRange(
+          next.cursorStart,
+          next.cursorEnd ?? next.cursorStart
+        );
+      }
+    });
+  }, [body, queueAutoSave]);
+
+  function handleTextareaKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+      e.preventDefault();
+      handleUndo();
+      return;
+    }
+    if (
+      ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") ||
+      ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "z")
+    ) {
+      e.preventDefault();
+      handleRedo();
+      return;
+    }
+  }
+
   function handleTitleChange(e: React.ChangeEvent<HTMLInputElement>) {
     setTitle(e.target.value);
     queueAutoSave();
   }
 
   function handleBodyChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
-    setBody(e.target.value);
+    const nextBody = e.target.value;
+    const prevBody = body;
+
+    // Se houve pausa de digitação ou início de digitação, grava snapshot para Ctrl+Z
+    if (!typingTimerRef.current) {
+      pushHistory(prevBody, e.target.selectionStart, e.target.selectionEnd);
+    } else {
+      clearTimeout(typingTimerRef.current);
+    }
+
+    typingTimerRef.current = setTimeout(() => {
+      typingTimerRef.current = null;
+    }, 600);
+
+    setBody(nextBody);
     queueAutoSave();
   }
 
@@ -459,6 +577,7 @@ export default function NoteEditor({
     const start = el ? (el.selectionStart ?? body.length) : body.length;
     const end = el ? (el.selectionEnd ?? start) : body.length;
     const selected = body.slice(start, end) || placeholder;
+    pushHistory(body, start, end);
     const next = body.slice(0, start) + prefix + selected + suffix + body.slice(end);
     setBody(next);
     queueAutoSave();
@@ -472,6 +591,7 @@ export default function NoteEditor({
   function insertLinePrefix(prefix: string) {
     const el = bodyTextareaRef.current;
     const start = el ? (el.selectionStart ?? body.length) : body.length;
+    pushHistory(body, start, start);
     const lineStart = body.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
     const next = body.slice(0, lineStart) + prefix + body.slice(lineStart);
     setBody(next);
@@ -487,6 +607,7 @@ export default function NoteEditor({
     const el = bodyTextareaRef.current;
     const start = el ? (el.selectionStart ?? body.length) : body.length;
     const end = el ? (el.selectionEnd ?? start) : body.length;
+    pushHistory(body, start, end);
     const next = body.slice(0, start) + text + body.slice(end);
     setBody(next);
     queueAutoSave();
@@ -661,6 +782,27 @@ export default function NoteEditor({
       {/* Toolbar de Formatação Markdown */}
       {viewMode !== "preview" && (
         <div className="px-4 py-1.5 border-b border-black/5 dark:border-white/5 bg-slate-50/50 dark:bg-slate-900/30 flex items-center gap-1 flex-wrap text-slate-600 dark:text-slate-300 select-none shrink-0">
+          <button
+            type="button"
+            disabled={!canUndo}
+            onClick={handleUndo}
+            title="Desfazer (Ctrl+Z)"
+            className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition disabled:opacity-25 disabled:pointer-events-none"
+          >
+            <Undo2 className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            disabled={!canRedo}
+            onClick={handleRedo}
+            title="Refazer (Ctrl+Y / Ctrl+Shift+Z)"
+            className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition disabled:opacity-25 disabled:pointer-events-none"
+          >
+            <Redo2 className="w-3.5 h-3.5" />
+          </button>
+
+          <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
+
           <button type="button" onClick={() => insertAroundSelection("**", "**", "negrito")} title="Negrito" className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition"><Bold className="w-3.5 h-3.5" /></button>
           <button type="button" onClick={() => insertAroundSelection("*", "*", "itálico")} title="Itálico" className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition"><Italic className="w-3.5 h-3.5" /></button>
           <button type="button" onClick={() => insertAroundSelection("~~", "~~", "riscado")} title="Riscado" className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition"><Strikethrough className="w-3.5 h-3.5" /></button>
@@ -734,6 +876,7 @@ export default function NoteEditor({
                 ref={bodyTextareaRef}
                 value={body}
                 onChange={handleBodyChange}
+                onKeyDown={handleTextareaKeyDown}
                 onBlur={flushSave}
                 placeholder="Escreva algo... (Cole imagens com Ctrl+V ou arraste do sistema, use markdown livremente)"
                 className="w-full h-full p-4 text-sm font-mono bg-white/40 dark:bg-black/20 rounded-2xl border border-black/5 dark:border-white/5 outline-none resize-none text-slate-800 dark:text-slate-100 placeholder-slate-400 leading-relaxed focus:ring-1 focus:ring-amber-400/50 overflow-y-auto"
