@@ -19,6 +19,7 @@ import AudioPlayer from "./AudioPlayer";
 import ColorPicker from "./ColorPicker";
 import VoiceRecorder from "./VoiceRecorder";
 import LinkPreview, { extractUrls } from "./LinkPreview";
+import MarkdownView from "./MarkdownView";
 
 interface NoteModalProps {
   note: Note;
@@ -46,6 +47,8 @@ export default function NoteModal({
   const [isArchived, setIsArchived] = useState(note.is_archived);
   const [isRecording, setIsRecording] = useState(false);
   const [uploading, setUploading] = useState(false);
+  // Abas de edição/preview no mobile (no desktop a divisão fica lado a lado)
+  const [mobileTab, setMobileTab] = useState<"edit" | "preview">("edit");
 
   // Controle de Versões
   const [showHistory, setShowHistory] = useState(false);
@@ -70,6 +73,7 @@ export default function NoteModal({
     setIsPinned(note.is_pinned);
     setIsArchived(note.is_archived);
     setShowHistory(false);
+    setMobileTab("edit");
     isClosingRef.current = false;
   }, [note]);
 
@@ -298,7 +302,7 @@ export default function NoteModal({
       onPaste={handlePaste}
     >
       <div
-        className={`w-full max-w-2xl max-h-[90vh] rounded-2xl shadow-2xl border flex flex-col overflow-hidden cursor-default note-color-${color}`}
+        className={`w-full max-w-2xl md:max-w-4xl max-h-[90vh] rounded-2xl shadow-2xl border flex flex-col overflow-hidden cursor-default note-color-${color}`}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header com Pin, Histórico e Fechar */}
@@ -438,13 +442,52 @@ export default function NoteModal({
             className="w-full text-xl font-bold bg-transparent border-none outline-none text-slate-900 dark:text-white placeholder-slate-400"
           />
 
-          <textarea
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            placeholder="Criar uma nota..."
-            rows={6}
-            className="w-full text-base bg-transparent border-none outline-none resize-none text-slate-700 dark:text-slate-200 placeholder-slate-400 leading-relaxed font-normal"
-          />
+          {/* Editor/Preview dividido (estilo Joplin) */}
+          <div className="md:hidden flex gap-1 w-max p-1 rounded-xl bg-slate-100 dark:bg-slate-800/80 text-xs font-medium">
+            <button
+              type="button"
+              onClick={() => setMobileTab("edit")}
+              aria-pressed={mobileTab === "edit"}
+              className={`px-3 py-1.5 rounded-lg transition ${
+                mobileTab === "edit"
+                  ? "bg-white dark:bg-slate-900 shadow-sm text-slate-900 dark:text-white"
+                  : "text-slate-500 dark:text-slate-400"
+              }`}
+            >
+              Editar
+            </button>
+            <button
+              type="button"
+              onClick={() => setMobileTab("preview")}
+              aria-pressed={mobileTab === "preview"}
+              className={`px-3 py-1.5 rounded-lg transition ${
+                mobileTab === "preview"
+                  ? "bg-white dark:bg-slate-900 shadow-sm text-slate-900 dark:text-white"
+                  : "text-slate-500 dark:text-slate-400"
+              }`}
+            >
+              Preview
+            </button>
+          </div>
+
+          <div className="md:h-[52vh] md:grid md:grid-cols-2 md:divide-x md:divide-black/10 dark:md:divide-white/10 border border-black/5 dark:border-white/10 rounded-xl md:rounded-2xl overflow-hidden bg-white/40 dark:bg-black/10">
+            <textarea
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              placeholder="Criar uma nota... (Markdown suportado: **negrito**, listas, tabelas...)"
+              rows={10}
+              className={`${
+                mobileTab === "edit" ? "block" : "hidden"
+              } md:block md:h-full min-h-[280px] w-full p-4 text-base md:text-sm md:font-mono bg-transparent border-none outline-none resize-none text-slate-700 dark:text-slate-200 placeholder-slate-400 leading-relaxed font-normal`}
+            />
+            <div
+              className={`${
+                mobileTab === "preview" ? "block" : "hidden"
+              } md:block md:h-full min-h-[280px] p-4 overflow-y-auto`}
+            >
+              <MarkdownView content={body} />
+            </div>
+          </div>
 
           {/* Previews de Links Ricos (YouTube, Sites, etc.) */}
           {detectedUrls.length > 0 && (

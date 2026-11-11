@@ -132,6 +132,23 @@ Tags automáticas aplicadas no salvar/upload; removíveis manualmente.
 pesáveis via FTS5. Encaixa em: backend (detecção + storage), desktop e
 mobile (exibição).
 
+### 2. Editor Markdown com preview lado a lado — `MARKDOWN`
+**Status: implementado ✅** (split no desktop, abas Editar/Preview no mobile,
+`MarkdownView.tsx` reutilizável no app Linux e referência pro mobile).
+
+**Inspiração: Joplin** (editor à esquerda, preview renderizado à direita,
+seleção/cópia na direita sem risco de editar).
+
+- Desktop/web: modal da nota com painel dividido — editor markdown à
+  esquerda, preview ao vivo somente-leitura à direita
+- Mobile: abas de alternância `Editar | Preview`
+- Renderização: `react-markdown` + `remark-gfm` (tabelas, riscado,
+  checkboxes) — sem HTML cru, XSS-safe por padrão
+- Notas antigas (texto puro): continuam idênticas com `breaks: true`
+- FTS5 segue indexando o texto-fonte; banco não muda
+- Encaixa em: web/desktop (agora, pois o web É o app Linux), mobile
+  (React Native tem renderizadores markdown próprios)
+
 ### Recursos já existentes (referência do que os apps precisam cobrir)
 - Notas: CRUD, cores, fixar, arquivar, masonry
 - Busca FTS5 com `bm25` + `snippet()`
