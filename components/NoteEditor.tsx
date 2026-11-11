@@ -885,6 +885,14 @@ export default function NoteEditor({
           </div>
         </div>
       </footer>
+
+      {/* Modal Completo de Inspeção e Restauração de Histórico */}
+      <VersionHistoryModal
+        isOpen={showHistory}
+        onClose={() => setShowHistory(false)}
+        note={note}
+        onRestore={handleRestoreVersion}
+      />
     </div>
   );
 }
