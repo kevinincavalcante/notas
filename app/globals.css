@@ -20,7 +20,7 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
-/* Scrollbars customizadas elegantes e consistentes com o tema escuro */
+/* Scrollbars customizadas elegantes adaptadas para tema claro e escuro */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -31,13 +31,23 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #334155;
+  background: #cbd5e1; /* slate-300 no tema claro */
   border-radius: 9999px;
   transition: background-color 0.2s ease;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+  background: #94a3b8; /* slate-400 no tema claro */
+}
+
+@media (prefers-color-scheme: dark) {
+  ::-webkit-scrollbar-thumb {
+    background: #334155; /* slate-700 no tema escuro */
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #475569; /* slate-600 no tema escuro */
+  }
 }
 
 ::-webkit-scrollbar-corner {
@@ -47,7 +57,13 @@ body {
 /* Firefox */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #334155 transparent;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+@media (prefers-color-scheme: dark) {
+  * {
+    scrollbar-color: #334155 transparent;
+  }
 }
 
 /* Cores no estilo Google Keep */

@@ -15,14 +15,12 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
-  // Carrega as notas iniciais
   const loadNotes = useCallback(async () => {
     try {
       const res = await fetch("/api/notes?archived=0");
       const data = await res.json();
       if (res.ok && Array.isArray(data.notes)) {
         setNotes(data.notes);
-        // Seleciona a primeira nota no desktop caso nenhuma esteja selecionada
         if (data.notes.length > 0 && typeof window !== "undefined" && window.innerWidth >= 768) {
           setSelectedNoteId((prev) => prev || data.notes[0].id);
         }
@@ -38,7 +36,6 @@ export default function DashboardPage() {
     loadNotes();
   }, [loadNotes]);
 
-  // Busca reativa FTS5
   useEffect(() => {
     if (!searchQuery.trim()) {
       setSearchResults(null);
@@ -68,18 +65,15 @@ export default function DashboardPage() {
     };
   }, [searchQuery]);
 
-  // Lista de notas a exibir (busca ou lista geral)
   const displayedNotes = useMemo(() => {
     return searchResults !== null ? searchResults : notes;
   }, [notes, searchResults]);
 
-  // Nota selecionada atual (mantém sincronizada com a lista de notas)
   const selectedNote = useMemo(() => {
     if (!selectedNoteId) return null;
     return notes.find((n) => n.id === selectedNoteId) || null;
   }, [notes, selectedNoteId]);
 
-  // PATCH compartilhado
   async function patchNote(noteId: string, fields: Record<string, unknown>): Promise<boolean> {
     try {
       const res = await fetch(`/api/notes/${noteId}`, {
@@ -94,7 +88,6 @@ export default function DashboardPage() {
     }
   }
 
-  // Criar uma nova nota
   async function handleCreateNote() {
     try {
       const res = await fetch("/api/notes", {
@@ -115,7 +108,7 @@ export default function DashboardPage() {
         };
         setNotes((prev) => [newNote, ...prev]);
         setSelectedNoteId(newNote.id);
-        setIsSidebarOpen(false); // Fecha sidebar no mobile para mostrar o editor
+        setIsSidebarOpen(false);
       }
     } catch (err) {
       console.error("Erro ao criar nota:", err);
@@ -123,7 +116,6 @@ export default function DashboardPage() {
     }
   }
 
-  // Atualizar nota (do NoteEditor)
   async function handleUpdateNote(updatedFields: Partial<Note> & { skipPatch?: boolean }) {
     if (!selectedNoteId) return;
     const noteId = selectedNoteId;
@@ -138,7 +130,6 @@ export default function DashboardPage() {
 
     const ok = await patchNote(noteId, fields);
     if (!ok && previous) {
-      // Falha no servidor: desfaz otimismo
       const { updated_at, ...revertFields } = previous;
       void updated_at;
       setNotes((prev) =>
@@ -149,11 +140,12 @@ export default function DashboardPage() {
     }
   }
 
-  // Alternar fixação
-  async function handleTogglePin() {
-    if (!selectedNote) return;
-    const noteId = selectedNote.id;
-    const nextPin = !selectedNote.is_pinned;
+  async function handleTogglePin(targetNoteId?: string) {
+    const noteId = targetNoteId || selectedNote?.id;
+    if (!noteId) return;
+    const target = notes.find((n) => n.id === noteId);
+    if (!target) return;
+    const nextPin = !target.is_pinned;
 
     setNotes((prev) =>
       prev.map((n) => (n.id === noteId ? { ...n, is_pinned: nextPin, updated_at: Date.now() } : n))
@@ -163,59 +155,63 @@ export default function DashboardPage() {
     if (!ok) {
       setNotes((prev) =>
         prev.map((n) =>
-          n.id === noteId ? { ...n, is_pinned: selectedNote.is_pinned } : n
+          n.id === noteId ? { ...n, is_pinned: target.is_pinned } : n
         )
       );
     }
   }
 
-  // Alternar arquivamento
-  async function handleToggleArchive() {
-    if (!selectedNote) return;
-    const noteId = selectedNote.id;
-    const nextArchive = !selectedNote.is_archived;
+  async function handleToggleArchive(targetNoteId?: string) {
+    const noteId = targetNoteId || selectedNote?.id;
+    if (!noteId) return;
+    const target = notes.find((n) => n.id === noteId);
+    if (!target) return;
+    const nextArchive = !target.is_archived;
 
-    // Remove da lista
-    const removed = selectedNote;
     setNotes((prev) => prev.filter((n) => n.id !== noteId));
 
-    // Seleciona a próxima nota se houver
-    const remaining = notes.filter((n) => n.id !== noteId);
-    setSelectedNoteId(remaining.length > 0 ? remaining[0].id : null);
+    if (selectedNoteId === noteId) {
+      const remaining = notes.filter((n) => n.id !== noteId);
+      setSelectedNoteId(remaining.length > 0 ? remaining[0].id : null);
+    }
 
     const ok = await patchNote(noteId, { is_archived: nextArchive });
-    if (!ok && removed) {
-      setNotes((prev) => [removed, ...prev]);
-      setSelectedNoteId(removed.id);
+    if (!ok) {
+      setNotes((prev) => [target, ...prev]);
+      if (selectedNoteId === null) {
+        setSelectedNoteId(target.id);
+      }
     }
   }
 
-  // Excluir nota
-  async function handleDeleteNote() {
-    if (!selectedNote) return;
+  async function handleDeleteNote(targetNoteId?: string) {
+    const noteId = targetNoteId || selectedNote?.id;
+    if (!noteId) return;
     if (!confirm("Deseja realmente excluir esta nota?")) return;
 
-    const noteId = selectedNote.id;
-    const removed = selectedNote;
+    const removed = notes.find((n) => n.id === noteId);
     const remaining = notes.filter((n) => n.id !== noteId);
 
     setNotes(remaining);
-    setSelectedNoteId(remaining.length > 0 ? remaining[0].id : null);
+    if (selectedNoteId === noteId) {
+      setSelectedNoteId(remaining.length > 0 ? remaining[0].id : null);
+    }
 
     try {
       const res = await fetch(`/api/notes/${noteId}`, { method: "DELETE" });
-      if (!res.ok) {
+      if (!res.ok && removed) {
         setNotes((prev) => [removed, ...prev]);
         setSelectedNoteId(removed.id);
       }
     } catch (err) {
       console.error("Erro ao excluir nota:", err);
-      setNotes((prev) => [removed, ...prev]);
-      setSelectedNoteId(removed.id);
+      if (removed) {
+        setNotes((prev) => [removed, ...prev]);
+        setSelectedNoteId(removed.id);
+      }
     }
   }
 
-  // Anexos
   function handleAddAttachment(attachment: Attachment) {
     if (!selectedNoteId) return;
     const noteId = selectedNoteId;
@@ -249,8 +245,7 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="h-dvh w-full flex overflow-hidden bg-slate-950 text-slate-100">
-      {/* ── Sidebar de Navegação (estilo Obsidian / Joplin) ── */}
+    <div className="h-dvh w-full flex overflow-hidden bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
       <Sidebar
         notes={displayedNotes}
         selectedNoteId={selectedNoteId}
@@ -262,12 +257,14 @@ export default function DashboardPage() {
         onClose={() => setIsSidebarOpen(false)}
         activeTagFilter={activeTagFilter}
         onTagFilter={setActiveTagFilter}
+        onTogglePin={handleTogglePin}
+        onToggleArchive={handleToggleArchive}
+        onDeleteNote={handleDeleteNote}
       />
 
-      {/* ── Área Principal / Editor ── */}
-      <main className="flex-1 h-full flex flex-col min-w-0 bg-slate-950 overflow-hidden">
+      <main className="flex-1 h-full flex flex-col min-w-0 bg-slate-50 dark:bg-slate-950 overflow-hidden">
         {loading ? (
-          <div className="flex-1 flex items-center justify-center text-slate-500 text-sm">
+          <div className="flex-1 flex items-center justify-center text-slate-400 dark:text-slate-500 text-sm">
             Carregando suas notas...
           </div>
         ) : selectedNote ? (
@@ -275,42 +272,40 @@ export default function DashboardPage() {
             key={selectedNote.id}
             note={selectedNote}
             onUpdate={handleUpdateNote}
-            onDelete={handleDeleteNote}
-            onTogglePin={handleTogglePin}
-            onToggleArchive={handleToggleArchive}
+            onDelete={() => handleDeleteNote(selectedNote.id)}
+            onTogglePin={() => handleTogglePin(selectedNote.id)}
+            onToggleArchive={() => handleToggleArchive(selectedNote.id)}
             onAddAttachment={handleAddAttachment}
             onRemoveAttachment={handleRemoveAttachment}
             onMenuClick={() => setIsSidebarOpen(true)}
           />
         ) : (
           <div className="flex-1 flex flex-col h-full">
-            {/* Header mobile para abrir menu quando nenhuma nota está aberta */}
-            <div className="md:hidden p-3 border-b border-slate-800 flex items-center gap-2">
+            <div className="md:hidden p-3 border-b border-slate-200 dark:border-slate-800 flex items-center gap-2">
               <button
                 type="button"
                 onClick={() => setIsSidebarOpen(true)}
-                className="p-1.5 text-slate-400 hover:text-white rounded-lg transition"
+                className="p-1.5 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white rounded-lg transition"
               >
                 <Menu className="w-5 h-5" />
               </button>
-              <span className="font-semibold text-sm text-slate-300">Notas</span>
+              <span className="font-semibold text-sm text-slate-800 dark:text-slate-300">Notas</span>
             </div>
 
-            {/* Estado Vazio */}
             <div className="flex-1 flex flex-col items-center justify-center p-6 text-center select-none">
-              <div className="w-16 h-16 bg-amber-400/10 text-amber-400 rounded-2xl flex items-center justify-center mb-4 shadow-sm border border-amber-400/20">
+              <div className="w-16 h-16 bg-amber-400/10 text-amber-500 rounded-2xl flex items-center justify-center mb-4 shadow-xs border border-amber-400/20">
                 <StickyNote className="w-8 h-8" />
               </div>
-              <h2 className="text-lg font-semibold text-white mb-1">
+              <h2 className="text-lg font-semibold text-slate-900 dark:text-white mb-1">
                 Nenhuma nota selecionada
               </h2>
-              <p className="text-sm text-slate-400 max-w-sm mb-6 leading-relaxed">
+              <p className="text-sm text-slate-600 dark:text-slate-400 max-w-sm mb-6 leading-relaxed">
                 Selecione uma nota na lista lateral ou crie uma nova nota para começar a escrever.
               </p>
               <button
                 type="button"
                 onClick={handleCreateNote}
-                className="flex items-center gap-2 px-4 py-2 bg-amber-400 hover:bg-amber-300 text-slate-950 font-semibold text-sm rounded-xl transition shadow-sm active:scale-95"
+                className="flex items-center gap-2 px-4 py-2 bg-amber-400 hover:bg-amber-300 active:bg-amber-500 text-slate-950 font-semibold text-sm rounded-xl transition shadow-xs active:scale-95"
               >
                 <Plus className="w-4 h-4" />
                 Criar uma nota
