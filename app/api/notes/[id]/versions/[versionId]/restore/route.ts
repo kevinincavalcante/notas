@@ -31,20 +31,41 @@ export async function POST(
 
     if (currentNoteResult.rows.length > 0) {
       const cur = currentNoteResult.rows[0];
-      // Salva snapshot do estado atual antes da restauração
-      await db.execute({
-        sql: `
-          INSERT INTO note_versions (id, note_id, title, body, created_at)
-          VALUES (?, ?, ?, ?, ?)
-        `,
-        args: [
-          crypto.randomUUID(),
-          id,
-          cur.title as string,
-          cur.body as string,
-          (cur.updated_at as number) || now,
-        ],
+      const curTitle = ((cur.title as string) || "").trim();
+      const curBody = ((cur.body as string) || "").trim();
+
+      // Só cria versão da nota atual se não for idêntica à última versão do histórico
+      const lastVersionRes = await db.execute({
+        sql: `SELECT title, body FROM note_versions WHERE note_id = ? ORDER BY created_at DESC LIMIT 1`,
+        args: [id],
       });
+
+      let isDuplicate = false;
+      if (lastVersionRes.rows.length > 0) {
+        const lastV = lastVersionRes.rows[0];
+        if (
+          ((lastV.title as string) || "").trim() === curTitle &&
+          ((lastV.body as string) || "").trim() === curBody
+        ) {
+          isDuplicate = true;
+        }
+      }
+
+      if (!isDuplicate && (curTitle || curBody)) {
+        await db.execute({
+          sql: `
+            INSERT INTO note_versions (id, note_id, title, body, created_at)
+            VALUES (?, ?, ?, ?, ?)
+          `,
+          args: [
+            crypto.randomUUID(),
+            id,
+            cur.title as string,
+            cur.body as string,
+            (cur.updated_at as number) || now,
+          ],
+        });
+      }
     }
 
     // Aplica o título e corpo da versão selecionada

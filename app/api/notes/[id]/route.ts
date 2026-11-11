@@ -51,7 +51,7 @@ export async function PATCH(
     const updates: string[] = [];
     const values: any[] = [];
 
-    // Se title ou body foram modificados, salva snapshot da versão anterior no histórico
+    // Se title ou body foram modificados, salva snapshot no histórico (sem duplicatas)
     if ("title" in body || "body" in body) {
       const currentResult = await db.execute({
         sql: `SELECT title, body, updated_at FROM notes WHERE id = ?`,
@@ -65,21 +65,40 @@ export async function PATCH(
         const newTitle = "title" in body ? (body.title || "").trim() : curTitle;
         const newBody = "body" in body ? (body.body || "").trim() : curBody;
 
+        // Só cria versão se o conteúdo realmente mudou em relação ao estado atual
         if (curTitle !== newTitle || curBody !== newBody) {
           if (curTitle || curBody) {
-            await db.execute({
-              sql: `
-                INSERT INTO note_versions (id, note_id, title, body, created_at)
-                VALUES (?, ?, ?, ?, ?)
-              `,
-              args: [
-                crypto.randomUUID(),
-                id,
-                cur.title as string,
-                cur.body as string,
-                (cur.updated_at as number) || Date.now(),
-              ],
+            // Verifica se a última versão no histórico já não possui exatamente esse mesmo conteúdo
+            const lastVersionRes = await db.execute({
+              sql: `SELECT title, body FROM note_versions WHERE note_id = ? ORDER BY created_at DESC LIMIT 1`,
+              args: [id],
             });
+
+            let isDuplicate = false;
+            if (lastVersionRes.rows.length > 0) {
+              const lastV = lastVersionRes.rows[0];
+              const lastTitle = ((lastV.title as string) || "").trim();
+              const lastBody = ((lastV.body as string) || "").trim();
+              if (lastTitle === curTitle && lastBody === curBody) {
+                isDuplicate = true;
+              }
+            }
+
+            if (!isDuplicate) {
+              await db.execute({
+                sql: `
+                  INSERT INTO note_versions (id, note_id, title, body, created_at)
+                  VALUES (?, ?, ?, ?, ?)
+                `,
+                args: [
+                  crypto.randomUUID(),
+                  id,
+                  cur.title as string,
+                  cur.body as string,
+                  (cur.updated_at as number) || Date.now(),
+                ],
+              });
+            }
           }
         }
       }

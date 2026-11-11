@@ -55,6 +55,7 @@ export default function NoteModal({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const historyPushedRef = useRef(false);
+  const isClosingRef = useRef(false);
 
   // Mantém referência dos dados mais recentes para salvar com precisão
   const latestStateRef = useRef({ title, body, color, isPinned, isArchived });
@@ -69,6 +70,7 @@ export default function NoteModal({
     setIsPinned(note.is_pinned);
     setIsArchived(note.is_archived);
     setShowHistory(false);
+    isClosingRef.current = false;
   }, [note]);
 
   // Intercepta o botão "Voltar" do navegador/Android no celular para fechar a nota
@@ -77,8 +79,11 @@ export default function NoteModal({
 
     window.history.pushState({ noteModalOpen: true }, "");
     historyPushedRef.current = true;
+    isClosingRef.current = false;
 
     const onPopState = () => {
+      if (isClosingRef.current) return;
+      isClosingRef.current = true;
       historyPushedRef.current = false;
       closeAndSave();
     };
@@ -163,6 +168,9 @@ export default function NoteModal({
   }
 
   function handleManualClose() {
+    if (isClosingRef.current) return;
+    isClosingRef.current = true;
+
     if (historyPushedRef.current) {
       historyPushedRef.current = false;
       window.history.back();
