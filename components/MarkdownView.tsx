@@ -61,6 +61,9 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  // Uma linha por número no gutter (o bloco não quebra linha: rola na horizontal)
+  const lineCount = code.split("\n").length;
+
   return (
     <div className="not-prose my-3 rounded-2xl overflow-hidden border border-black/10 dark:border-white/10 bg-slate-900 text-slate-100 shadow-xs">
       <div className="flex items-center justify-between px-3.5 py-1.5 bg-slate-950/70 border-b border-white/5 text-xs text-slate-400 select-none">
@@ -86,12 +89,23 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
           )}
         </button>
       </div>
-      <pre className="p-3.5 overflow-x-auto text-xs font-mono leading-relaxed bg-transparent m-0">
-        <code
-          className="hljs"
-          dangerouslySetInnerHTML={{ __html: highlightedHtml }}
-        />
-      </pre>
+      <div className="flex">
+        {/* Gutter de números de linha (alinhado: mesmo padding-top, fonte e line-height do código) */}
+        <div
+          aria-hidden="true"
+          className="select-none shrink-0 pt-3.5 pb-3.5 pl-3 pr-2 text-right text-xs font-mono leading-relaxed text-slate-500/70 bg-slate-950/40 border-r border-white/5"
+        >
+          {Array.from({ length: lineCount }, (_, i) => (
+            <div key={i}>{i + 1}</div>
+          ))}
+        </div>
+        <pre className="p-3.5 pl-3 overflow-x-auto text-xs font-mono leading-relaxed bg-transparent m-0 flex-1 min-w-0">
+          <code
+            className="hljs"
+            dangerouslySetInnerHTML={{ __html: highlightedHtml }}
+          />
+        </pre>
+      </div>
     </div>
   );
 }
