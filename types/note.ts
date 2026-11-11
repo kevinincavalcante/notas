@@ -1,7 +1,7 @@
 export interface Attachment {
   id: string;
   note_id: string;
-  box_file_id: string;
+  storage_key: string;
   file_name: string;
   mime_type: string;
   file_size: number;

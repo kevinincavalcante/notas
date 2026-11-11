@@ -54,7 +54,7 @@ export async function GET(request: Request) {
       const placeholders = noteIds.map(() => "?").join(",");
       const attResult = await db.execute({
         sql: `
-          SELECT id, note_id, box_file_id, file_name, mime_type, file_size, duration_seconds, created_at
+          SELECT id, note_id, storage_key, file_name, mime_type, file_size, duration_seconds, created_at
           FROM attachments
           WHERE note_id IN (${placeholders})
           ORDER BY created_at ASC

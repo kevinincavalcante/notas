@@ -20,7 +20,7 @@ export async function GET(
     }
 
     const attachment = result.rows[0];
-    const fileId = attachment.box_file_id as string;
+    const fileId = attachment.storage_key as string;
     const mimeType = (attachment.mime_type as string) || "application/octet-stream";
     const fileSize = attachment.file_size as number;
 
@@ -77,7 +77,7 @@ export async function DELETE(
     const { id } = await params;
 
     const result = await db.execute({
-      sql: `SELECT box_file_id FROM attachments WHERE id = ?`,
+      sql: `SELECT storage_key FROM attachments WHERE id = ?`,
       args: [id],
     });
 
@@ -85,7 +85,7 @@ export async function DELETE(
       return NextResponse.json({ error: "Anexo não encontrado" }, { status: 404 });
     }
 
-    const fileId = result.rows[0].box_file_id as string;
+    const fileId = result.rows[0].storage_key as string;
 
     try {
       await deleteAttachmentFile(fileId);

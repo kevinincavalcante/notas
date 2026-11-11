@@ -39,7 +39,45 @@ const db = createClient({
   authToken,
 });
 
+const rebuildFts = process.argv.includes("--rebuild-fts");
+
+/**
+ * Reconstrói o índice FTS5 a partir da tabela de conteúdo.
+ * Uso: npm run db:rebuild
+ * Necessário se a busca começar a retornar vazio silenciosamente
+ * (sinais de dessincronização entre notes e notes_fts).
+ */
+async function rebuildFtsIndex() {
+  console.log("Verificando consistência notes vs notes_fts...");
+  const drift = await db.execute(`
+    SELECT (SELECT COUNT(*) FROM notes) AS notes_count,
+           (SELECT COUNT(*) FROM notes_fts) AS fts_count
+  `);
+  const notesCount = Number(drift.rows[0].notes_count);
+  const ftsCount = Number(drift.rows[0].fts_count);
+  console.log(`Notas: ${notesCount} | Entradas no índice FTS: ${ftsCount}`);
+
+  console.log("Reconstruindo índice FTS5 (INSERT INTO notes_fts(notes_fts) VALUES('rebuild'))...");
+  await db.execute(`INSERT INTO notes_fts(notes_fts) VALUES('rebuild')`);
+
+  const after = await db.execute(`SELECT COUNT(*) AS total FROM notes_fts`);
+  console.log(`✅ Índice reconstruído. Entradas após rebuild: ${Number(after.rows[0].total)}`);
+  console.log("🔍 Teste rápido de busca ('teste')...");
+  const probe = await db.execute(`SELECT COUNT(*) AS total FROM notes_fts WHERE notes_fts MATCH 'teste'`);
+  console.log(`Resultados para 'teste': ${Number(probe.rows[0].total)}`);
+}
+
 async function main() {
+  if (rebuildFts) {
+    try {
+      await rebuildFtsIndex();
+      process.exit(0);
+    } catch (err) {
+      console.error("❌ Erro ao reconstruir índice FTS5:", err);
+      process.exit(1);
+    }
+  }
+
   try {
     console.log("Criando tabela 'notes'...");
     await db.execute(`
@@ -65,7 +103,7 @@ async function main() {
       CREATE TABLE IF NOT EXISTS attachments (
         id TEXT PRIMARY KEY,
         note_id TEXT NOT NULL,
-        box_file_id TEXT NOT NULL,
+        storage_key TEXT NOT NULL,
         file_name TEXT NOT NULL,
         mime_type TEXT NOT NULL,
         file_size INTEGER NOT NULL,
@@ -74,6 +112,17 @@ async function main() {
         FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
       );
     `);
+
+    // Migração idempotente: renomeia a coluna legada do antigo driver Box
+    console.log("Verificando migração box_file_id -> storage_key...");
+    const attachmentCols = await db.execute(`PRAGMA table_info(attachments)`);
+    const hasLegacyColumn = attachmentCols.rows.some((row) => row.name === "box_file_id");
+    if (hasLegacyColumn) {
+      await db.execute(`ALTER TABLE attachments RENAME COLUMN box_file_id TO storage_key`);
+      console.log("✅ Coluna renomeada: box_file_id -> storage_key");
+    } else {
+      console.log("Nada a migrar (coluna já atualizada).");
+    }
 
     console.log("Criando índice para 'attachments'...");
     await db.execute(`

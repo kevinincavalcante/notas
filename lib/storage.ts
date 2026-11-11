@@ -4,8 +4,6 @@ import {
   GetObjectCommand,
   DeleteObjectCommand,
 } from "@aws-sdk/client-s3";
-import { getBoxClient, BOX_FOLDER_ID } from "./box";
-import { Readable } from "stream";
 import fs from "fs";
 import path from "path";
 
@@ -42,7 +40,8 @@ export function isR2Configured(): boolean {
 }
 
 export interface UploadResult {
-  fileId: string; // Key no R2 ou ID no Box
+  /** Key do objeto no R2 (ou `local:<arquivo>` no fallback de desenvolvimento) */
+  fileId: string;
   fileSize: number;
 }
 
@@ -53,7 +52,7 @@ export async function uploadAttachmentFile(
 ): Promise<UploadResult> {
   const r2 = getR2Client();
 
-  // Se R2 estiver configurado, usa Cloudflare R2
+  // Cloudflare R2 (driver principal)
   if (r2) {
     const key = `${Date.now()}_${fileName}`;
     await r2.send(
@@ -67,22 +66,7 @@ export async function uploadAttachmentFile(
     return { fileId: key, fileSize: buffer.length };
   }
 
-  // Se Box estiver configurado, usa Box
-  const boxClient = getBoxClient();
-  if (boxClient) {
-    const uploadStream = Readable.from(buffer);
-    const boxResponse = await boxClient.uploads.uploadFile({
-      attributes: {
-        name: `${Date.now()}_${fileName}`,
-        parent: { id: BOX_FOLDER_ID },
-      },
-      file: uploadStream,
-    });
-    const boxFile = boxResponse.entries ? boxResponse.entries[0] : (boxResponse as any);
-    return { fileId: boxFile.id, fileSize: buffer.length };
-  }
-
-  // Fallback: Armazenamento Local em disco (pasta uploads/)
+  // Fallback de desenvolvimento: disco local (pasta uploads/)
   const uploadDir = path.join(process.cwd(), "uploads");
   if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
@@ -120,7 +104,7 @@ export async function getAttachmentStream(
     };
   }
 
-  // Fallback Local
+  // Fallback Local (chaves com prefixo local:, ou R2 não configurado)
   if (fileId.startsWith("local:")) {
     const localName = fileId.replace("local:", "");
     const filePath = path.join(process.cwd(), "uploads", localName);
@@ -149,18 +133,6 @@ export async function getAttachmentStream(
     };
   }
 
-  // Box
-  const boxClient = getBoxClient();
-  if (boxClient) {
-    const stream = (await boxClient.downloads.downloadFile(fileId, {
-      headers: range ? { range } : undefined,
-    })) as any;
-    return {
-      stream,
-      isPartial: Boolean(range),
-    };
-  }
-
   throw new Error("Nenhum driver de armazenamento configurado");
 }
 
@@ -186,8 +158,5 @@ export async function deleteAttachmentFile(fileId: string): Promise<void> {
     return;
   }
 
-  const boxClient = getBoxClient();
-  if (boxClient) {
-    await boxClient.files.deleteFileById(fileId);
-  }
+  throw new Error("Nenhum driver de armazenamento configurado");
 }

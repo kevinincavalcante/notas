@@ -50,7 +50,7 @@ export async function POST(request: Request) {
       }
     }
 
-    // Upload via storage unificado (Cloudflare R2 / Box / Local)
+    // Upload via storage unificado (Cloudflare R2 / fallback local de dev)
     const { fileId, fileSize } = await uploadAttachmentFile(
       finalFileName,
       processedBuffer,
@@ -62,7 +62,7 @@ export async function POST(request: Request) {
 
     await db.execute({
       sql: `
-        INSERT INTO attachments (id, note_id, box_file_id, file_name, mime_type, file_size, duration_seconds, created_at)
+        INSERT INTO attachments (id, note_id, storage_key, file_name, mime_type, file_size, duration_seconds, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `,
       args: [
@@ -81,7 +81,7 @@ export async function POST(request: Request) {
       attachment: {
         id: attachmentId,
         note_id: noteId,
-        box_file_id: fileId,
+        storage_key: fileId,
         file_name: finalFileName,
         mime_type: finalMimeType,
         file_size: fileSize,

@@ -77,6 +77,9 @@ npm run build
 # Executar migration no Turso
 npm run db:init
 
+# Reconstruir índice FTS5 de busca (se a busca retornar vazio silenciosamente)
+npm run db:rebuild
+
 # Gerar hash de senha
 node scripts/hash-password.mjs "senha"
 ```

@@ -6,9 +6,9 @@ Gerenciador pessoal de anotações de alto desempenho, custo zero, seguro e com 
 
 - **Front-end & Backend**: Next.js 16 (App Router, Turbopack, Tailwind CSS v4).
 - **Banco de Dados Relacional & FTS**: [Turso](https://turso.tech) (libSQL/SQLite) com busca `FTS5` de alta velocidade e sincronização automática via triggers.
-- **Armazenamento de Anexos**: [Cloudflare R2](https://developers.cloudflare.com/r2/) (10 GB gratuitos para sempre, sem custo de tráfego, compatível com S3) e suporte a Box.
+- **Armazenamento de Anexos**: [Cloudflare R2](https://developers.cloudflare.com/r2/) (10 GB gratuitos para sempre, sem custo de tráfego, compatível com S3).
 - **Otimização de Mídia**: Pipeline no servidor via `sharp` (redimensionamento e conversão WebP) e gravação de áudio no navegador em Opus/WebM.
-- **Autenticação**: Usuário único no `.env.local`, Bcrypt e JWT em cookie `HttpOnly`, interceptado por `middleware.ts`.
+- **Autenticação**: Usuário único no `.env.local`, Bcrypt e JWT em cookie `HttpOnly`, interceptado por `proxy.ts` (antigo `middleware.ts`, renomeado no Next 16).
 
 ---
 
@@ -24,9 +24,17 @@ Acesse: [http://localhost:3000](http://localhost:3000)
 - **Usuário padrão**: `admin`
 - **Senha padrão**: `admin123`
 
+> ⚠️ Em produção, defina `JWT_SECRET` (chave de alta entropia, mínimo 32 caracteres) no `.env.local` — sem ele, o servidor recusa o start.
+
 Para trocar a sua senha:
 ```bash
 node scripts/hash-password.mjs "sua_nova_senha_aqui"
+```
+
+### 3. Reconstruir o índice de busca (FTS5)
+Se a busca começar a retornar vazio silenciosamente, o índice FTS5 pode ter dessincronizado da tabela `notes`. Para reconstruí-lo:
+```bash
+npm run db:rebuild
 ```
 
 ---
@@ -45,5 +53,5 @@ Configurado no `.env.local`:
 
 As tabelas criadas no Turso:
 - `notes`: `id`, `title`, `body`, `color`, `is_pinned`, `is_archived`, `created_at`, `updated_at`.
-- `attachments`: `id`, `note_id`, `box_file_id`, `file_name`, `mime_type`, `file_size`, `duration_seconds`, `created_at`.
+- `attachments`: `id`, `note_id`, `storage_key`, `file_name`, `mime_type`, `file_size`, `duration_seconds`, `created_at`.
 - `notes_fts`: Tabela virtual SQLite `FTS5` sincronizada via triggers automáticos (`notes_ai`, `notes_au`, `notes_ad`).
