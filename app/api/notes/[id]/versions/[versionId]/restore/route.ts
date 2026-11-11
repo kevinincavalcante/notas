@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/turso";
-import { syncUrlAutoTags } from "@/lib/url-autotag";
+import { syncBodyAutoTags } from "@/lib/url-autotag";
 import crypto from "crypto";
 
 export async function POST(
@@ -61,7 +61,7 @@ export async function POST(
 
     // O corpo restaurado pode ter URLs diferentes: recalcula as auto-tags de URL (falha silenciosa)
     try {
-      await syncUrlAutoTags(id, (version.body as string) || "");
+      await syncBodyAutoTags(id, (version.body as string) || "");
     } catch (tagErr) {
       console.warn("Falha nas auto-tags de URL após restauração:", tagErr);
     }

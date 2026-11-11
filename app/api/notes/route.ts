@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/turso";
 import crypto from "crypto";
 import { getTagsByNoteId } from "@/lib/tags";
-import { syncUrlAutoTags } from "@/lib/url-autotag";
+import { syncBodyAutoTags } from "@/lib/url-autotag";
 
 export async function GET(request: Request) {
   try {
@@ -81,7 +81,7 @@ export async function POST(request: Request) {
     // Marcadores automáticos por URL do corpo (falha silenciosa)
     if (body) {
       try {
-        await syncUrlAutoTags(id, body);
+        await syncBodyAutoTags(id, body);
       } catch (tagErr) {
         console.warn("Falha nas auto-tags de URL:", tagErr);
       }

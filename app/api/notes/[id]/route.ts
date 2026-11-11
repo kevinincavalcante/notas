@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/turso";
 import crypto from "crypto";
 import { getTagsByNoteId } from "@/lib/tags";
-import { syncUrlAutoTags } from "@/lib/url-autotag";
+import { syncBodyAutoTags } from "@/lib/url-autotag";
 import { deleteAttachmentFile } from "@/lib/storage";
 
 export async function GET(
@@ -138,7 +138,7 @@ export async function PATCH(
     // Marcadores automáticos por URL: recalcula quando o corpo mudou (falha silenciosa)
     if ("body" in body) {
       try {
-        await syncUrlAutoTags(id, (body.body || "").trim());
+        await syncBodyAutoTags(id, (body.body || "").trim());
       } catch (tagErr) {
         console.warn("Falha nas auto-tags de URL:", tagErr);
       }

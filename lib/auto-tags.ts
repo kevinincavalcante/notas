@@ -96,3 +96,59 @@ export function autoTagForFile(mimeType: string, fileName: string): string | nul
   const rule = MIME_TAG_RULES.find((r) => r.match(mime));
   return rule ? rule.tag : null;
 }
+
+/**
+ * Fonte 3: corpo da nota — detecção de código.
+ * Conservador: só considera "código" quando o corpo é claramente um programa
+ * ou dado estruturado (blocos cercados, JSON multi-linha, HTML/XML, SQL ou
+ * script). Snippet inline de uma linha não conta — nota que só menciona
+ * `code` no meio do texto não ganha o marcador.
+ */
+export function isCodeBody(body: string): boolean {
+  const trimmed = body.trim();
+  if (!trimmed) return false;
+
+  // 1) Blocos cercados ``` / ~~~ (com ou sem linguagem): bloco com >= 2 linhas
+  //    de código conta (1 linha só é caso de inline). Aceita fence aberto no
+  //    fim (sem fechar) — rascunho de código.
+  const fenceRegex = /(?:^|\n)[ \t]*(?:```|~~~)[^\n]*\n([\s\S]*?)(?:\n[ \t]*(?:```|~~~)|$)/g;
+  let fencedLines = 0;
+  for (const match of trimmed.matchAll(fenceRegex)) {
+    fencedLines += match[1].split("\n").length;
+  }
+  if (fencedLines >= 2) return true;
+
+  // 2) Corpo inteiro parece código sem fences (mesmo espírito do detector do preview)
+  const lines = trimmed.split("\n");
+  if (lines.length < 3) return false;
+
+  // JSON multi-linha válido
+  if (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  ) {
+    try {
+      JSON.parse(trimmed);
+      return true;
+    } catch {
+      // cai nos detectores abaixo
+    }
+  }
+
+  // HTML / XML / SVG
+  if (trimmed.startsWith("<") && /^<(?:!doctype|script|template|style|html|svg|div)\b/i.test(trimmed)) {
+    return true;
+  }
+
+  // SQL
+  if (/^(?:select\s[\s\S]+from|insert\s+into|create\s+(?:table|view)|alter\s+table|update\s+\w+\s+set)\b/i.test(trimmed)) {
+    return true;
+  }
+
+  // Scripts (JS/TS, Python, Go, Java, etc.) — início típico de arquivo
+  if (/^(?:import\s|export\s|const\s|let\s|var\s|function\s|class\s|def\s|package\s|using\s|#!\/)/.test(trimmed)) {
+    return true;
+  }
+
+  return false;
+}

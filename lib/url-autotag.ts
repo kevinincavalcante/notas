@@ -1,7 +1,7 @@
 import { db } from "@/lib/turso";
 import { extractUrls } from "@/lib/extract-urls";
 import { isAllowedPublicUrl, BROWSER_FETCH_HEADERS } from "@/lib/url-safety";
-import { autoTagsFromPage } from "@/lib/auto-tags";
+import { autoTagsFromPage, isCodeBody } from "@/lib/auto-tags";
 
 /**
  * Marcadores automáticos por URL: detecta o tipo de conteúdo (produto,
@@ -11,6 +11,7 @@ import { autoTagsFromPage } from "@/lib/auto-tags";
  * - Detecção no servidor (funciona igual no web, desktop e mobile)
  * - Cache em memória (10 min) para não refazer fetch a cada salvamento
  * - Falha silenciosa: nunca bloqueia o salvamento da nota
+ * - Também sincroniza o marcador "Códigos" (source='code') pelo corpo
  */
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
@@ -117,12 +118,66 @@ export async function detectTagsForUrl(url: string): Promise<string[]> {
   return tags;
 }
 
+const CODE_TAG_NAME = "Códigos";
+
 /**
- * Recalcula as tags automáticas de URL de uma nota a partir do corpo.
- * Substitui o conjunto de tags com source='url' (as de arquivo e as
- * manuais do usuário não são tocadas).
+ * Sincroniza o marcador "Códigos" (source='code') de uma nota.
+ * Presente quando o corpo é claramente código, ausente quando não é mais.
  */
-export async function syncUrlAutoTags(noteId: string, body: string): Promise<void> {
+async function syncCodeAutoTag(noteId: string, body: string): Promise<void> {
+  const isCode = isCodeBody(body);
+
+  const current = await db.execute({
+    sql: `
+      SELECT t.id
+      FROM note_tags nt
+      JOIN tags t ON t.id = nt.tag_id
+      WHERE nt.note_id = ? AND t.source = 'code'
+      LIMIT 1
+    `,
+    args: [noteId],
+  });
+  const currentId = current.rows[0]?.id as string | undefined;
+
+  if (isCode && !currentId) {
+    await db.execute({
+      sql: `
+        INSERT INTO tags (id, name, kind, source, created_at)
+        VALUES (?, ?, 'auto', 'code', ?)
+        ON CONFLICT(name) DO NOTHING
+      `,
+      args: [crypto.randomUUID(), CODE_TAG_NAME, Date.now()],
+    });
+    const tagRes = await db.execute({
+      sql: `SELECT id FROM tags WHERE name = ? AND source = 'code'`,
+      args: [CODE_TAG_NAME],
+    });
+    const tagId = tagRes.rows[0]?.id as string | undefined;
+    if (tagId) {
+      await db.execute({
+        sql: `
+          INSERT OR IGNORE INTO note_tags (note_id, tag_id, created_at)
+          VALUES (?, ?, ?)
+        `,
+        args: [noteId, tagId, Date.now()],
+      });
+    }
+  } else if (!isCode && currentId) {
+    await db.execute({
+      sql: `DELETE FROM note_tags WHERE note_id = ? AND tag_id = ?`,
+      args: [noteId, currentId],
+    });
+  }
+}
+
+/**
+ * Recalcula as tags automáticas derivadas do CORPO de uma nota:
+ * "Códigos" (source='code') e as tags de URLs (source='url').
+ * As de arquivo e as manuais do usuário não são tocadas.
+ */
+export async function syncBodyAutoTags(noteId: string, body: string): Promise<void> {
+  await syncCodeAutoTag(noteId, body);
+
   const urls = extractUrls(body)
     .filter(isAllowedPublicUrl)
     .slice(0, MAX_URLS_PER_NOTE);
