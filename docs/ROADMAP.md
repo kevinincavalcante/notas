@@ -51,10 +51,13 @@ quando alterado**.
 - **Anexos**: driver de disco local **já existe** em `lib/storage.ts` → passa a
   ser o padrão no desktop; no mobile, armazenamento do app.
 - **Motor de sync em TS puro** (compartilhado entre desktop e mobile):
-  - cursor incremental: *push* das mudanças locais, *pull* das do servidor
+  - cursor incremental via tabela `change_log` (seq auto-incremento por réplica)
   - resolução de conflito: **LWW por `updated_at`** (usuário único = conflitos raros)
   - **tombstones** para exclusões propagarem corretamente
-  - novo endpoint **`/api/sync`** no backend existente
+  - endpoint **`/api/sync`** no backend existente
+  - **contrato completo: `docs/SYNC.md`** (payload, cursor, regras de aplicação)
+- **Anexos no desktop: download sob demanda** (decisão do dono ✅) — metadados
+  sincronizam, binário baixa quando a nota abre pela primeira vez e fica em cache
 - ⚠️ **Não depender das embedded replicas do libSQL**: os recursos de
   "embedded replica/sync" da Turso mudaram de rumo em 2025 — verificar o estado
   atual antes de considerar. O desenho acima funciona sem eles.
@@ -75,9 +78,9 @@ quando alterado**.
 
 | # | Fase | Status |
 |---|------|--------|
-| 1 | **Sync engine + `/api/sync`** — contratos de payload, cursor, conflito; fundação de tudo | ⏳ próximo |
+| 1 | **Sync engine + `/api/sync`** — contrato v1 fechado em `docs/SYNC.md` | 🔨 aprovado |
 | 2 | **App Linux (Electron)** — sidecar Next + DB adapter local + sync no main process | ⏳ |
-| 3 | **Empacotamento Linux** — `electron-builder`: `.deb` + `AppImage` | ⏳ |
+| 3 | **Empacotamento Linux** — `electron-builder`: **.deb** (decisão do dono; AppImage descartado) | ⏳ |
 | 4 | **App Android** — stack decidido na fase 3 | ⏳ |
 
 ### Concluído
