@@ -6,8 +6,10 @@ import NoteCard from "@/components/NoteCard";
 import NoteModal from "@/components/NoteModal";
 import { Note, Attachment } from "@/types/note";
 import { Archive, SearchX } from "lucide-react";
+import { useUI } from "@/components/UIProvider";
 
 export default function ArchivePage() {
+  const { confirm, showToast } = useUI();
   const [notes, setNotes] = useState<Note[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
@@ -39,6 +41,7 @@ export default function ArchivePage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ is_archived: false }),
     });
+    showToast("Nota desarquivada.", "info");
   }
 
   async function handleChangeColor(noteId: string, color: string) {
@@ -53,12 +56,19 @@ export default function ArchivePage() {
   }
 
   async function handleDeleteNote(noteId: string) {
-    if (!confirm("Deseja realmente excluir permanentemente esta nota?")) return;
+    const confirmed = await confirm({
+      title: "Excluir permanentemente",
+      message: "Deseja realmente excluir permanentemente esta nota? Esta ação não pode ser desfeita.",
+      confirmText: "Excluir",
+      variant: "danger",
+    });
+    if (!confirmed) return;
     setNotes((prev) => prev.filter((n) => n.id !== noteId));
     if (selectedNote && selectedNote.id === noteId) {
       setSelectedNote(null);
     }
     await fetch(`/api/notes/${noteId}`, { method: "DELETE" });
+    showToast("Nota excluída permanentemente.", "info");
   }
 
   async function handleUpdateNote(updatedFields: Partial<Note> & { skipPatch?: boolean }) {

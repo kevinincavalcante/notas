@@ -39,6 +39,7 @@ import VoiceRecorder from "./VoiceRecorder";
 import LinkPreview, { extractUrls } from "./LinkPreview";
 import MarkdownView from "./MarkdownView";
 import VersionHistoryModal from "./VersionHistoryModal";
+import { useUI } from "./UIProvider";
 
 interface NoteEditorProps {
   note: Note;
@@ -69,6 +70,7 @@ export default function NoteEditor({
   const [isRecording, setIsRecording] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved">("saved");
+  const { confirm, showToast } = useUI();
 
   // Pilha de Desfazer (Ctrl+Z) e Refazer (Ctrl+Y / Ctrl+Shift+Z)
   interface HistorySnapshot {
@@ -334,7 +336,7 @@ export default function NoteEditor({
           skipPatch: true,
         });
       } else {
-        alert("Erro ao restaurar versão no servidor: " + (data.error || "Erro desconhecido"));
+        showToast("Erro ao restaurar versão: " + (data.error || "Erro desconhecido"), "error");
       }
     } catch (err) {
       console.error("Erro ao restaurar versão:", err);
@@ -391,11 +393,11 @@ export default function NoteEditor({
           }
         });
       } else {
-        alert("Falha no upload: " + (data.error || "Erro desconhecido"));
+        showToast("Falha no upload: " + (data.error || "Erro desconhecido"), "error");
       }
     } catch (err) {
       console.error("Erro no upload de imagem:", err);
-      alert("Erro ao enviar a imagem.");
+      showToast("Erro ao enviar a imagem.", "error");
     } finally {
       setUploading(false);
     }
@@ -442,18 +444,24 @@ export default function NoteEditor({
       if (res.ok && data.attachment) {
         onAddAttachment(data.attachment);
       } else {
-        alert("Falha ao salvar áudio: " + (data.error || "Erro desconhecido"));
+        showToast("Falha ao salvar áudio: " + (data.error || "Erro desconhecido"), "error");
       }
     } catch (err) {
       console.error("Erro no upload de voz:", err);
-      alert("Erro ao enviar áudio.");
+      showToast("Erro ao enviar áudio.", "error");
     } finally {
       setUploading(false);
     }
   }
 
   async function handleDeleteAttachment(attachmentId: string) {
-    if (!confirm("Tem certeza que deseja remover este anexo?")) return;
+    const confirmed = await confirm({
+      title: "Remover anexo",
+      message: "Tem certeza que deseja remover este anexo da nota?",
+      confirmText: "Remover",
+      variant: "danger",
+    });
+    if (!confirmed) return;
 
     try {
       const res = await fetch(`/api/attachments/${attachmentId}`, {
@@ -463,7 +471,7 @@ export default function NoteEditor({
       if (res.ok) {
         onRemoveAttachment(attachmentId);
       } else {
-        alert("Falha ao excluir anexo.");
+        showToast("Falha ao excluir anexo.", "error");
       }
     } catch (err) {
       console.error("Erro ao excluir anexo:", err);

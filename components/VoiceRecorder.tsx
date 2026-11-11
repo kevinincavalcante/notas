@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Mic, Square, Trash2, Check } from "lucide-react";
+import { useUI } from "./UIProvider";
 
 interface VoiceRecorderProps {
   onRecorded: (blob: Blob, durationSeconds: number) => void;
@@ -9,6 +10,7 @@ interface VoiceRecorderProps {
 }
 
 export default function VoiceRecorder({ onRecorded, onCancel }: VoiceRecorderProps) {
+  const { showToast } = useUI();
   const [isRecording, setIsRecording] = useState(false);
   const [duration, setDuration] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -58,7 +60,7 @@ export default function VoiceRecorder({ onRecorded, onCancel }: VoiceRecorderPro
       }, 1000);
     } catch (err) {
       console.error("Permissão de microfone negada ou indisponível:", err);
-      alert("Não foi possível acessar o microfone.");
+      showToast("Não foi possível acessar o microfone.", "error");
       onCancel();
     }
   }

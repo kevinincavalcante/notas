@@ -6,12 +6,14 @@ import ColorPicker from "./ColorPicker";
 import VoiceRecorder from "./VoiceRecorder";
 import LinkPreview, { extractUrls } from "./LinkPreview";
 import { Note } from "@/types/note";
+import { useUI } from "./UIProvider";
 
 interface QuickNoteCreatorProps {
   onNoteCreated: (note: Note) => void;
 }
 
 export default function QuickNoteCreator({ onNoteCreated }: QuickNoteCreatorProps) {
+  const { showToast } = useUI();
   const [isExpanded, setIsExpanded] = useState(false);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -164,7 +166,7 @@ export default function QuickNoteCreator({ onNoteCreated }: QuickNoteCreatorProp
       resetForm();
     } catch (err) {
       console.error(err);
-      alert("Erro ao criar nota.");
+      showToast("Erro ao criar nota.", "error");
     } finally {
       setIsSubmitting(false);
     }

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { UIProvider } from "@/components/UIProvider";
 
 export const metadata: Metadata = {
   title: "Notas - Gerenciador Pessoal",
@@ -13,7 +14,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="pt-BR">
-      <body className="antialiased">{children}</body>
+      <body className="antialiased"><UIProvider>{children}</UIProvider></body>
     </html>
   );
 }

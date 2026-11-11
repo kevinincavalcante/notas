@@ -38,6 +38,7 @@ import ColorPicker from "./ColorPicker";
 import VoiceRecorder from "./VoiceRecorder";
 import LinkPreview, { extractUrls } from "./LinkPreview";
 import MarkdownView from "./MarkdownView";
+import { useUI } from "./UIProvider";
 
 interface NoteModalProps {
   note: Note;
@@ -58,6 +59,7 @@ export default function NoteModal({
   onAddAttachment,
   onRemoveAttachment,
 }: NoteModalProps) {
+  const { confirm, showToast } = useUI();
   const [title, setTitle] = useState(note.title);
   const [body, setBody] = useState(note.body);
   const [color, setColor] = useState(note.color);
@@ -262,11 +264,11 @@ export default function NoteModal({
           }
         });
       } else {
-        alert("Falha no upload: " + (data.error || "Erro desconhecido"));
+        showToast("Falha no upload: " + (data.error || "Erro desconhecido"), "error");
       }
     } catch (err) {
       console.error("Erro no upload de imagem:", err);
-      alert("Erro ao enviar a imagem.");
+      showToast("Erro ao enviar a imagem.", "error");
     } finally {
       setUploading(false);
     }
@@ -313,18 +315,24 @@ export default function NoteModal({
       if (res.ok && data.attachment) {
         onAddAttachment(data.attachment);
       } else {
-        alert("Falha ao salvar áudio: " + (data.error || "Erro desconhecido"));
+        showToast("Falha ao salvar áudio: " + (data.error || "Erro desconhecido"), "error");
       }
     } catch (err) {
       console.error("Erro no upload de voz:", err);
-      alert("Erro ao enviar áudio.");
+      showToast("Erro ao enviar áudio.", "error");
     } finally {
       setUploading(false);
     }
   }
 
   async function handleDeleteAttachment(attachmentId: string) {
-    if (!confirm("Tem certeza que deseja remover este anexo?")) return;
+    const confirmed = await confirm({
+      title: "Remover anexo",
+      message: "Tem certeza que deseja remover este anexo? O arquivo será excluído permanentemente.",
+      confirmText: "Remover",
+      variant: "danger",
+    });
+    if (!confirmed) return;
 
     try {
       const res = await fetch(`/api/attachments/${attachmentId}`, {
@@ -333,11 +341,13 @@ export default function NoteModal({
 
       if (res.ok) {
         onRemoveAttachment(attachmentId);
+        showToast("Anexo removido.", "info");
       } else {
-        alert("Falha ao excluir anexo.");
+        showToast("Falha ao excluir anexo.", "error");
       }
     } catch (err) {
       console.error("Erro ao excluir anexo:", err);
+      showToast("Erro ao excluir anexo.", "error");
     }
   }
 

@@ -5,6 +5,7 @@ import Sidebar from "@/components/Sidebar";
 import NoteEditor from "@/components/NoteEditor";
 import { Note, Attachment } from "@/types/note";
 import { StickyNote, Plus, Menu } from "lucide-react";
+import { useUI } from "@/components/UIProvider";
 
 export default function DashboardPage() {
   const [notes, setNotes] = useState<Note[]>([]);
@@ -14,6 +15,7 @@ export default function DashboardPage() {
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const { confirm, showToast } = useUI();
 
   const loadNotes = useCallback(async () => {
     try {
@@ -112,7 +114,7 @@ export default function DashboardPage() {
       }
     } catch (err) {
       console.error("Erro ao criar nota:", err);
-      alert("Erro ao criar nova nota.");
+      showToast("Não foi possível criar uma nova nota.", "error");
     }
   }
 
@@ -187,7 +189,14 @@ export default function DashboardPage() {
   async function handleDeleteNote(targetNoteId?: string) {
     const noteId = targetNoteId || selectedNote?.id;
     if (!noteId) return;
-    if (!confirm("Deseja realmente excluir esta nota?")) return;
+
+    const confirmed = await confirm({
+      title: "Excluir nota",
+      message: "Deseja realmente excluir esta nota? Os arquivos anexados e imagens também serão removidos do armazenamento.",
+      confirmText: "Excluir",
+      variant: "danger",
+    });
+    if (!confirmed) return;
 
     const removed = notes.find((n) => n.id === noteId);
     const remaining = notes.filter((n) => n.id !== noteId);

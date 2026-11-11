@@ -13,6 +13,7 @@ import {
   CheckCircle2,
 } from "lucide-react";
 import MarkdownView from "./MarkdownView";
+import { useUI } from "./UIProvider";
 
 interface VersionHistoryModalProps {
   isOpen: boolean;
@@ -27,6 +28,7 @@ export default function VersionHistoryModal({
   note,
   onRestore,
 }: VersionHistoryModalProps) {
+  const { confirm, showToast } = useUI();
   const [versions, setVersions] = useState<NoteVersion[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedVersion, setSelectedVersion] = useState<NoteVersion | null>(null);
@@ -77,16 +79,23 @@ export default function VersionHistoryModal({
   if (!isOpen) return null;
 
   async function handleRestoreClick(v: NoteVersion) {
-    if (!confirm(`Deseja realmente restaurar a nota para a versão de ${new Date(v.created_at).toLocaleString("pt-BR")}? O conteúdo atual será arquivado no histórico.`)) {
+    const confirmed = await confirm({
+      title: "Restaurar versão",
+      message: `Deseja realmente restaurar a nota para a versão de ${new Date(v.created_at).toLocaleString("pt-BR")}? O conteúdo atual será arquivado no histórico.`,
+      confirmText: "Restaurar",
+      variant: "warning",
+    });
+    if (!confirmed) {
       return;
     }
     setIsRestoring(true);
     try {
       await onRestore(v);
+      showToast("Versão restaurada com sucesso!", "success");
       onClose();
     } catch (err) {
       console.error("Erro ao restaurar versão:", err);
-      alert("Erro ao restaurar esta versão.");
+      showToast("Erro ao restaurar esta versão.", "error");
     } finally {
       setIsRestoring(false);
     }
