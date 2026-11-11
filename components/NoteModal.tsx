@@ -84,7 +84,7 @@ export default function NoteModal({
   // senão apagam a referência markdown recém-inserida pelo upload/drop.
   useEffect(() => {
     setTitle(note.title);
-    setBody(note.body);
+    setBody(repairImageTitles(note.body));
     setColor(note.color);
     setIsPinned(note.is_pinned);
     setIsArchived(note.is_archived);
@@ -486,9 +486,22 @@ export default function NoteModal({
   /** Aplica largura percentual a uma imagem markdown, via title (ex: ![img](url "50")) */
   function setImageWidth(src: string, percent: number) {
     const srcEsc = src.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    // Casas ![alt](src) e ![alt](src "title"), preservando alt
+    // Casas ![alt](src) e ![alt](src "title") (com ou sem espaço), preservando alt.
+    // O espaço antes do title é OBRIGATÓRIO na sintaxe markdown — sem ele o
+    // parser acha que a URL é literalmente src"75" e a imagem quebra.
     const regex = new RegExp(`(!\\[[^\\]]*\\]\\(\\s*${srcEsc}\\s*)(?:\\s*"[^"]*")?\\)`);
-    setBody((prev) => prev.replace(regex, `$1"${percent}")`));
+    setBody((prev) => prev.replace(regex, `$1 "${percent}")`));
+  }
+
+  /**
+   * Repara imagens markdown quebradas pelo bug antigo (url"75" sem espaço).
+   * Roda ao abrir a nota — conserta também as notas já salvas com o erro.
+   */
+  function repairImageTitles(body: string): string {
+    return body.replace(
+      /\((\/api\/attachments\/[^)\s]+|https?:\/\/[^)\s]+)"(\d{1,3})"\)/g,
+      '$1 "$2")'
+    );
   }
 
   /** Permite soltar imagens direto no editor (arrastar e soltar) — Office style: entra onde soltou. */
