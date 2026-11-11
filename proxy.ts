@@ -1,13 +1,23 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { jwtVerify } from "jose";
+import { AUTH_COOKIE_NAME } from "@/lib/jwt";
 
-const AUTH_COOKIE_NAME = "auth_token";
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || "default_insecure_secret_replace_in_env_local"
-);
+// Secret sem fallback inseguro: em produção, a ausência de JWT_SECRET falha
+// explicitamente em vez de aceitar tokens assinados com segredo público.
+function getJwtSecret(): Uint8Array {
+  const secret = process.env.JWT_SECRET?.trim();
+  if (!secret) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("JWT_SECRET não configurado (defina no .env.local)");
+    }
+    console.warn("[PROXY] JWT_SECRET ausente — usando segredo inseguro de desenvolvimento.");
+    return new TextEncoder().encode("default_insecure_secret_replace_in_env_local");
+  }
+  return new TextEncoder().encode(secret);
+}
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   // Rotas públicas que não exigem autenticação
@@ -33,7 +43,7 @@ export async function middleware(request: NextRequest) {
   }
 
   try {
-    await jwtVerify(token, JWT_SECRET);
+    await jwtVerify(token, getJwtSecret());
     return NextResponse.next();
   } catch {
     if (pathname.startsWith("/api/")) {

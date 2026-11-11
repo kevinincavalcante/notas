@@ -1,9 +1,24 @@
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { createToken, AUTH_COOKIE_NAME } from "@/lib/auth";
+import { rateLimit, getClientIp } from "@/lib/rate-limit";
+
+// 5 tentativas por IP a cada 15 minutos
+const LOGIN_RATE_LIMIT = 5;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 
 export async function POST(request: Request) {
   try {
+    // Rate limiting ANTES do bcrypt: comparar hash é caro, e é o vetor de brute-force
+    const clientIp = getClientIp(request);
+    const rl = rateLimit(`login:${clientIp}`, LOGIN_RATE_LIMIT, LOGIN_WINDOW_MS);
+    if (!rl.allowed) {
+      return NextResponse.json(
+        { error: `Muitas tentativas. Tente novamente em ${rl.retryAfterSeconds} segundos.` },
+        { status: 429, headers: { "Retry-After": String(rl.retryAfterSeconds) } }
+      );
+    }
+
     const { username, password } = await request.json();
 
     const expectedUser = (process.env.APP_USER || "admin").trim();
