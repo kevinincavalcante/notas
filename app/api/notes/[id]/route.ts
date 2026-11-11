@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/turso";
 import crypto from "crypto";
+import { getTagsByNoteId } from "@/lib/tags";
 
 export async function GET(
   _request: Request,
@@ -25,12 +26,15 @@ export async function GET(
       args: [id],
     });
 
+    const tagsByNoteId = await getTagsByNoteId([id]);
+
     return NextResponse.json({
       note: {
         ...note,
         is_pinned: Boolean(note.is_pinned),
         is_archived: Boolean(note.is_archived),
         attachments: attResult.rows,
+        tags: tagsByNoteId[id] || [],
       },
     });
   } catch (error) {

@@ -9,6 +9,13 @@ export interface Attachment {
   created_at: number;
 }
 
+export interface Tag {
+  id: string;
+  name: string;
+  /** 'auto' = marcador automático por conteúdo; 'user' = criado manualmente */
+  kind: "auto" | "user";
+}
+
 export interface NoteVersion {
   id: string;
   note_id: string;
@@ -27,6 +34,7 @@ export interface Note {
   created_at: number;
   updated_at: number;
   attachments?: Attachment[];
+  tags?: Tag[];
   title_snippet?: string;
   body_snippet?: string;
 }

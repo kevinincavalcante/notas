@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/turso";
+import { getTagsByNoteId } from "@/lib/tags";
 
 export async function GET(request: Request) {
   try {
@@ -47,6 +48,7 @@ export async function GET(request: Request) {
     });
 
     const noteIds = result.rows.map((r) => r.id as string);
+    const tagsByNoteId = await getTagsByNoteId(noteIds);
 
     // Carrega anexos para as notas encontradas
     let attachmentsByNoteId: Record<string, any[]> = {};
@@ -74,6 +76,7 @@ export async function GET(request: Request) {
       is_pinned: Boolean(row.is_pinned),
       is_archived: Boolean(row.is_archived),
       attachments: attachmentsByNoteId[row.id as string] || [],
+      tags: tagsByNoteId[row.id as string] || [],
     }));
 
     return NextResponse.json({ notes });

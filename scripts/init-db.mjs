@@ -146,6 +146,32 @@ async function main() {
       CREATE INDEX IF NOT EXISTS idx_note_versions_note_id ON note_versions(note_id, created_at DESC);
     `);
 
+    console.log("Criando tabelas de marcadores (tags)...");
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS tags (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL DEFAULT 'user',
+        created_at INTEGER NOT NULL
+      );
+    `);
+
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS note_tags (
+        note_id TEXT NOT NULL,
+        tag_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (note_id, tag_id),
+        FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
+        FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+      );
+    `);
+
+    console.log("Criando índice para 'note_tags'...");
+    await db.execute(`
+      CREATE INDEX IF NOT EXISTS idx_note_tags_tag_id ON note_tags(tag_id);
+    `);
+
     console.log("Criando tabela virtual FTS5 'notes_fts'...");
     await db.execute(`
       CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(

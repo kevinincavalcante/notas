@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { uploadAttachmentFile } from "@/lib/storage";
 import { db } from "@/lib/turso";
+import { autoTagForFile } from "@/lib/auto-tags";
+import { attachAutoTag } from "@/lib/tags";
 import sharp from "sharp";
 import crypto from "crypto";
 
@@ -76,6 +78,16 @@ export async function POST(request: Request) {
         now,
       ],
     });
+
+    // Marcador automático por tipo de arquivo (falha silenciosa: nunca bloqueia o upload)
+    const autoTag = autoTagForFile(finalMimeType, finalFileName);
+    if (autoTag) {
+      try {
+        await attachAutoTag(noteId, autoTag);
+      } catch (tagErr) {
+        console.warn("Falha ao aplicar marcador automático:", tagErr);
+      }
+    }
 
     return NextResponse.json({
       attachment: {

@@ -83,6 +83,24 @@ export default function NoteCard({
             />
           )}
 
+          {/* Marcadores automáticos */}
+          {note.tags && note.tags.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {note.tags.map((tag) => (
+                <span
+                  key={tag.id}
+                  className={`text-[11px] leading-none font-medium px-2 py-1 rounded-full ${
+                    tag.kind === "auto"
+                      ? "bg-amber-400/15 text-amber-700 dark:text-amber-300"
+                      : "bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200"
+                  }`}
+                >
+                  {tag.name}
+                </span>
+              ))}
+            </div>
+          )}
+
           {/* Previews de Links Ricos (YouTube, Sites, Artigos) */}
           {detectedUrls.length > 0 && (
             <div className="pt-1 space-y-2">
