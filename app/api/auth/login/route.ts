@@ -7,8 +7,12 @@ export async function POST(request: Request) {
     const { username, password } = await request.json();
 
     const expectedUser = (process.env.APP_USER || "admin").trim();
-    const expectedHash = (process.env.APP_PASSWORD_HASH || "").trim().replace(/^["']|["']$/g, "");
-    const expectedPassword = process.env.APP_PASSWORD;
+    // Limpa aspas e também desfaz escapes de barra invertida em '$' se tiver vindo de cópia do .env.local
+    const expectedHash = (process.env.APP_PASSWORD_HASH || "")
+      .trim()
+      .replace(/^["']|["']$/g, "")
+      .replace(/\\(\$)/g, "$1");
+    const expectedPassword = process.env.APP_PASSWORD?.trim().replace(/^["']|["']$/g, "");
 
     if (!expectedHash && !expectedPassword) {
       return NextResponse.json(
@@ -17,9 +21,10 @@ export async function POST(request: Request) {
       );
     }
 
-    // Validação do nome de usuário
+    // Validação do nome de usuário (case-insensitive para evitar bloqueio por autocapitalize no celular)
     const inputUser = (username || "").trim();
-    if (!inputUser || inputUser !== expectedUser) {
+    if (!inputUser || inputUser.toLowerCase() !== expectedUser.toLowerCase()) {
+      console.warn(`[AUTH] Usuário divergente. Recebido: "${inputUser}", Esperado: "${expectedUser}"`);
       return NextResponse.json(
         { error: "Credenciais inválidas" },
         { status: 401 }
@@ -35,6 +40,7 @@ export async function POST(request: Request) {
     }
 
     if (!isValid) {
+      console.warn(`[AUTH] Senha não confere para "${inputUser}". (Hash configurado: ${!!expectedHash}, Plain configurado: ${!!expectedPassword})`);
       return NextResponse.json(
         { error: "Credenciais inválidas" },
         { status: 401 }
