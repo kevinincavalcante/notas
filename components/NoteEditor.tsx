@@ -36,6 +36,7 @@ import ColorPicker from "./ColorPicker";
 import VoiceRecorder from "./VoiceRecorder";
 import LinkPreview, { extractUrls } from "./LinkPreview";
 import MarkdownView from "./MarkdownView";
+import VersionHistoryModal from "./VersionHistoryModal";
 
 interface NoteEditorProps {
   note: Note;
@@ -70,11 +71,8 @@ export default function NoteEditor({
   // Modo de visualização estilo Joplin/Obsidian: "split" (lado a lado), "edit" (foco na escrita) ou "preview" (leitura limpa)
   const [viewMode, setViewMode] = useState<"split" | "edit" | "preview">("split");
 
-  // Controle de Versões
+  // Controle do Modal de Histórico de Versões
   const [showHistory, setShowHistory] = useState(false);
-  const [versions, setVersions] = useState<NoteVersion[]>([]);
-  const [loadingVersions, setLoadingVersions] = useState(false);
-  const [restoringId, setRestoringId] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bodyTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -183,32 +181,7 @@ export default function NoteEditor({
     queueAutoSave();
   }
 
-  // Carrega versões quando o painel de histórico é aberto
-  async function loadVersions() {
-    setLoadingVersions(true);
-    try {
-      const res = await fetch(`/api/notes/${note.id}/versions`);
-      const data = await res.json();
-      if (res.ok) {
-        setVersions(data.versions || []);
-      }
-    } catch (err) {
-      console.error("Erro ao carregar histórico de versões:", err);
-    } finally {
-      setLoadingVersions(false);
-    }
-  }
-
-  function toggleHistory() {
-    const next = !showHistory;
-    setShowHistory(next);
-    if (next) {
-      loadVersions();
-    }
-  }
-
   async function handleRestoreVersion(version: NoteVersion) {
-    setRestoringId(version.id);
     try {
       const res = await fetch(`/api/notes/${note.id}/versions/${version.id}/restore`, {
         method: "POST",
@@ -229,13 +202,10 @@ export default function NoteEditor({
           is_archived: data.note.is_archived,
           skipPatch: true,
         });
-
-        loadVersions();
       }
     } catch (err) {
       console.error("Erro ao restaurar versão:", err);
-    } finally {
-      setRestoringId(null);
+      throw err;
     }
   }
 
@@ -618,13 +588,9 @@ export default function NoteEditor({
           {/* Botão de Histórico */}
           <button
             type="button"
-            onClick={toggleHistory}
+            onClick={() => setShowHistory(true)}
             title="Histórico de versões"
-            className={`p-2 rounded-xl transition flex items-center gap-1.5 text-xs font-medium ${
-              showHistory
-                ? "bg-amber-500 text-slate-950 font-semibold shadow-xs"
-                : "text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10"
-            }`}
+            className="p-2 rounded-xl transition flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10"
           >
             <History className="w-4 h-4" />
             <span className="hidden sm:inline">Histórico</span>
@@ -676,66 +642,6 @@ export default function NoteEditor({
           </button>
         </div>
       </header>
-
-      {/* Histórico Retrátil */}
-      {showHistory && (
-        <div className="p-4 bg-black/5 dark:bg-black/30 border-b border-black/10 dark:border-white/10 max-h-56 overflow-y-auto space-y-3 shrink-0">
-          <div className="flex items-center justify-between">
-            <h4 className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-              <Clock className="w-3.5 h-3.5 text-amber-500" />
-              Versões Anteriores ({versions.length})
-            </h4>
-            <button
-              type="button"
-              onClick={() => setShowHistory(false)}
-              className="text-xs text-slate-500 hover:text-slate-900 dark:hover:text-white"
-            >
-              Ocultar
-            </button>
-          </div>
-
-          {loadingVersions ? (
-            <div className="text-xs text-slate-500 py-3 text-center">Carregando histórico...</div>
-          ) : versions.length === 0 ? (
-            <div className="text-xs text-slate-400 py-2 italic">Nenhuma versão anterior registrada para esta nota.</div>
-          ) : (
-            <div className="space-y-2">
-              {versions.map((v) => (
-                <div
-                  key={v.id}
-                  className="p-2.5 rounded-xl bg-white/70 dark:bg-slate-800/70 border border-black/5 dark:border-white/5 flex items-start justify-between gap-3 text-xs shadow-xs"
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="font-semibold text-slate-900 dark:text-white truncate">
-                      {v.title || "Sem título"}
-                    </div>
-                    <div className="text-slate-500 dark:text-slate-400 text-[11px] line-clamp-2 mt-0.5 whitespace-pre-wrap font-normal">
-                      {v.body || "Vazio"}
-                    </div>
-                    <div className="text-[10px] text-amber-600 dark:text-amber-400 mt-1 font-mono">
-                      {new Date(v.created_at).toLocaleString("pt-BR", {
-                        dateStyle: "short",
-                        timeStyle: "short",
-                      })}
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    disabled={restoringId === v.id}
-                    onClick={() => handleRestoreVersion(v)}
-                    title="Restaurar esta versão"
-                    className="shrink-0 p-1.5 px-2.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-semibold rounded-lg flex items-center gap-1 text-[11px] transition disabled:opacity-50"
-                  >
-                    <RotateCcw className="w-3 h-3" />
-                    {restoringId === v.id ? "Restaurando..." : "Restaurar"}
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Toolbar de Formatação Markdown */}
       {viewMode !== "preview" && (
