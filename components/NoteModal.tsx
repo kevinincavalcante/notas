@@ -14,6 +14,18 @@ import {
   History,
   RotateCcw,
   Clock,
+  Bold,
+  Italic,
+  Strikethrough,
+  Heading2,
+  List,
+  ListOrdered,
+  ListTodo,
+  Quote,
+  Code2,
+  Link2,
+  Minus,
+  ImagePlus,
 } from "lucide-react";
 import AudioPlayer from "./AudioPlayer";
 import ColorPicker from "./ColorPicker";
@@ -57,6 +69,7 @@ export default function NoteModal({
   const [restoringId, setRestoringId] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const bodyTextareaRef = useRef<HTMLTextAreaElement>(null);
   const historyPushedRef = useRef(false);
   const isClosingRef = useRef(false);
 
@@ -212,6 +225,10 @@ export default function NoteModal({
         alert(data.error || "Erro no upload");
       } else {
         onAddAttachment(data.attachment);
+        // Insere a referência da imagem no corpo (aparece renderizada no preview)
+        if (data.attachment.mime_type?.startsWith("image/")) {
+          insertAtCursor(`\n![${data.attachment.file_name}](/api/attachments/${data.attachment.id})\n`);
+        }
       }
     } catch (err) {
       console.error(err);
@@ -286,6 +303,61 @@ export default function NoteModal({
     } catch (err) {
       console.error(err);
       alert("Erro ao remover anexo");
+    }
+  }
+
+  // ===== Ferramentas de edição Markdown =====
+
+  /** Envolve a seleção (ou insere placeholder) com sintaxe markdown e mantém o texto selecionado. */
+  function insertAroundSelection(prefix: string, suffix = "", placeholder = "") {
+    const el = bodyTextareaRef.current;
+    const start = el ? (el.selectionStart ?? body.length) : body.length;
+    const end = el ? (el.selectionEnd ?? start) : body.length;
+    const selected = body.slice(start, end) || placeholder;
+    const next = body.slice(0, start) + prefix + selected + suffix + body.slice(end);
+    setBody(next);
+    requestAnimationFrame(() => {
+      el?.focus();
+      const selStart = start + prefix.length;
+      el?.setSelectionRange(selStart, selStart + selected.length);
+    });
+  }
+
+  /** Insere um prefixo no início da linha atual (listas, citações, títulos). */
+  function insertLinePrefix(prefix: string) {
+    const el = bodyTextareaRef.current;
+    const start = el ? (el.selectionStart ?? body.length) : body.length;
+    const lineStart = body.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+    setBody(body.slice(0, lineStart) + prefix + body.slice(lineStart));
+    requestAnimationFrame(() => {
+      el?.focus();
+      const pos = start + prefix.length;
+      el?.setSelectionRange(pos, pos);
+    });
+  }
+
+  /** Insere texto na posição do cursor. */
+  function insertAtCursor(text: string) {
+    const el = bodyTextareaRef.current;
+    const start = el ? (el.selectionStart ?? body.length) : body.length;
+    const end = el ? (el.selectionEnd ?? start) : body.length;
+    setBody(body.slice(0, start) + text + body.slice(end));
+    requestAnimationFrame(() => {
+      el?.focus();
+      const pos = start + text.length;
+      el?.setSelectionRange(pos, pos);
+    });
+  }
+
+  /** Permite soltar imagens direto no editor (arrastar e soltar). */
+  async function handleDrop(e: React.DragEvent) {
+    const files = Array.from(e.dataTransfer?.files || []).filter((f) =>
+      f.type.startsWith("image/")
+    );
+    if (files.length === 0) return;
+    e.preventDefault();
+    for (const file of files) {
+      await uploadImageFile(file);
     }
   }
 
@@ -470,8 +542,47 @@ export default function NoteModal({
             </button>
           </div>
 
-          <div className="md:h-[52vh] md:grid md:grid-cols-2 md:divide-x md:divide-black/10 dark:md:divide-white/10 border border-black/5 dark:border-white/10 rounded-xl md:rounded-2xl overflow-hidden bg-white/40 dark:bg-black/10">
+          {/* Barra de ferramentas Markdown */}
+          <div
+            className={`${
+              mobileTab === "edit" ? "flex" : "hidden"
+            } md:flex items-center gap-0.5 flex-wrap p-1 rounded-xl bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300`}
+          >
+            <button type="button" onClick={() => insertAroundSelection("**", "**", "negrito")} title="Negrito" className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition"><Bold className="w-4 h-4" /></button>
+            <button type="button" onClick={() => insertAroundSelection("*", "*", "itálico")} title="Itálico" className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition"><Italic className="w-4 h-4" /></button>
+            <button type="button" onClick={() => insertAroundSelection("~~", "~~", "riscado")} title="Riscado" className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition"><Strikethrough className="w-4 h-4" /></button>
+            <button type="button" onClick={() => insertAroundSelection("`", "`", "código")} title="Código" className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition"><Code2 className="w-4 h-4" /></button>
+
+            <div className="w-px h-5 bg-slate-300 dark:bg-slate-600 mx-1" />
+
+            <button type="button" onClick={() => insertLinePrefix("## ")} title="Título de seção" className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition"><Heading2 className="w-4 h-4" /></button>
+            <button type="button" onClick={() => insertLinePrefix("- ")} title="Lista com marcadores" className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition"><List className="w-4 h-4" /></button>
+            <button type="button" onClick={() => insertLinePrefix("1. ")} title="Lista numerada" className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition"><ListOrdered className="w-4 h-4" /></button>
+            <button type="button" onClick={() => insertLinePrefix("- [ ] ")} title="Item de tarefa" className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition"><ListTodo className="w-4 h-4" /></button>
+            <button type="button" onClick={() => insertLinePrefix("> ")} title="Citação" className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition"><Quote className="w-4 h-4" /></button>
+
+            <div className="w-px h-5 bg-slate-300 dark:bg-slate-600 mx-1" />
+
+            <button type="button" onClick={() => insertAroundSelection("[", "](https://)", "texto do link")} title="Inserir link" className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition"><Link2 className="w-4 h-4" /></button>
+            <button type="button" onClick={() => insertAtCursor("\n---\n")} title="Linha divisória" className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition"><Minus className="w-4 h-4" /></button>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              title="Enviar imagem (clique ou arraste para o editor)"
+              className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition"
+            >
+              <ImagePlus className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Editor/Preview dividido (estilo Joplin) — arraste imagens direto no editor */}
+          <div
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={handleDrop}
+            className="md:h-[52vh] md:grid md:grid-cols-2 md:divide-x md:divide-slate-200 dark:md:divide-slate-600 border border-black/5 dark:border-white/10 rounded-xl md:rounded-2xl overflow-hidden bg-white/40 dark:bg-black/10"
+          >
             <textarea
+              ref={bodyTextareaRef}
               value={body}
               onChange={(e) => setBody(e.target.value)}
               placeholder="Criar uma nota... (Markdown suportado: **negrito**, listas, tabelas...)"
