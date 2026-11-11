@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/turso";
+import crypto from "crypto";
 
 export async function GET(
   _request: Request,
@@ -50,6 +51,40 @@ export async function PATCH(
     const updates: string[] = [];
     const values: any[] = [];
 
+    // Se title ou body foram modificados, salva snapshot da versão anterior no histórico
+    if ("title" in body || "body" in body) {
+      const currentResult = await db.execute({
+        sql: `SELECT title, body, updated_at FROM notes WHERE id = ?`,
+        args: [id],
+      });
+
+      if (currentResult.rows.length > 0) {
+        const cur = currentResult.rows[0];
+        const curTitle = ((cur.title as string) || "").trim();
+        const curBody = ((cur.body as string) || "").trim();
+        const newTitle = "title" in body ? (body.title || "").trim() : curTitle;
+        const newBody = "body" in body ? (body.body || "").trim() : curBody;
+
+        if (curTitle !== newTitle || curBody !== newBody) {
+          if (curTitle || curBody) {
+            await db.execute({
+              sql: `
+                INSERT INTO note_versions (id, note_id, title, body, created_at)
+                VALUES (?, ?, ?, ?, ?)
+              `,
+              args: [
+                crypto.randomUUID(),
+                id,
+                cur.title as string,
+                cur.body as string,
+                (cur.updated_at as number) || Date.now(),
+              ],
+            });
+          }
+        }
+      }
+    }
+
     for (const field of allowedFields) {
       if (field in body) {
         updates.push(`${field} = ?`);
@@ -89,7 +124,7 @@ export async function DELETE(
   try {
     const { id } = await params;
 
-    // Turso executará o ON DELETE CASCADE nas attachments automaticamente
+    // Turso executará o ON DELETE CASCADE nas attachments e note_versions automaticamente
     await db.execute({
       sql: `DELETE FROM notes WHERE id = ?`,
       args: [id],

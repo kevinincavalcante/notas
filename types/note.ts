@@ -9,6 +9,14 @@ export interface Attachment {
   created_at: number;
 }
 
+export interface NoteVersion {
+  id: string;
+  note_id: string;
+  title: string;
+  body: string;
+  created_at: number;
+}
+
 export interface Note {
   id: string;
   title: string;

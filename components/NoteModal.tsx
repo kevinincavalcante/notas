@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Note, Attachment } from "@/types/note";
+import { Note, Attachment, NoteVersion } from "@/types/note";
 import {
   Pin,
   Archive,
@@ -11,6 +11,9 @@ import {
   Mic,
   X,
   UploadCloud,
+  History,
+  RotateCcw,
+  Clock,
 } from "lucide-react";
 import AudioPlayer from "./AudioPlayer";
 import ColorPicker from "./ColorPicker";
@@ -44,6 +47,12 @@ export default function NoteModal({
   const [isRecording, setIsRecording] = useState(false);
   const [uploading, setUploading] = useState(false);
 
+  // Controle de Versões
+  const [showHistory, setShowHistory] = useState(false);
+  const [versions, setVersions] = useState<NoteVersion[]>([]);
+  const [loadingVersions, setLoadingVersions] = useState(false);
+  const [restoringId, setRestoringId] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const historyPushedRef = useRef(false);
 
@@ -59,6 +68,7 @@ export default function NoteModal({
     setColor(note.color);
     setIsPinned(note.is_pinned);
     setIsArchived(note.is_archived);
+    setShowHistory(false);
   }, [note]);
 
   // Intercepta o botão "Voltar" do navegador/Android no celular para fechar a nota
@@ -78,6 +88,59 @@ export default function NoteModal({
       window.removeEventListener("popstate", onPopState);
     };
   }, [isOpen]);
+
+  // Carrega versões quando o painel de histórico é aberto
+  async function loadVersions() {
+    setLoadingVersions(true);
+    try {
+      const res = await fetch(`/api/notes/${note.id}/versions`);
+      const data = await res.json();
+      if (res.ok) {
+        setVersions(data.versions || []);
+      }
+    } catch (err) {
+      console.error("Erro ao carregar histórico de versões:", err);
+    } finally {
+      setLoadingVersions(false);
+    }
+  }
+
+  function toggleHistory() {
+    if (!showHistory) {
+      loadVersions();
+    }
+    setShowHistory(!showHistory);
+  }
+
+  async function handleRestoreVersion(version: NoteVersion) {
+    if (!confirm(`Deseja restaurar a versão de ${new Date(version.created_at).toLocaleString("pt-BR")}?`)) {
+      return;
+    }
+
+    setRestoringId(version.id);
+    try {
+      const res = await fetch(`/api/notes/${note.id}/versions/${version.id}/restore`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (res.ok && data.restored) {
+        setTitle(data.restored.title);
+        setBody(data.restored.body);
+        await onUpdate({
+          title: data.restored.title,
+          body: data.restored.body,
+        });
+        await loadVersions();
+      } else {
+        alert(data.error || "Erro ao restaurar versão");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Falha ao restaurar versão.");
+    } finally {
+      setRestoringId(null);
+    }
+  }
 
   async function closeAndSave() {
     const current = latestStateRef.current;
@@ -217,19 +280,36 @@ export default function NoteModal({
         className={`w-full max-w-2xl max-h-[90vh] rounded-2xl shadow-2xl border flex flex-col overflow-hidden cursor-default note-color-${color}`}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header com Pin e Fechar */}
+        {/* Header com Pin, Histórico e Fechar */}
         <div className="p-4 flex items-center justify-between border-b border-black/5 dark:border-white/5">
-          <button
-            type="button"
-            onClick={() => setIsPinned(!isPinned)}
-            className={`p-2 rounded-full transition ${
-              isPinned
-                ? "text-amber-500 bg-amber-500/10"
-                : "text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10"
-            }`}
-          >
-            <Pin className={`w-5 h-5 ${isPinned ? "fill-amber-500" : ""}`} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsPinned(!isPinned)}
+              title={isPinned ? "Desafixar" : "Fixar"}
+              className={`p-2 rounded-full transition ${
+                isPinned
+                  ? "text-amber-500 bg-amber-500/10"
+                  : "text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10"
+              }`}
+            >
+              <Pin className={`w-5 h-5 ${isPinned ? "fill-amber-500" : ""}`} />
+            </button>
+
+            <button
+              type="button"
+              onClick={toggleHistory}
+              title="Histórico de versões"
+              className={`p-2 rounded-full transition flex items-center gap-1.5 text-xs font-medium ${
+                showHistory
+                  ? "bg-amber-500 text-slate-950 font-semibold"
+                  : "text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10"
+              }`}
+            >
+              <History className="w-4 h-4" />
+              <span className="hidden sm:inline">Histórico</span>
+            </button>
+          </div>
 
           <button
             type="button"
@@ -239,6 +319,70 @@ export default function NoteModal({
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {/* Painel de Histórico de Versões (retrátil) */}
+        {showHistory && (
+          <div className="p-4 bg-black/5 dark:bg-black/30 border-b border-black/10 dark:border-white/10 max-h-60 overflow-y-auto space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5 text-amber-500" />
+                Versões Anteriores ({versions.length})
+              </h4>
+              <button
+                type="button"
+                onClick={() => setShowHistory(false)}
+                className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                Ocultar
+              </button>
+            </div>
+
+            {loadingVersions ? (
+              <div className="text-xs text-slate-400 py-4 text-center">
+                Carregando versões anteriores...
+              </div>
+            ) : versions.length === 0 ? (
+              <div className="text-xs text-slate-500 dark:text-slate-400 py-3 text-center italic">
+                Nenhuma versão anterior gravada ainda. Novas versões são salvas automaticamente a cada alteração no texto.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {versions.map((v) => (
+                  <div
+                    key={v.id}
+                    className="p-2.5 rounded-xl bg-white/70 dark:bg-slate-800/70 border border-black/5 dark:border-white/5 flex items-start justify-between gap-3 text-xs"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="font-semibold text-slate-900 dark:text-white truncate">
+                        {v.title || "Sem título"}
+                      </div>
+                      <div className="text-slate-500 dark:text-slate-400 text-[11px] line-clamp-2 mt-0.5 whitespace-pre-wrap font-normal">
+                        {v.body || "Vazio"}
+                      </div>
+                      <div className="text-[10px] text-amber-600 dark:text-amber-400 mt-1 font-mono">
+                        {new Date(v.created_at).toLocaleString("pt-BR", {
+                          dateStyle: "short",
+                          timeStyle: "short",
+                        })}
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={restoringId === v.id}
+                      onClick={() => handleRestoreVersion(v)}
+                      title="Restaurar esta versão"
+                      className="shrink-0 p-1.5 px-2.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-semibold rounded-lg flex items-center gap-1 text-[11px] transition disabled:opacity-50"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      {restoringId === v.id ? "Restaurando..." : "Restaurar"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Conteúdo rolável */}
         <div className="flex-1 overflow-y-auto p-6 space-y-4">

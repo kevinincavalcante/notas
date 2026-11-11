@@ -80,6 +80,23 @@ async function main() {
       CREATE INDEX IF NOT EXISTS idx_attachments_note_id ON attachments(note_id);
     `);
 
+    console.log("Criando tabela 'note_versions' para histórico...");
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS note_versions (
+        id TEXT PRIMARY KEY,
+        note_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
+      );
+    `);
+
+    console.log("Criando índice para 'note_versions'...");
+    await db.execute(`
+      CREATE INDEX IF NOT EXISTS idx_note_versions_note_id ON note_versions(note_id, created_at DESC);
+    `);
+
     console.log("Criando tabela virtual FTS5 'notes_fts'...");
     await db.execute(`
       CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
@@ -110,7 +127,7 @@ async function main() {
       END;
     `);
 
-    console.log("✅ Migração executada com sucesso! Testando consulta...");
+    console.log("✅ Migração executada com sucesso!");
     const testResult = await db.execute("SELECT count(*) as total FROM notes");
     console.log(`Total de notas existentes: ${testResult.rows[0].total}`);
     console.log("🎉 Conexão e tabelas no Turso 100% operacionais!");
