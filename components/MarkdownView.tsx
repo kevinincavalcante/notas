@@ -30,7 +30,19 @@ export default function MarkdownView({ content, placeholder }: MarkdownViewProps
 
   return (
     <div className="markdown-preview prose prose-sm dark:prose-invert max-w-none break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-li:my-1 prose-pre:my-3 prose-code:before:content-none prose-code:after:content-none">
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkBreaks]}
+        components={{
+          // Imagens encaixam no bloco: no máximo a largura da coluna, altura proporcional
+          img: (props) => (
+            <img
+              {...props}
+              className="rounded-xl my-3 max-w-full h-auto border border-black/10 dark:border-white/10"
+              loading="lazy"
+            />
+          ),
+        }}
+      >
         {content}
       </ReactMarkdown>
     </div>

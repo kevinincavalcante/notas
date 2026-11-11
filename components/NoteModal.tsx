@@ -79,6 +79,9 @@ export default function NoteModal({
     latestStateRef.current = { title, body, color, isPinned, isArchived };
   }, [title, body, color, isPinned, isArchived]);
 
+  // Reseta os campos apenas ao abrir OUTRA nota (id muda). Atualizações no
+  // objeto (ex: novo anexo via onAddAttachment) NÃO devem resetar o corpo —
+  // senão apagam a referência markdown recém-inserida pelo upload/drop.
   useEffect(() => {
     setTitle(note.title);
     setBody(note.body);
@@ -88,7 +91,8 @@ export default function NoteModal({
     setShowHistory(false);
     setMobileTab("edit");
     isClosingRef.current = false;
-  }, [note]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [note.id]);
 
   // Intercepta o botão "Voltar" do navegador/Android no celular para fechar a nota
   useEffect(() => {
