@@ -1,18 +1,21 @@
 import { db } from "@/lib/turso";
 import crypto from "crypto";
+import type { Client } from "@libsql/client";
 import type { Tag } from "@/types/note";
 
 /**
  * Cria a tag se não existir (kind='auto') e vincula à nota.
  * Idempotente: chamar de novo não duplica o vínculo.
  * @param source origem da tag: 'file' (upload) ou 'url' (corpo da nota)
+ * @param client opcional (default: db global) — usado pelo sync do desktop
  */
 export async function attachAutoTag(
   noteId: string,
   tagName: string,
-  source: "file" | "url" = "file"
+  source: "file" | "url" = "file",
+  client: Client = db
 ): Promise<void> {
-  await db.execute({
+  await client.execute({
     sql: `
       INSERT INTO tags (id, name, kind, source, created_at)
       VALUES (?, ?, 'auto', ?, ?)
@@ -21,14 +24,14 @@ export async function attachAutoTag(
     args: [crypto.randomUUID(), tagName, source, Date.now()],
   });
 
-  const tagRes = await db.execute({
+  const tagRes = await client.execute({
     sql: `SELECT id FROM tags WHERE name = ?`,
     args: [tagName],
   });
   const tagId = tagRes.rows[0]?.id as string | undefined;
   if (!tagId) return;
 
-  await db.execute({
+  await client.execute({
     sql: `
       INSERT OR IGNORE INTO note_tags (note_id, tag_id, created_at)
       VALUES (?, ?, ?)

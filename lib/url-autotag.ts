@@ -2,6 +2,7 @@ import { db } from "@/lib/turso";
 import { extractUrls } from "@/lib/extract-urls";
 import { isAllowedPublicUrl, BROWSER_FETCH_HEADERS } from "@/lib/url-safety";
 import { autoTagsFromPage, isCodeBody } from "@/lib/auto-tags";
+import type { Client } from "@libsql/client";
 
 /**
  * Marcadores automáticos por URL: detecta o tipo de conteúdo (produto,
@@ -124,10 +125,14 @@ const CODE_TAG_NAME = "Códigos";
  * Sincroniza o marcador "Códigos" (source='code') de uma nota.
  * Presente quando o corpo é claramente código, ausente quando não é mais.
  */
-async function syncCodeAutoTag(noteId: string, body: string): Promise<void> {
+async function syncCodeAutoTag(
+  noteId: string,
+  body: string,
+  client: Client = db
+): Promise<void> {
   const isCode = isCodeBody(body);
 
-  const current = await db.execute({
+  const current = await client.execute({
     sql: `
       SELECT t.id
       FROM note_tags nt
@@ -140,7 +145,7 @@ async function syncCodeAutoTag(noteId: string, body: string): Promise<void> {
   const currentId = current.rows[0]?.id as string | undefined;
 
   if (isCode && !currentId) {
-    await db.execute({
+    await client.execute({
       sql: `
         INSERT INTO tags (id, name, kind, source, created_at)
         VALUES (?, ?, 'auto', 'code', ?)
@@ -148,13 +153,13 @@ async function syncCodeAutoTag(noteId: string, body: string): Promise<void> {
       `,
       args: [crypto.randomUUID(), CODE_TAG_NAME, Date.now()],
     });
-    const tagRes = await db.execute({
+    const tagRes = await client.execute({
       sql: `SELECT id FROM tags WHERE name = ? AND source = 'code'`,
       args: [CODE_TAG_NAME],
     });
     const tagId = tagRes.rows[0]?.id as string | undefined;
     if (tagId) {
-      await db.execute({
+      await client.execute({
         sql: `
           INSERT OR IGNORE INTO note_tags (note_id, tag_id, created_at)
           VALUES (?, ?, ?)
@@ -163,7 +168,7 @@ async function syncCodeAutoTag(noteId: string, body: string): Promise<void> {
       });
     }
   } else if (!isCode && currentId) {
-    await db.execute({
+    await client.execute({
       sql: `DELETE FROM note_tags WHERE note_id = ? AND tag_id = ?`,
       args: [noteId, currentId],
     });
@@ -174,9 +179,14 @@ async function syncCodeAutoTag(noteId: string, body: string): Promise<void> {
  * Recalcula as tags automáticas derivadas do CORPO de uma nota:
  * "Códigos" (source='code') e as tags de URLs (source='url').
  * As de arquivo e as manuais do usuário não são tocadas.
+ * @param client opcional (default: db global) — usado pelo sync do desktop
  */
-export async function syncBodyAutoTags(noteId: string, body: string): Promise<void> {
-  await syncCodeAutoTag(noteId, body);
+export async function syncBodyAutoTags(
+  noteId: string,
+  body: string,
+  client: Client = db
+): Promise<void> {
+  await syncCodeAutoTag(noteId, body, client);
 
   const urls = extractUrls(body)
     .filter(isAllowedPublicUrl)
@@ -191,7 +201,7 @@ export async function syncBodyAutoTags(noteId: string, body: string): Promise<vo
   }
 
   // Tags de origem URL atualmente vinculadas
-  const current = await db.execute({
+  const current = await client.execute({
     sql: `
       SELECT t.id, t.name
       FROM note_tags nt
@@ -209,7 +219,7 @@ export async function syncBodyAutoTags(noteId: string, body: string): Promise<vo
   // Remove tags de URL que não se aplicam mais ao corpo atual
   for (const [name, id] of currentByName) {
     if (!desired.has(name)) {
-      await db.execute({
+      await client.execute({
         sql: `DELETE FROM note_tags WHERE note_id = ? AND tag_id = ?`,
         args: [noteId, id],
       });
@@ -219,7 +229,7 @@ export async function syncBodyAutoTags(noteId: string, body: string): Promise<vo
   // Adiciona as novas
   for (const name of desired) {
     if (currentByName.has(name)) continue;
-    await db.execute({
+    await client.execute({
       sql: `
         INSERT INTO tags (id, name, kind, source, created_at)
         VALUES (?, ?, 'auto', 'url', ?)
@@ -227,13 +237,13 @@ export async function syncBodyAutoTags(noteId: string, body: string): Promise<vo
       `,
       args: [crypto.randomUUID(), name, Date.now()],
     });
-    const tagRes = await db.execute({
+    const tagRes = await client.execute({
       sql: `SELECT id FROM tags WHERE name = ?`,
       args: [name],
     });
     const tagId = tagRes.rows[0]?.id as string | undefined;
     if (!tagId) continue;
-    await db.execute({
+    await client.execute({
       sql: `
         INSERT OR IGNORE INTO note_tags (note_id, tag_id, created_at)
         VALUES (?, ?, ?)

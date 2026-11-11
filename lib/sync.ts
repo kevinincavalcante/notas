@@ -2,12 +2,17 @@ import { db } from "@/lib/turso";
 import { logChange } from "@/lib/sync-log";
 import { syncBodyAutoTags } from "@/lib/url-autotag";
 import { deleteAttachmentFile } from "@/lib/storage";
+import type { Client } from "@libsql/client";
 
 /**
  * Motor server-side do sync (docs/SYNC.md):
  *
  * 1. applyPush — aplica mudanças de uma réplica com LWW por updated_at
  * 2. collectChanges — monta o pull incremental a partir do change_log
+ *
+ * Parametrizado por Client (libSQL): a rota HTTP usa o `db` global (Turso),
+ * e o cliente de sync do desktop reusa as MESMAS funções com o client
+ * remoto — sem depender de um servidor web ligado.
  *
  * Tags/note_tags NÃO são entidades sincronizadas: são derivadas de forma
  * determinística do conteúdo (auto-tags) — cada réplica re-deriva ao aplicar
@@ -45,6 +50,8 @@ export interface PushedTombstone {
 export interface SyncPush {
   notes?: PushedNote[];
   attachments?: PushedAttachment[];
+  /** ids de anexos apagados na réplica que enviou */
+  attachments_removed?: string[];
   tombstones?: PushedTombstone[];
 }
 
@@ -57,8 +64,8 @@ interface SyncResult {
  * Remove uma nota e seus binários do storage — usada tanto pelo DELETE da API
  * quanto pelo sync quando chega tombstone de outra réplica.
  */
-async function hardDeleteNote(noteId: string): Promise<void> {
-  const attResult = await db.execute({
+async function hardDeleteNote(client: Client, noteId: string): Promise<void> {
+  const attResult = await client.execute({
     sql: `SELECT storage_key FROM attachments WHERE note_id = ?`,
     args: [noteId],
   });
@@ -75,21 +82,21 @@ async function hardDeleteNote(noteId: string): Promise<void> {
     })
   );
 
-  await db.execute({
+  await client.execute({
     sql: `DELETE FROM notes WHERE id = ?`,
     args: [noteId],
   });
 }
 
 /** Aplica o push de uma réplica com LWW. Retorna ids que perderam o conflito. */
-async function applyPush(push: SyncPush): Promise<string[]> {
+async function applyPush(client: Client, push: SyncPush): Promise<string[]> {
   const conflicts: string[] = [];
 
   // Tombstones primeiro: exclusão vence update concorrente (docs/SYNC.md, regra 3)
   for (const tomb of push.tombstones || []) {
     if (!tomb?.id) continue;
 
-    await db.execute({
+    await client.execute({
       sql: `
         INSERT INTO tombstones (id, entity, deleted_at)
         VALUES (?, 'note', ?)
@@ -99,13 +106,13 @@ async function applyPush(push: SyncPush): Promise<string[]> {
     });
 
     // Só apaga de fato se a nota ainda existir (idempotente)
-    const exists = await db.execute({
+    const exists = await client.execute({
       sql: `SELECT 1 AS x FROM notes WHERE id = ?`,
       args: [tomb.id],
     });
     if (exists.rows.length > 0) {
-      await hardDeleteNote(tomb.id);
-      await logChange("tombstone", tomb.id, "delete");
+      await hardDeleteNote(client, tomb.id);
+      await logChange("tombstone", tomb.id, "delete", client);
     }
   }
 
@@ -115,14 +122,14 @@ async function applyPush(push: SyncPush): Promise<string[]> {
     const isPinned = note.is_pinned ? 1 : 0;
     const isArchived = note.is_archived ? 1 : 0;
 
-    const localRes = await db.execute({
+    const localRes = await client.execute({
       sql: `SELECT updated_at FROM notes WHERE id = ?`,
       args: [note.id],
     });
 
     if (localRes.rows.length === 0) {
       // Bootstrap/nova nota da réplica: entra direto
-      await db.execute({
+      await client.execute({
         sql: `
           INSERT INTO notes (id, title, body, color, is_pinned, is_archived, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -138,13 +145,13 @@ async function applyPush(push: SyncPush): Promise<string[]> {
           note.updated_at || Date.now(),
         ],
       });
-      await logChange("note", note.id, "upsert");
+      await logChange("note", note.id, "upsert", client);
       continue;
     }
 
     const localUpdatedAt = Number(localRes.rows[0].updated_at);
     if ((note.updated_at || 0) > localUpdatedAt) {
-      await db.execute({
+      await client.execute({
         sql: `
           UPDATE notes
           SET title = ?, body = ?, color = ?, is_pinned = ?, is_archived = ?, updated_at = ?
@@ -160,7 +167,7 @@ async function applyPush(push: SyncPush): Promise<string[]> {
           note.id,
         ],
       });
-      await logChange("note", note.id, "upsert");
+      await logChange("note", note.id, "upsert", client);
     } else {
       // Perdeu o LWW (estado local da réplica é igual ou mais novo)
       conflicts.push(note.id);
@@ -171,13 +178,13 @@ async function applyPush(push: SyncPush): Promise<string[]> {
   for (const att of push.attachments || []) {
     if (!att?.id) continue;
 
-    const localRes = await db.execute({
+    const localRes = await client.execute({
       sql: `SELECT created_at FROM attachments WHERE id = ?`,
       args: [att.id],
     });
 
     if (localRes.rows.length === 0) {
-      await db.execute({
+      await client.execute({
         sql: `
           INSERT OR IGNORE INTO attachments
             (id, note_id, storage_key, file_name, mime_type, file_size, duration_seconds, created_at)
@@ -194,29 +201,49 @@ async function applyPush(push: SyncPush): Promise<string[]> {
           att.created_at || Date.now(),
         ],
       });
-      await logChange("attachment", att.id, "upsert");
+      await logChange("attachment", att.id, "upsert", client);
     }
     // Anexo existente nunca é sobrescrito: anexos são imutáveis (mesmo id = mesmo binário)
+  }
+
+  // Anexos removidos na réplica que enviou: propaga a exclusão do metadado
+  for (const attId of push.attachments_removed || []) {
+    if (!attId) continue;
+    const res = await client.execute({
+      sql: `DELETE FROM attachments WHERE id = ?`,
+      args: [attId],
+    });
+    if (res.rowsAffected > 0) {
+      await logChange("attachment", attId, "delete", client);
+    }
   }
 
   return conflicts;
 }
 
 /** Re-deriva auto-tags das notas cujo conteúdo o push realmente alterou (LWW venceu). */
-async function rederiveTagsForNotes(notes: PushedNote[], conflicts: string[]): Promise<void> {
+async function rederiveTagsForNotes(
+  client: Client,
+  notes: PushedNote[],
+  conflicts: string[]
+): Promise<void> {
   const conflictSet = new Set(conflicts);
   const changed = (notes || []).filter((n) => n?.id && !conflictSet.has(n.id));
   if (changed.length === 0) return;
 
   await Promise.allSettled(
-    changed.map((n) => syncBodyAutoTags(n.id, (n.body || "").trim()))
+    changed.map((n) => syncBodyAutoTags(n.id, (n.body || "").trim(), client))
   );
 }
 
 /** Monta o pull incremental: tudo que mudou no servidor desde o cursor.
  *  Cursor 0 = bootstrap: replica nova, devolve o estado completo. */
-async function collectChanges(cursor: number, conflicts: string[]): Promise<Record<string, unknown>> {
-  const logRes = await db.execute({
+async function collectChanges(
+  client: Client,
+  cursor: number,
+  conflicts: string[]
+): Promise<Record<string, unknown>> {
+  const logRes = await client.execute({
     sql: `SELECT seq, entity, entity_id, op FROM change_log WHERE seq > ? ORDER BY seq ASC`,
     args: [cursor],
   });
@@ -228,7 +255,7 @@ async function collectChanges(cursor: number, conflicts: string[]): Promise<Reco
 
   // Cursor novo = maior seq global do log (mesmo sem novidades, a réplica
   // nunca mais refaz o bootstrap)
-  const maxRes = await db.execute(`SELECT COALESCE(MAX(seq), 0) AS m FROM change_log`);
+  const maxRes = await client.execute(`SELECT COALESCE(MAX(seq), 0) AS m FROM change_log`);
   const newCursor = Math.max(cursor, Number(maxRes.rows[0].m));
 
   for (const row of logRes.rows) {
@@ -246,13 +273,13 @@ async function collectChanges(cursor: number, conflicts: string[]): Promise<Reco
   // Bootstrap (cursor 0): o change_log só cobre o futuro — manda o estado completo
   let notes: Record<string, unknown>[] = [];
   if (cursor === 0) {
-    const res = await db.execute(`SELECT * FROM notes`);
+    const res = await client.execute(`SELECT * FROM notes`);
     notes = res.rows as Record<string, unknown>[];
   } else {
     const noteIdList = Array.from(noteIds);
     if (noteIdList.length > 0) {
       const placeholders = noteIdList.map(() => "?").join(",");
-      const res = await db.execute({
+      const res = await client.execute({
         sql: `SELECT * FROM notes WHERE id IN (${placeholders})`,
         args: noteIdList,
       });
@@ -262,13 +289,13 @@ async function collectChanges(cursor: number, conflicts: string[]): Promise<Reco
 
   let attachments: Record<string, unknown>[] = [];
   if (cursor === 0) {
-    const res = await db.execute(`SELECT * FROM attachments`);
+    const res = await client.execute(`SELECT * FROM attachments`);
     attachments = res.rows as Record<string, unknown>[];
   } else {
     const attIdList = Array.from(attachmentIds);
     if (attIdList.length > 0) {
       const placeholders = attIdList.map(() => "?").join(",");
-      const res = await db.execute({
+      const res = await client.execute({
         sql: `SELECT * FROM attachments WHERE id IN (${placeholders})`,
         args: attIdList,
       });
@@ -278,13 +305,13 @@ async function collectChanges(cursor: number, conflicts: string[]): Promise<Reco
 
   let tombstones: Record<string, unknown>[] = [];
   if (cursor === 0) {
-    const res = await db.execute(`SELECT id, deleted_at FROM tombstones`);
+    const res = await client.execute(`SELECT id, deleted_at FROM tombstones`);
     tombstones = res.rows as Record<string, unknown>[];
   } else {
     const tombIdList = Array.from(tombstoneIds);
     if (tombIdList.length > 0) {
       const placeholders = tombIdList.map(() => "?").join(",");
-      const res = await db.execute({
+      const res = await client.execute({
         sql: `SELECT id, deleted_at FROM tombstones WHERE id IN (${placeholders})`,
         args: tombIdList,
       });
@@ -293,8 +320,8 @@ async function collectChanges(cursor: number, conflicts: string[]): Promise<Reco
   }
 
   // Snapshots de tags/note_tags: pequenos e derivados — bootstrap e convergência
-  const tagsRes = await db.execute(`SELECT id, name, kind, source, created_at FROM tags`);
-  const noteTagsRes = await db.execute(`SELECT note_id, tag_id, created_at FROM note_tags`);
+  const tagsRes = await client.execute(`SELECT id, name, kind, source, created_at FROM tags`);
+  const noteTagsRes = await client.execute(`SELECT note_id, tag_id, created_at FROM note_tags`);
 
   return {
     cursor: newCursor,
@@ -313,10 +340,11 @@ async function collectChanges(cursor: number, conflicts: string[]): Promise<Reco
  * alteradas e devolve o pull incremental.
  */
 export async function runSync(
+  client: Client,
   cursor: number,
   push: SyncPush
 ): Promise<Record<string, unknown>> {
-  const conflicts = await applyPush(push);
-  await rederiveTagsForNotes(push.notes || [], conflicts);
-  return collectChanges(cursor, conflicts);
+  const conflicts = await applyPush(client, push);
+  await rederiveTagsForNotes(client, push.notes || [], conflicts);
+  return collectChanges(client, cursor, conflicts);
 }

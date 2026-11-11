@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { runSync, type SyncPush } from "@/lib/sync";
+import { db } from "@/lib/turso";
 
 /**
  * POST /api/sync — protocolo de sincronização entre réplicas (docs/SYNC.md).
@@ -21,7 +22,7 @@ export async function POST(request: Request) {
     }
 
     const push: SyncPush = body.push || {};
-    const result = await runSync(cursor, push);
+    const result = await runSync(db, cursor, push);
 
     return NextResponse.json(result);
   } catch (error) {
