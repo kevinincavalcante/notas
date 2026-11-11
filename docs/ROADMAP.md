@@ -93,8 +93,15 @@ quando alterado**.
 > decidimos onde encaixa (backend, desktop, mobile ou os três).
 
 ### 1. Marcadores automáticos (tags) — `AUTOTAG`
-**Status: uploads ✅ implementado (`tags`, `note_tags` no Turso, chips nos cards).**
-**URLs: pendente.**
+**Status: uploads ✅ e URLs ✅ implementados.**
+(`tags`, `note_tags` no Turso com coluna `source` = `file`/`url`, chips nos cards)
+
+**Detecção por URL** (no servidor, ao salvar a nota — `lib/url-autotag.ts`):
+JSON-LD `@type` da página → regra por host de vídeo (YouTube/Vimeo) →
+fallback `og:type`. Cache em memória de 10 min por URL; falha silenciosa.
+*Limitações reais da web:* sites com bloqueio anti-bot (IMDb, Allrecipes)
+entregam challenge/403 e ficam sem tag; alguns sites (ex: g1) só expõem
+`og:type: article` → classifica como "Artigos".
 
 **Fonte URL** (estende `/api/metadata`, que já baixa o HTML): parsear o
 JSON-LD `<script type="application/ld+json">` e ler o `@type`:

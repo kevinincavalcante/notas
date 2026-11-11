@@ -5,15 +5,20 @@ import type { Tag } from "@/types/note";
 /**
  * Cria a tag se não existir (kind='auto') e vincula à nota.
  * Idempotente: chamar de novo não duplica o vínculo.
+ * @param source origem da tag: 'file' (upload) ou 'url' (corpo da nota)
  */
-export async function attachAutoTag(noteId: string, tagName: string): Promise<void> {
+export async function attachAutoTag(
+  noteId: string,
+  tagName: string,
+  source: "file" | "url" = "file"
+): Promise<void> {
   await db.execute({
     sql: `
-      INSERT INTO tags (id, name, kind, created_at)
-      VALUES (?, ?, 'auto', ?)
+      INSERT INTO tags (id, name, kind, source, created_at)
+      VALUES (?, ?, 'auto', ?, ?)
       ON CONFLICT(name) DO NOTHING
     `,
-    args: [crypto.randomUUID(), tagName, Date.now()],
+    args: [crypto.randomUUID(), tagName, source, Date.now()],
   });
 
   const tagRes = await db.execute({

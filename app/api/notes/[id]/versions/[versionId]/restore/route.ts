@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/turso";
+import { syncUrlAutoTags } from "@/lib/url-autotag";
 
 export async function POST(
   _request: Request,
@@ -26,6 +27,13 @@ export async function POST(
       sql: `UPDATE notes SET title = ?, body = ?, updated_at = ? WHERE id = ?`,
       args: [version.title as string, version.body as string, now, id],
     });
+
+    // O corpo restaurado pode ter URLs diferentes: recalcula as auto-tags de URL (falha silenciosa)
+    try {
+      await syncUrlAutoTags(id, (version.body as string) || "");
+    } catch (tagErr) {
+      console.warn("Falha nas auto-tags de URL após restauração:", tagErr);
+    }
 
     return NextResponse.json({
       success: true,

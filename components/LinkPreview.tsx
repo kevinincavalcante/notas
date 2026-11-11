@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { ExternalLink, Globe } from "lucide-react";
+import { extractUrls } from "@/lib/extract-urls";
 
 interface LinkMetadata {
   url: string;
@@ -15,21 +16,7 @@ interface LinkMetadata {
 // Cache local em memória para evitar requisições repetidas na mesma sessão
 const metadataCache = new Map<string, LinkMetadata>();
 
-export function extractUrls(text: string): string[] {
-  if (!text) return [];
-  const urlRegex = /(https?:\/\/[^\s]+)/g;
-  const matches = text.match(urlRegex);
-  if (!matches) return [];
-  // Retorna URLs únicas e válidas
-  return Array.from(new Set(matches)).filter((u) => {
-    try {
-      new URL(u);
-      return true;
-    } catch {
-      return false;
-    }
-  });
-}
+export { extractUrls };
 
 export default function LinkPreview({ url }: { url: string }) {
   const [data, setData] = useState<LinkMetadata | null>(metadataCache.get(url) || null);

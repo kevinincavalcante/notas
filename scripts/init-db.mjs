@@ -152,9 +152,18 @@ async function main() {
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
         kind TEXT NOT NULL DEFAULT 'user',
+        source TEXT NOT NULL DEFAULT 'file',
         created_at INTEGER NOT NULL
       );
     `);
+
+    // Migração idempotente: coluna source (origem do marcador: file/url/user)
+    const tagsCols = await db.execute(`PRAGMA table_info(tags)`);
+    const hasSource = tagsCols.rows.some((row) => row.name === "source");
+    if (!hasSource) {
+      await db.execute(`ALTER TABLE tags ADD COLUMN source TEXT NOT NULL DEFAULT 'file'`);
+      console.log("✅ Coluna 'source' adicionada à tabela tags");
+    }
 
     await db.execute(`
       CREATE TABLE IF NOT EXISTS note_tags (

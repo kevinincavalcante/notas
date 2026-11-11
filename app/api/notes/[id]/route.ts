@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/turso";
 import crypto from "crypto";
 import { getTagsByNoteId } from "@/lib/tags";
+import { syncUrlAutoTags } from "@/lib/url-autotag";
 
 export async function GET(
   _request: Request,
@@ -132,6 +133,15 @@ export async function PATCH(
       sql: `UPDATE notes SET ${updates.join(", ")} WHERE id = ?`,
       args: values,
     });
+
+    // Marcadores automáticos por URL: recalcula quando o corpo mudou (falha silenciosa)
+    if ("body" in body) {
+      try {
+        await syncUrlAutoTags(id, (body.body || "").trim());
+      } catch (tagErr) {
+        console.warn("Falha nas auto-tags de URL:", tagErr);
+      }
+    }
 
     return NextResponse.json({ success: true, updated_at: now });
   } catch (error) {
