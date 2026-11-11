@@ -483,6 +483,14 @@ export default function NoteModal({
     });
   }
 
+  /** Aplica largura percentual a uma imagem markdown, via title (ex: ![img](url "50")) */
+  function setImageWidth(src: string, percent: number) {
+    const srcEsc = src.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Casas ![alt](src) e ![alt](src "title"), preservando alt
+    const regex = new RegExp(`(!\\[[^\\]]*\\]\\(\\s*${srcEsc}\\s*)(?:\\s*"[^"]*")?\\)`);
+    setBody((prev) => prev.replace(regex, `$1"${percent}")`));
+  }
+
   /** Permite soltar imagens direto no editor (arrastar e soltar) — Office style: entra onde soltou. */
   async function handleDrop(e: React.DragEvent) {
     const files = Array.from(e.dataTransfer?.files || []).filter((f) =>
@@ -724,7 +732,7 @@ export default function NoteModal({
                 mobileTab === "preview" ? "block" : "hidden"
               } md:block md:h-full min-h-[280px] p-4 overflow-y-auto md:border-l-2 md:border-slate-300 dark:md:border-slate-500`}
             >
-              <MarkdownView content={body} />
+              <MarkdownView content={body} onSetImageWidth={setImageWidth} />
             </div>
           </div>
 
