@@ -181,8 +181,27 @@ async function main() {
       CREATE INDEX IF NOT EXISTS idx_note_tags_tag_id ON note_tags(tag_id);
     `);
 
-    console.log("Criando tabela virtual FTS5 'notes_fts'...");
+    console.log("Criando tabela 'change_log' para o cursor de sync...");
     await db.execute(`
+      CREATE TABLE IF NOT EXISTS change_log (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        op TEXT NOT NULL,
+        at INTEGER NOT NULL
+      );
+    `);
+
+    console.log("Criando tabela 'tombstones' (exclusões propagáveis)...");
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS tombstones (
+        id TEXT PRIMARY KEY,
+        entity TEXT NOT NULL DEFAULT 'note',
+        deleted_at INTEGER NOT NULL
+      );
+    `);
+
+    console.log("Criando tabela virtual FTS5 'notes_fts'...");    await db.execute(`
       CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
         title,
         body,

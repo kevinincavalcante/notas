@@ -19,16 +19,39 @@ Cada réplica mantém uma tabela de log de mudanças:
 ```sql
 CREATE TABLE IF NOT EXISTS change_log (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,  -- cursor: monotônico por réplica
-  entity TEXT NOT NULL,                   -- 'note' | 'tag' | 'note_tag' | 'attachment' | 'tombstone'
+  entity TEXT NOT NULL,                   -- 'note' | 'attachment' | 'tombstone'
   entity_id TEXT NOT NULL,
   op TEXT NOT NULL,                       -- 'upsert' | 'delete'
   at INTEGER NOT NULL                     -- Date.now() da mutação
 );
+
+CREATE TABLE IF NOT EXISTS tombstones (
+  id TEXT PRIMARY KEY,
+  entity TEXT NOT NULL DEFAULT 'note',
+  deleted_at INTEGER NOT NULL
+);
 ```
 
-- Toda mutação de dado (rota de CRUD) grava no `change_log` na mesma transação.
-- O cursor de sync é o último `seq` aplicado/acknowledgado de cada réplica par.
-- Pull incremental: `SELECT ... WHERE seq > :cursor` — barato e sem relógio compartilhado.
+- Toda mutação de dado (rota de CRUD) grava no `change_log` logo após a escrita
+  principal (`lib/sync-log.ts` → `logChange`).
+- O cursor de sync é o **maior `seq` global** do log — réplica nunca refaz bootstrap.
+- **Cursor 0 = bootstrap**: o log só cobre o futuro, então o pull devolve o
+  estado completo (todas as notas, anexos e tombstones).
+
+## Tags e vínculos: estado derivado (não sincronizado)
+
+Tags automáticas são **função determinística do conteúdo** (auto-tags rodam ao
+salvar em cada réplica). Sincronizá-las criaria loops (réplica A remove o que a
+B re-deriva). Então:
+
+- **Não** entram no push nem no pull incremental
+- O response traz **snapshot completo** de `tags` e `note_tags` — serve de
+  bootstrap e convergência rápida de leitura
+- Após aplicar um push, **cada réplica re-deriva** as auto-tags das notas cujo
+  conteúdo mudou (`syncBodyAutoTags`); o servidor faz o mesmo antes de montar
+  o response
+- Quando existir tag manual do usuário (v1.1), vínculos de tag manual ganham
+  tombstone próprio (`entity: 'note_tag'`)
 
 ## Endpoint: `POST /api/sync`
 
@@ -59,22 +82,38 @@ Autenticação: mesmo JWT da app (login com APP_USER/senha; token renovado em 40
 
 ```jsonc
 {
-  "cursor": 87,               // novo watermark: próximo pull começa daqui
+  "cursor": 87,               // novo watermark: maior seq do change_log
   "notes":      [ ...linhas mudadas no servidor desde :cursor... ],
-  "tags":       [ ... ],
-  "note_tags":  [ ... ],
   "attachments":[ ...metadados... ],
+  "attachments_removed": [ "id-apagado" ],
   "tombstones": [ { "id": "...", "deleted_at": ... } ],
+  "tags":       [ ...snapshot completo... ],
+  "note_tags":  [ ...snapshot completo... ],
   "conflicts":  [ "id-da-nota-que-eu-perdi" ]   // push que perdeu LWW, pra UI reverter otimista
 }
 ```
 
 ### Regras de aplicação (nos dois lados)
 
-1. **Upsert** de note/tag/attachment: aplica se `incoming.updated_at > local.updated_at`; senão registra em `conflicts`.
-2. **note_tags**: par (note_id, tag_id) é idempotente — `INSERT OR IGNORE`; remoção de vínculo via tombstone de vínculo? Não: vínculos removidos são re-sincronizados por **reconciliação completa** (tags/note_tags são pequenas — o pull pode mandar snapshot cheio quando `cursor = 0` ou a cada N syncs).
-3. **Tombstone vence**: se existe tombstone pra `id` com `deleted_at > updated_at` da linha, a linha é ignorada/apagada localmente.
-4. **Note nunca é apagada por push de update** — só por tombstone.
+1. **Upsert** de note: aplica se `incoming.updated_at > local.updated_at`; senão registra em `conflicts`.
+2. **Nota inexistente**: entra direto (bootstrap/nova nota da réplica).
+3. **Tombstone vence**: tombstone chega primeiro no push; se existe tombstone pra `id` com `deleted_at > updated_at` da linha, a linha é ignorada/apagada localmente.
+4. **Anexo é imutável**: metadado com id novo entra (`INSERT OR IGNORE`); existente nunca é sobrescrito (mesmo id = mesmo binário no R2).
+5. **Re-derivação de tags**: após aplicar push, notas alteradas passam por `syncBodyAutoTags` localmente.
+6. **Tombstone no servidor**: ao receber tombstone, a réplica apaga a nota + os binários do storage e registra no change_log.
+7. **Note nunca é apagada por push de update** — só por tombstone.
+
+## Implementação (código)
+
+| Peça | Onde |
+|---|---|
+| `logChange(entity, id, op)` | `lib/sync-log.ts` — chamado nas rotas de CRUD |
+| Motor server-side (applyPush + collectChanges) | `lib/sync.ts` |
+| Rota `POST /api/sync` | `app/api/sync/route.ts` (JWT via proxy) |
+| Migração (`change_log`, `tombstones`) | `scripts/init-db.mjs` (`npm run db:init`) |
+| Teste ponta a ponta do protocolo | `scripts/test-sync.mts` (`npm run test:sync`) |
+
+Teste atual: **12/12 passando** (bootstrap, push, LWW conflito, update válido, tombstone via push, tombstone via DELETE da API).
 
 ## Anexos (binário)
 

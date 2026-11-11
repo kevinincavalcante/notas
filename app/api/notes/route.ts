@@ -3,6 +3,7 @@ import { db } from "@/lib/turso";
 import crypto from "crypto";
 import { getTagsByNoteId } from "@/lib/tags";
 import { syncBodyAutoTags } from "@/lib/url-autotag";
+import { logChange } from "@/lib/sync-log";
 
 export async function GET(request: Request) {
   try {
@@ -77,6 +78,7 @@ export async function POST(request: Request) {
       `,
       args: [id, title, body, color, isPinned, isArchived, now, now],
     });
+    await logChange("note", id, "upsert");
 
     // Marcadores automáticos do corpo (falha silenciosa)
     let tags: Array<{ id: string; name: string; kind: "auto" | "user" }> = [];

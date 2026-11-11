@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAttachmentStream, deleteAttachmentFile } from "@/lib/storage";
 import { db } from "@/lib/turso";
+import { logChange } from "@/lib/sync-log";
 
 export async function GET(
   request: NextRequest,
@@ -98,6 +99,7 @@ export async function DELETE(
       sql: `DELETE FROM attachments WHERE id = ?`,
       args: [id],
     });
+    await logChange("attachment", id, "delete");
 
     return NextResponse.json({ success: true });
   } catch (error) {

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/turso";
 import { syncBodyAutoTags } from "@/lib/url-autotag";
+import { logChange } from "@/lib/sync-log";
 import crypto from "crypto";
 
 export async function POST(
@@ -58,6 +59,8 @@ export async function POST(
       sql: `UPDATE notes SET title = ?, body = ?, updated_at = ? WHERE id = ?`,
       args: [version.title as string, version.body as string, now, id],
     });
+
+    await logChange("note", id, "upsert");
 
     // O corpo restaurado pode ter URLs diferentes: recalcula as auto-tags de URL (falha silenciosa)
     try {

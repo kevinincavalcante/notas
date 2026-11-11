@@ -3,6 +3,7 @@ import { uploadAttachmentFile } from "@/lib/storage";
 import { db } from "@/lib/turso";
 import { autoTagForFile } from "@/lib/auto-tags";
 import { attachAutoTag } from "@/lib/tags";
+import { logChange } from "@/lib/sync-log";
 import sharp from "sharp";
 import crypto from "crypto";
 
@@ -80,6 +81,7 @@ export async function POST(request: Request) {
         now,
       ],
     });
+    await logChange("attachment", attachmentId, "upsert");
 
     // Tag automática opcional baseada no tipo de arquivo
     const autoTag = autoTagForFile(finalMimeType, finalFileName);

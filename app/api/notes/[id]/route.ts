@@ -3,6 +3,7 @@ import { db } from "@/lib/turso";
 import crypto from "crypto";
 import { getTagsByNoteId } from "@/lib/tags";
 import { syncBodyAutoTags } from "@/lib/url-autotag";
+import { logChange } from "@/lib/sync-log";
 import { deleteAttachmentFile } from "@/lib/storage";
 
 export async function GET(
@@ -134,6 +135,7 @@ export async function PATCH(
       sql: `UPDATE notes SET ${updates.join(", ")} WHERE id = ?`,
       args: values,
     });
+    await logChange("note", id, "upsert");
 
     // Marcadores automáticos do corpo: recalcula quando o corpo mudou (falha silenciosa)
     let freshTags: unknown = null;
@@ -189,6 +191,17 @@ export async function DELETE(
       sql: `DELETE FROM notes WHERE id = ?`,
       args: [id],
     });
+
+    // 4. Tombstone: exclusões propagam pelo sync (docs/SYNC.md)
+    await db.execute({
+      sql: `
+        INSERT INTO tombstones (id, entity, deleted_at)
+        VALUES (?, 'note', ?)
+        ON CONFLICT(id) DO UPDATE SET deleted_at = MAX(deleted_at, excluded.deleted_at)
+      `,
+      args: [id, Date.now()],
+    });
+    await logChange("tombstone", id, "delete");
 
     return NextResponse.json({ success: true });
   } catch (error) {
