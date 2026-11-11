@@ -135,16 +135,20 @@ export async function PATCH(
       args: values,
     });
 
-    // Marcadores automáticos por URL: recalcula quando o corpo mudou (falha silenciosa)
+    // Marcadores automáticos do corpo: recalcula quando o corpo mudou (falha silenciosa)
+    let freshTags: unknown = null;
     if ("body" in body) {
       try {
         await syncBodyAutoTags(id, (body.body || "").trim());
+        // Devolve as tags atualizadas pra UI aplicar na hora, sem precisar de refresh
+        const tagsByNoteId = await getTagsByNoteId([id]);
+        freshTags = tagsByNoteId[id] || [];
       } catch (tagErr) {
-        console.warn("Falha nas auto-tags de URL:", tagErr);
+        console.warn("Falha nas auto-tags do corpo:", tagErr);
       }
     }
 
-    return NextResponse.json({ success: true, updated_at: now });
+    return NextResponse.json({ success: true, updated_at: now, tags: freshTags });
   } catch (error) {
     console.error("Erro ao atualizar nota:", error);
     return NextResponse.json({ error: "Erro ao atualizar nota" }, { status: 500 });

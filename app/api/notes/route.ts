@@ -78,12 +78,15 @@ export async function POST(request: Request) {
       args: [id, title, body, color, isPinned, isArchived, now, now],
     });
 
-    // Marcadores automáticos por URL do corpo (falha silenciosa)
+    // Marcadores automáticos do corpo (falha silenciosa)
+    let tags: Array<{ id: string; name: string; kind: "auto" | "user" }> = [];
     if (body) {
       try {
         await syncBodyAutoTags(id, body);
+        const tagsByNoteId = await getTagsByNoteId([id]);
+        tags = tagsByNoteId[id] || [];
       } catch (tagErr) {
-        console.warn("Falha nas auto-tags de URL:", tagErr);
+        console.warn("Falha nas auto-tags do corpo:", tagErr);
       }
     }
 
@@ -98,6 +101,7 @@ export async function POST(request: Request) {
         created_at: now,
         updated_at: now,
         attachments: [],
+        tags,
       },
     });
   } catch (error) {

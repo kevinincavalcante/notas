@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import Sidebar from "@/components/Sidebar";
 import NoteEditor from "@/components/NoteEditor";
-import { Note, Attachment } from "@/types/note";
+import { Note, Attachment, Tag } from "@/types/note";
 import { StickyNote, Plus, Menu } from "lucide-react";
 import { useUI } from "@/components/UIProvider";
 
@@ -76,17 +76,23 @@ export default function DashboardPage() {
     return notes.find((n) => n.id === selectedNoteId) || null;
   }, [notes, selectedNoteId]);
 
-  async function patchNote(noteId: string, fields: Record<string, unknown>): Promise<boolean> {
+  async function patchNote(
+    noteId: string,
+    fields: Record<string, unknown>
+  ): Promise<{ ok: boolean; tags?: Tag[] }> {
     try {
       const res = await fetch(`/api/notes/${noteId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(fields),
       });
-      return res.ok;
+      if (!res.ok) return { ok: false };
+      const data = await res.json().catch(() => null);
+      // Quando o corpo mudou, o servidor devolve as auto-tags recalculadas
+      return { ok: true, tags: Array.isArray(data?.tags) ? data.tags : undefined };
     } catch (err) {
       console.error("Erro ao atualizar nota:", err);
-      return false;
+      return { ok: false };
     }
   }
 
@@ -130,8 +136,16 @@ export default function DashboardPage() {
 
     if (skipPatch) return;
 
-    const ok = await patchNote(noteId, fields);
-    if (!ok && previous) {
+    const result = await patchNote(noteId, fields);
+
+    // Auto-tags recalculadas no servidor (ex: "Códigos") aparecem na hora
+    if (result.ok && result.tags) {
+      setNotes((prev) =>
+        prev.map((n) => (n.id === noteId ? { ...n, tags: result.tags } : n))
+      );
+    }
+
+    if (!result.ok && previous) {
       const { updated_at, ...revertFields } = previous;
       void updated_at;
       setNotes((prev) =>
