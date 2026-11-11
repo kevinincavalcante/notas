@@ -585,15 +585,33 @@ export default function NoteEditor({
     const el = bodyTextareaRef.current;
     const start = el ? (el.selectionStart ?? body.length) : body.length;
     const end = el ? (el.selectionEnd ?? start) : body.length;
-    const selected = body.slice(start, end) || placeholder;
+    const rawSelected = body.slice(start, end);
+
+    let leading = "";
+    let core = "";
+    let trailing = "";
+
+    if (start === end) {
+      core = placeholder;
+    } else {
+      const match = rawSelected.match(/^(\s*)([\s\S]*?)(\s*)$/);
+      if (match && match[2]) {
+        leading = match[1];
+        core = match[2];
+        trailing = match[3];
+      } else {
+        core = rawSelected || placeholder;
+      }
+    }
+
     pushHistory(body, start, end);
-    const next = body.slice(0, start) + prefix + selected + suffix + body.slice(end);
+    const next = body.slice(0, start) + leading + prefix + core + suffix + trailing + body.slice(end);
     setBody(next);
     queueAutoSave();
     requestAnimationFrame(() => {
       el?.focus();
-      const selStart = start + prefix.length;
-      el?.setSelectionRange(selStart, selStart + selected.length);
+      const selStart = start + leading.length + prefix.length;
+      el?.setSelectionRange(selStart, selStart + core.length);
     });
   }
 
