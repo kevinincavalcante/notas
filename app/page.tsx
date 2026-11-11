@@ -34,31 +34,51 @@ export default function DashboardPage() {
     loadNotes();
   }, [loadNotes]);
 
-  // Efeito da busca reativa FTS5
+  // Efeito da busca reativa FTS5 (com AbortController para evitar corrida de respostas)
   useEffect(() => {
     if (!searchQuery.trim()) {
       setSearchResults(null);
       return;
     }
 
-    let isMounted = true;
+    const controller = new AbortController();
+
     async function performSearch() {
       try {
-        const res = await fetch(`/api/notes/search?q=${encodeURIComponent(searchQuery)}`);
+        const res = await fetch(`/api/notes/search?q=${encodeURIComponent(searchQuery)}`, {
+          signal: controller.signal,
+        });
         const data = await res.json();
-        if (isMounted && res.ok) {
+        if (res.ok) {
           setSearchResults(data.notes || []);
         }
       } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
         console.error("Erro na busca:", err);
       }
     }
 
     performSearch();
     return () => {
-      isMounted = false;
+      // Cancela a requisição pendente se a query mudou ou o componente desmontou
+      controller.abort();
     };
   }, [searchQuery]);
+
+  // PATCH compartilhado com verificação de sucesso (retorna true quando o banco confirmou)
+  async function patchNote(noteId: string, fields: Record<string, unknown>): Promise<boolean> {
+    try {
+      const res = await fetch(`/api/notes/${noteId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(fields),
+      });
+      return res.ok;
+    } catch (err) {
+      console.error("Erro ao atualizar nota:", err);
+      return false;
+    }
+  }
 
   // Handler para nova nota criada no QuickNoteCreator
   function handleNoteCreated(newNote: Note) {
@@ -67,17 +87,25 @@ export default function DashboardPage() {
 
   // Handler para atualizar cor
   async function handleChangeColor(noteId: string, color: string) {
+    const previous = notes.find((n) => n.id === noteId);
     setNotes((prev) =>
       prev.map((n) => (n.id === noteId ? { ...n, color, updated_at: Date.now() } : n))
     );
     if (selectedNote && selectedNote.id === noteId) {
       setSelectedNote((prev) => (prev ? { ...prev, color } : null));
     }
-    await fetch(`/api/notes/${noteId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ color }),
-    });
+    const ok = await patchNote(noteId, { color });
+    if (!ok && previous) {
+      // Falha no servidor: desfaz a mudança otimista para manter UI e banco em sincronia
+      setNotes((prev) =>
+        prev.map((n) =>
+          n.id === noteId ? { ...n, color: previous.color, updated_at: previous.updated_at } : n
+        )
+      );
+      if (selectedNote && selectedNote.id === noteId) {
+        setSelectedNote((prev) => (prev ? { ...prev, color: previous.color } : null));
+      }
+    }
   }
 
   // Handler para alternar fixação
@@ -86,33 +114,68 @@ export default function DashboardPage() {
     setNotes((prev) =>
       prev.map((n) => (n.id === noteId ? { ...n, is_pinned: nextPin, updated_at: Date.now() } : n))
     );
-    await fetch(`/api/notes/${noteId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ is_pinned: nextPin }),
-    });
+    const ok = await patchNote(noteId, { is_pinned: nextPin });
+    if (!ok) {
+      // Falha no servidor: desfaz a mudança otimista
+      setNotes((prev) =>
+        prev.map((n) => (n.id === noteId ? { ...n, is_pinned: currentPin } : n))
+      );
+    }
   }
 
   // Handler para alternar arquivamento
   async function handleToggleArchive(noteId: string, currentArchive: boolean) {
     const nextArchive = !currentArchive;
+    // Guarda a nota para restaurar caso o servidor falhe
+    const removed = notes.find((n) => n.id === noteId);
     // Remove da lista do dashboard
     setNotes((prev) => prev.filter((n) => n.id !== noteId));
-    await fetch(`/api/notes/${noteId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ is_archived: nextArchive }),
-    });
+    const ok = await patchNote(noteId, { is_archived: nextArchive });
+    if (!ok && removed) {
+      // Falha no servidor: devolve a nota à lista na posição original
+      setNotes((prev) => {
+        const idx = prev.findIndex((n) => n.id === removed.id);
+        if (idx !== -1) return prev;
+        return [removed, ...prev];
+      });
+    }
   }
 
   // Handler para excluir nota
   async function handleDeleteNote(noteId: string) {
     if (!confirm("Deseja realmente excluir esta nota?")) return;
+    // Guarda a nota e sua posição para restaurar em caso de falha
+    const removed = notes.find((n) => n.id === noteId);
     setNotes((prev) => prev.filter((n) => n.id !== noteId));
     if (selectedNote && selectedNote.id === noteId) {
       setSelectedNote(null);
     }
-    await fetch(`/api/notes/${noteId}`, { method: "DELETE" });
+    try {
+      const res = await fetch(`/api/notes/${noteId}`, { method: "DELETE" });
+      if (!res.ok && removed) {
+        console.error("Falha ao excluir nota no servidor");
+        setNotes((prev) => {
+          const idx = prev.findIndex((n) => n.id === removed.id);
+          if (idx !== -1) return prev;
+          return [removed, ...prev];
+        });
+        if (selectedNote && selectedNote.id === noteId) {
+          setSelectedNote(removed);
+        }
+      }
+    } catch (err) {
+      console.error("Erro ao excluir nota:", err);
+      if (removed) {
+        setNotes((prev) => {
+          const idx = prev.findIndex((n) => n.id === removed.id);
+          if (idx !== -1) return prev;
+          return [removed, ...prev];
+        });
+        if (selectedNote && selectedNote.id === noteId) {
+          setSelectedNote(removed);
+        }
+      }
+    }
   }
 
   // Handler para salvar edições do modal
@@ -121,6 +184,7 @@ export default function DashboardPage() {
     const noteId = selectedNote.id;
     const { skipPatch, ...fields } = updatedFields;
 
+    const previous = notes.find((n) => n.id === noteId);
     setNotes((prev) =>
       prev.map((n) => (n.id === noteId ? { ...n, ...fields, updated_at: Date.now() } : n))
     );
@@ -128,11 +192,17 @@ export default function DashboardPage() {
     // Se a restauração já atualizou o banco diretamente, não faz outro PATCH
     if (skipPatch) return;
 
-    await fetch(`/api/notes/${noteId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(fields),
-    });
+    const ok = await patchNote(noteId, fields);
+    if (!ok && previous) {
+      // Falha no servidor: desfaz a mudança otimista
+      const { updated_at, ...revertFields } = previous;
+      void updated_at;
+      setNotes((prev) =>
+        prev.map((n) =>
+          n.id === noteId ? { ...n, ...revertFields, updated_at: previous.updated_at } : n
+        )
+      );
+    }
   }
 
   // Anexos no modal
