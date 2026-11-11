@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { Pin, Image as ImageIcon, Mic, Check, X } from "lucide-react";
 import ColorPicker from "./ColorPicker";
 import VoiceRecorder from "./VoiceRecorder";
+import LinkPreview, { extractUrls } from "./LinkPreview";
 import { Note } from "@/types/note";
 
 interface QuickNoteCreatorProps {
@@ -181,6 +182,8 @@ export default function QuickNoteCreator({ onNoteCreated }: QuickNoteCreatorProp
     setIsExpanded(false);
   }
 
+  const detectedUrls = extractUrls(body);
+
   return (
     <div
       className="w-full max-w-xl mx-auto mb-8 px-4"
@@ -250,6 +253,15 @@ export default function QuickNoteCreator({ onNoteCreated }: QuickNoteCreatorProp
                 className="w-full text-sm bg-transparent border-none outline-none resize-none text-slate-700 dark:text-slate-200 placeholder-slate-400 leading-relaxed font-normal"
               />
             </div>
+
+            {/* Prévia de Links detectados enquanto digita */}
+            {detectedUrls.length > 0 && (
+              <div className="px-4 pb-3 space-y-2">
+                {detectedUrls.slice(0, 1).map((url) => (
+                  <LinkPreview key={url} url={url} />
+                ))}
+              </div>
+            )}
 
             {/* Gravador de voz em andamento */}
             {isRecording && (

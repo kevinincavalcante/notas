@@ -4,6 +4,7 @@ import { Pin, Archive, ArchiveRestore, Trash2, Image as ImageIcon } from "lucide
 import { Note } from "@/types/note";
 import AudioPlayer from "./AudioPlayer";
 import ColorPicker from "./ColorPicker";
+import LinkPreview, { extractUrls } from "./LinkPreview";
 
 interface NoteCardProps {
   note: Note;
@@ -24,6 +25,7 @@ export default function NoteCard({
 }: NoteCardProps) {
   const imageAttachments = note.attachments?.filter((a) => a.mime_type.startsWith("image/")) || [];
   const audioAttachments = note.attachments?.filter((a) => a.mime_type.startsWith("audio/")) || [];
+  const detectedUrls = extractUrls(note.body);
 
   return (
     <div
@@ -60,7 +62,7 @@ export default function NoteCard({
           </div>
         )}
 
-        <div className="p-4 space-y-2">
+        <div className="p-4 space-y-2.5">
           {/* Título */}
           {note.title && (
             <h3
@@ -81,9 +83,18 @@ export default function NoteCard({
             />
           )}
 
+          {/* Previews de Links Ricos (YouTube, Sites, Artigos) */}
+          {detectedUrls.length > 0 && (
+            <div className="pt-1 space-y-2">
+              {detectedUrls.slice(0, 2).map((url) => (
+                <LinkPreview key={url} url={url} />
+              ))}
+            </div>
+          )}
+
           {/* Áudios */}
           {audioAttachments.length > 0 && (
-            <div className="pt-2 space-y-2">
+            <div className="pt-1 space-y-2">
               {audioAttachments.map((audio) => (
                 <AudioPlayer
                   key={audio.id}

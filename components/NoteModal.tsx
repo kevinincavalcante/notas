@@ -15,6 +15,7 @@ import {
 import AudioPlayer from "./AudioPlayer";
 import ColorPicker from "./ColorPicker";
 import VoiceRecorder from "./VoiceRecorder";
+import LinkPreview, { extractUrls } from "./LinkPreview";
 
 interface NoteModalProps {
   note: Note;
@@ -171,6 +172,7 @@ export default function NoteModal({
 
   const imageAttachments = note.attachments?.filter((a) => a.mime_type.startsWith("image/")) || [];
   const audioAttachments = note.attachments?.filter((a) => a.mime_type.startsWith("audio/")) || [];
+  const detectedUrls = extractUrls(body);
 
   return (
     <div
@@ -240,9 +242,21 @@ export default function NoteModal({
             value={body}
             onChange={(e) => setBody(e.target.value)}
             placeholder="Criar uma nota..."
-            rows={8}
+            rows={6}
             className="w-full text-base bg-transparent border-none outline-none resize-none text-slate-700 dark:text-slate-200 placeholder-slate-400 leading-relaxed font-normal"
           />
+
+          {/* Previews de Links Ricos (YouTube, Sites, etc.) */}
+          {detectedUrls.length > 0 && (
+            <div className="space-y-3 pt-2 border-t border-black/5 dark:border-white/5">
+              <h4 className="text-xs font-semibold text-slate-500 uppercase">Links Detectados</h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {detectedUrls.map((url) => (
+                  <LinkPreview key={url} url={url} />
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Áudios */}
           {audioAttachments.length > 0 && (
