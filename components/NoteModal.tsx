@@ -627,31 +627,9 @@ export default function NoteModal({
           </div>
         )}
 
-        {/* Conteúdo rolável */}
+        {/* Conteúdo rolável — nada acima do título: o conteúdo começa nele */}
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          {/* Previews de Imagem */}
-          {imageAttachments.length > 0 && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {imageAttachments.map((img) => (
-                <div key={img.id} className="relative group rounded-xl overflow-hidden border border-black/10">
-                  <img
-                    src={`/api/attachments/${img.id}`}
-                    alt={img.file_name}
-                    className="w-full h-44 object-cover"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteAttachment(img.id)}
-                    className="absolute top-2 right-2 p-1.5 bg-black/60 text-white rounded-lg opacity-0 group-hover:opacity-100 transition hover:bg-red-600"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Inputs de Título e Corpo */}
+          {/* Título — primeira coisa do conteúdo */}
           <input
             type="text"
             value={title}
@@ -725,7 +703,7 @@ export default function NoteModal({
           <div
             onDragOver={(e) => e.preventDefault()}
             onDrop={handleDrop}
-            className="md:h-[52vh] md:grid md:grid-cols-2 md:divide-x md:divide-slate-200 dark:md:divide-slate-600 border border-black/5 dark:border-white/10 rounded-xl md:rounded-2xl overflow-hidden bg-white/40 dark:bg-black/10"
+            className="md:h-[52vh] md:grid md:grid-cols-2 border border-black/5 dark:border-white/10 rounded-xl md:rounded-2xl overflow-hidden bg-white/40 dark:bg-black/10"
           >
             <textarea
               ref={bodyTextareaRef}
@@ -740,11 +718,33 @@ export default function NoteModal({
             <div
               className={`${
                 mobileTab === "preview" ? "block" : "hidden"
-              } md:block md:h-full min-h-[280px] p-4 overflow-y-auto`}
+              } md:block md:h-full min-h-[280px] p-4 overflow-y-auto md:border-l-2 md:border-slate-300 dark:md:border-slate-500`}
             >
               <MarkdownView content={body} />
             </div>
           </div>
+
+          {/* Anexos não referenciados no corpo (imagens, arquivos) — sempre abaixo do editor */}
+          {imageAttachments.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {imageAttachments.map((img) => (
+                <div key={img.id} className="relative group rounded-xl overflow-hidden border border-black/10">
+                  <img
+                    src={`/api/attachments/${img.id}`}
+                    alt={img.file_name}
+                    className="w-full h-44 object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteAttachment(img.id)}
+                    className="absolute top-2 right-2 p-1.5 bg-black/60 text-white rounded-lg opacity-0 group-hover:opacity-100 transition hover:bg-red-600"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Previews de Links Ricos (YouTube, Sites, etc.) */}
           {detectedUrls.length > 0 && (
