@@ -116,18 +116,22 @@ export default function DashboardPage() {
   }
 
   // Handler para salvar edições do modal
-  async function handleUpdateNote(updatedFields: Partial<Note>) {
+  async function handleUpdateNote(updatedFields: Partial<Note> & { skipPatch?: boolean }) {
     if (!selectedNote) return;
     const noteId = selectedNote.id;
+    const { skipPatch, ...fields } = updatedFields;
 
     setNotes((prev) =>
-      prev.map((n) => (n.id === noteId ? { ...n, ...updatedFields, updated_at: Date.now() } : n))
+      prev.map((n) => (n.id === noteId ? { ...n, ...fields, updated_at: Date.now() } : n))
     );
+
+    // Se a restauração já atualizou o banco diretamente, não faz outro PATCH
+    if (skipPatch) return;
 
     await fetch(`/api/notes/${noteId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(updatedFields),
+      body: JSON.stringify(fields),
     });
   }
 

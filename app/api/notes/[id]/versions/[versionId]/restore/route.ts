@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/turso";
-import crypto from "crypto";
 
 export async function POST(
   _request: Request,
@@ -20,55 +19,9 @@ export async function POST(
     }
 
     const version = versionResult.rows[0];
-
-    // Busca a nota atual para guardar o estado antes de restaurar
-    const currentNoteResult = await db.execute({
-      sql: `SELECT title, body, updated_at FROM notes WHERE id = ?`,
-      args: [id],
-    });
-
     const now = Date.now();
 
-    if (currentNoteResult.rows.length > 0) {
-      const cur = currentNoteResult.rows[0];
-      const curTitle = ((cur.title as string) || "").trim();
-      const curBody = ((cur.body as string) || "").trim();
-
-      // Só cria versão da nota atual se não for idêntica à última versão do histórico
-      const lastVersionRes = await db.execute({
-        sql: `SELECT title, body FROM note_versions WHERE note_id = ? ORDER BY created_at DESC LIMIT 1`,
-        args: [id],
-      });
-
-      let isDuplicate = false;
-      if (lastVersionRes.rows.length > 0) {
-        const lastV = lastVersionRes.rows[0];
-        if (
-          ((lastV.title as string) || "").trim() === curTitle &&
-          ((lastV.body as string) || "").trim() === curBody
-        ) {
-          isDuplicate = true;
-        }
-      }
-
-      if (!isDuplicate && (curTitle || curBody)) {
-        await db.execute({
-          sql: `
-            INSERT INTO note_versions (id, note_id, title, body, created_at)
-            VALUES (?, ?, ?, ?, ?)
-          `,
-          args: [
-            crypto.randomUUID(),
-            id,
-            cur.title as string,
-            cur.body as string,
-            (cur.updated_at as number) || now,
-          ],
-        });
-      }
-    }
-
-    // Aplica o título e corpo da versão selecionada
+    // Aplica o título e corpo da versão selecionada diretamente na nota (sem criar nova versão no histórico)
     await db.execute({
       sql: `UPDATE notes SET title = ?, body = ?, updated_at = ? WHERE id = ?`,
       args: [version.title as string, version.body as string, now, id],

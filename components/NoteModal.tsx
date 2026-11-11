@@ -24,7 +24,7 @@ interface NoteModalProps {
   note: Note;
   isOpen: boolean;
   onClose: () => void;
-  onUpdate: (updatedNote: Partial<Note>) => Promise<void>;
+  onUpdate: (updatedNote: Partial<Note> & { skipPatch?: boolean }) => Promise<void>;
   onDelete: () => Promise<void>;
   onAddAttachment: (attachment: Attachment) => void;
   onRemoveAttachment: (attachmentId: string) => void;
@@ -131,10 +131,23 @@ export default function NoteModal({
       if (res.ok && data.restored) {
         setTitle(data.restored.title);
         setBody(data.restored.body);
+
+        // Atualiza referências locais para evitar disparar PATCH ao fechar
+        note.title = data.restored.title;
+        note.body = data.restored.body;
+        latestStateRef.current = {
+          ...latestStateRef.current,
+          title: data.restored.title,
+          body: data.restored.body,
+        };
+
+        // Atualiza o card no dashboard sem gerar requisição PATCH redundante
         await onUpdate({
           title: data.restored.title,
           body: data.restored.body,
+          skipPatch: true,
         });
+
         await loadVersions();
       } else {
         alert(data.error || "Erro ao restaurar versão");

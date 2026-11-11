@@ -61,23 +61,26 @@ export default function ArchivePage() {
     await fetch(`/api/notes/${noteId}`, { method: "DELETE" });
   }
 
-  async function handleUpdateNote(updatedFields: Partial<Note>) {
+  async function handleUpdateNote(updatedFields: Partial<Note> & { skipPatch?: boolean }) {
     if (!selectedNote) return;
     const noteId = selectedNote.id;
+    const { skipPatch, ...fields } = updatedFields;
 
-    if (updatedFields.is_archived === false) {
+    if (fields.is_archived === false) {
       setNotes((prev) => prev.filter((n) => n.id !== noteId));
       setSelectedNote(null);
     } else {
       setNotes((prev) =>
-        prev.map((n) => (n.id === noteId ? { ...n, ...updatedFields, updated_at: Date.now() } : n))
+        prev.map((n) => (n.id === noteId ? { ...n, ...fields, updated_at: Date.now() } : n))
       );
     }
+
+    if (skipPatch) return;
 
     await fetch(`/api/notes/${noteId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(updatedFields),
+      body: JSON.stringify(fields),
     });
   }
 
