@@ -208,7 +208,7 @@ export default function NoteModal({
     closeAndSave();
   }
 
-  async function uploadImageFile(file: File) {
+  async function uploadImageFile(file: File, insertIndex?: number | null) {
     setUploading(true);
     try {
       const formData = new FormData();
@@ -227,7 +227,10 @@ export default function NoteModal({
         onAddAttachment(data.attachment);
         // Insere a referência da imagem no corpo (aparece renderizada no preview)
         if (data.attachment.mime_type?.startsWith("image/")) {
-          insertAtCursor(`\n![${data.attachment.file_name}](/api/attachments/${data.attachment.id})\n`);
+          insertAtCursor(
+            `\n![${data.attachment.file_name}](/api/attachments/${data.attachment.id})\n`,
+            insertIndex
+          );
         }
       }
     } catch (err) {
@@ -308,6 +311,116 @@ export default function NoteModal({
 
   // ===== Ferramentas de edição Markdown =====
 
+  /**
+   * Índice de caractere a partir do ponto do mouse, usando as APIs nativas
+   * de caret (funciona em vários navegadores para textarea).
+   * Retorna null se não conseguir medir — o chamador faz fallback.
+   */
+  function charIndexFromPointNative(
+    el: HTMLTextAreaElement,
+    clientX: number,
+    clientY: number
+  ): number | null {
+    try {
+      const doc = el.ownerDocument as Document & {
+        caretRangeFromPoint?: (x: number, y: number) => Range | null;
+        caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+      };
+      if (doc.caretRangeFromPoint) {
+        const range = doc.caretRangeFromPoint(clientX, clientY);
+        if (range && range.startContainer === el) {
+          return Math.min(range.startOffset, el.value.length);
+        }
+      }
+      if (doc.caretPositionFromPoint) {
+        const pos = doc.caretPositionFromPoint(clientX, clientY);
+        if (pos && pos.offsetNode === el) {
+          return Math.min(pos.offset, el.value.length);
+        }
+      }
+    } catch {
+      // ignora, tenta o espelho
+    }
+    return null;
+  }
+
+  /**
+   * Fallback: mede a posição do caret com um "div espelho" que replica a
+   * quebra de linha do textarea (busca binária por linha, depois por coluna).
+   */
+  function charIndexFromPointMirror(
+    el: HTMLTextAreaElement,
+    clientX: number,
+    clientY: number
+  ): number | null {
+    try {
+      const doc = el.ownerDocument;
+      const win = doc.defaultView;
+      if (!win) return null;
+      const cs = win.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+
+      const mirror = doc.createElement("div");
+      mirror.style.position = "fixed";
+      mirror.style.left = `${rect.left}px`;
+      mirror.style.top = `${rect.top}px`;
+      mirror.style.width = `${rect.width}px`;
+      mirror.style.boxSizing = "border-box";
+      mirror.style.fontFamily = cs.fontFamily;
+      mirror.style.fontSize = cs.fontSize;
+      mirror.style.fontWeight = cs.fontWeight;
+      mirror.style.lineHeight = cs.lineHeight;
+      mirror.style.letterSpacing = cs.letterSpacing;
+      mirror.style.padding = cs.padding;
+      mirror.style.whiteSpace = "pre-wrap";
+      mirror.style.wordWrap = "break-word";
+      mirror.style.visibility = "hidden";
+      doc.body.appendChild(mirror);
+
+      // Alvo: x/y relativos ao conteúdo (desconta scroll do textarea)
+      const targetX = clientX - rect.left;
+      const targetY = clientY - rect.top + el.scrollTop;
+      const value = el.value;
+
+      // topo do marcador inserido após os primeiros `i` caracteres
+      const markerTop = (i: number) => {
+        const span = doc.createElement("span");
+        mirror.replaceChildren(doc.createTextNode(value.slice(0, i)), span);
+        return Math.round(span.getBoundingClientRect().top);
+      };
+
+      // Busca binária: maior índice cuja linha começa acima do alvo
+      let lo = 0;
+      let hi = value.length;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (markerTop(mid) <= Math.round(targetY)) lo = mid;
+        else hi = mid - 1;
+      }
+
+      // Linha do índice encontrado: limita pelos extremos com o mesmo topo
+      const lineTop = markerTop(lo);
+      let lineStart = lo;
+      while (lineStart > 0 && markerTop(lineStart - 1) === lineTop) lineStart--;
+      let lineEnd = lo;
+      while (lineEnd < value.length && markerTop(lineEnd + 1) === lineTop) lineEnd++;
+
+      // Dentro da linha, escolhe pela coluna X
+      let best = lineStart;
+      for (let i = lineStart; i <= lineEnd; i++) {
+        const span = doc.createElement("span");
+        mirror.replaceChildren(doc.createTextNode(value.slice(0, i)), span);
+        if (span.getBoundingClientRect().left <= targetX) best = i;
+        else break;
+      }
+
+      mirror.remove();
+      return best;
+    } catch {
+      return null;
+    }
+  }
+
   /** Envolve a seleção (ou insere placeholder) com sintaxe markdown e mantém o texto selecionado. */
   function insertAroundSelection(prefix: string, suffix = "", placeholder = "") {
     const el = bodyTextareaRef.current;
@@ -336,14 +449,27 @@ export default function NoteModal({
     });
   }
 
-  /** Insere texto na posição do cursor; se o editor não estiver focado, anexa no fim do corpo. */
-  function insertAtCursor(text: string) {
+  /**
+   * Insere texto na posição do cursor (editor focado), no índice indicado
+   * (ex: ponto do drop de imagem) ou no fim do corpo como último recurso.
+   */
+  function insertAtCursor(text: string, atIndex?: number | null) {
     const el = bodyTextareaRef.current;
-    const focused = Boolean(el && document.activeElement === el);
-    const start = focused ? (el!.selectionStart ?? body.length) : body.length;
-    const end = focused ? (el!.selectionEnd ?? start) : body.length;
-    // Sem foco explícito, a referência vai pro fim (nunca para o topo da nota)
-    const separator = !focused && body.trim().length > 0 ? "\n" : "";
+    let start: number;
+    let end: number;
+    let focused = false;
+
+    if (typeof atIndex === "number") {
+      start = Math.max(0, Math.min(atIndex, body.length));
+      end = start;
+    } else {
+      focused = Boolean(el && document.activeElement === el);
+      start = focused ? (el!.selectionStart ?? body.length) : body.length;
+      end = focused ? (el!.selectionEnd ?? start) : body.length;
+    }
+
+    // Sem foco explícito (anexo no fim), separa com quebra de linha
+    const separator = typeof atIndex !== "number" && !focused && body.trim().length > 0 ? "\n" : "";
     const fullText = separator + text;
     setBody(body.slice(0, start) + fullText + body.slice(end));
     requestAnimationFrame(() => {
@@ -353,15 +479,24 @@ export default function NoteModal({
     });
   }
 
-  /** Permite soltar imagens direto no editor (arrastar e soltar). */
+  /** Permite soltar imagens direto no editor (arrastar e soltar) — Office style: entra onde soltou. */
   async function handleDrop(e: React.DragEvent) {
     const files = Array.from(e.dataTransfer?.files || []).filter((f) =>
       f.type.startsWith("image/")
     );
     if (files.length === 0) return;
     e.preventDefault();
+
+    const el = bodyTextareaRef.current;
+    let dropIndex: number | null = null;
+    if (el && e.target === el) {
+      dropIndex =
+        charIndexFromPointNative(el, e.clientX, e.clientY) ??
+        charIndexFromPointMirror(el, e.clientX, e.clientY);
+    }
+
     for (const file of files) {
-      await uploadImageFile(file);
+      await uploadImageFile(file, dropIndex);
     }
   }
 
