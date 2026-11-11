@@ -217,6 +217,8 @@ export default function NoteModal({
     try {
       const formData = new FormData();
       formData.append("file", file);
+      // Envia ambos os formatos para garantir compatibilidade
+      formData.append("noteId", note.id);
       formData.append("note_id", note.id);
 
       const res = await fetch("/api/attachments/upload", {
@@ -297,7 +299,9 @@ export default function NoteModal({
     try {
       const formData = new FormData();
       formData.append("file", blob, `audio-${Date.now()}.webm`);
+      formData.append("noteId", note.id);
       formData.append("note_id", note.id);
+      formData.append("duration", String(durationSeconds));
       formData.append("duration_seconds", String(durationSeconds));
 
       const res = await fetch("/api/attachments/upload", {

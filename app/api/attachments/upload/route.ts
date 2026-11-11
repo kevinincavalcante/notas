@@ -10,8 +10,9 @@ export async function POST(request: Request) {
   try {
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
-    const noteId = formData.get("noteId") as string | null;
-    const durationStr = formData.get("duration") as string | null;
+    // Aceita tanto note_id quanto noteId para garantir compatibilidade
+    const noteId = (formData.get("noteId") || formData.get("note_id")) as string | null;
+    const durationStr = (formData.get("duration") || formData.get("duration_seconds")) as string | null;
     const duration = durationStr ? parseFloat(durationStr) : null;
 
     if (!file || !noteId) {
@@ -62,6 +63,7 @@ export async function POST(request: Request) {
     const attachmentId = crypto.randomUUID();
     const now = Date.now();
 
+    // Salva o registro do anexo no Turso
     await db.execute({
       sql: `
         INSERT INTO attachments (id, note_id, storage_key, file_name, mime_type, file_size, duration_seconds, created_at)
@@ -79,17 +81,18 @@ export async function POST(request: Request) {
       ],
     });
 
-    // Marcador automático por tipo de arquivo (falha silenciosa: nunca bloqueia o upload)
+    // Tag automática opcional baseada no tipo de arquivo
     const autoTag = autoTagForFile(finalMimeType, finalFileName);
     if (autoTag) {
       try {
         await attachAutoTag(noteId, autoTag);
       } catch (tagErr) {
-        console.warn("Falha ao aplicar marcador automático:", tagErr);
+        console.warn("Falha ao anexar tag automática:", tagErr);
       }
     }
 
     return NextResponse.json({
+      success: true,
       attachment: {
         id: attachmentId,
         note_id: noteId,
@@ -102,7 +105,10 @@ export async function POST(request: Request) {
       },
     });
   } catch (error) {
-    console.error("Erro no upload de anexo:", error);
-    return NextResponse.json({ error: "Erro no upload do anexo" }, { status: 500 });
+    console.error("Erro no upload do anexo:", error);
+    return NextResponse.json(
+      { error: "Erro interno no servidor ao processar o upload" },
+      { status: 500 }
+    );
   }
 }
