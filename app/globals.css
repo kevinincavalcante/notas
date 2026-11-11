@@ -1,0 +1,49 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0f172a;
+    --foreground: #f8fafc;
+  }
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  min-height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/* Cores no estilo Google Keep */
+.note-color-default { background-color: #ffffff; border-color: #e2e8f0; }
+.note-color-coral { background-color: #faafa8; border-color: #f38b82; }
+.note-color-peach { background-color: #f39f76; border-color: #ee8353; }
+.note-color-sand { background-color: #fff8b8; border-color: #fbe07a; }
+.note-color-mint { background-color: #e2f6d3; border-color: #c0ea9b; }
+.note-color-sage { background-color: #b4ddd3; border-color: #8ed0c2; }
+.note-color-fog { background-color: #d4e4ed; border-color: #a8cade; }
+.note-color-storm { background-color: #aeccdc; border-color: #80b2cd; }
+.note-color-dusk { background-color: #d3bfdb; border-color: #bc9fc8; }
+.note-color-blossom { background-color: #f6e2dd; border-color: #e8c4bb; }
+.note-color-clay { background-color: #e9e3d4; border-color: #d1c7b1; }
+.note-color-chalk { background-color: #efeff1; border-color: #dbdbdf; }
+
+@media (prefers-color-scheme: dark) {
+  .note-color-default { background-color: #1e293b; border-color: #334155; }
+  .note-color-coral { background-color: #5c2b29; border-color: #773330; }
+  .note-color-peach { background-color: #614a19; border-color: #7c5e20; }
+  .note-color-sand { background-color: #635d19; border-color: #7d7520; }
+  .note-color-mint { background-color: #345920; border-color: #427028; }
+  .note-color-sage { background-color: #16504b; border-color: #1e655f; }
+  .note-color-fog { background-color: #2d555e; border-color: #396d78; }
+  .note-color-storm { background-color: #1e3a5f; border-color: #274b7a; }
+  .note-color-dusk { background-color: #42275e; border-color: #55327a; }
+  .note-color-blossom { background-color: #5b2245; border-color: #752b58; }
+  .note-color-clay { background-color: #442f19; border-color: #583c20; }
+  .note-color-chalk { background-color: #3c3f41; border-color: #4e5254; }
+}
