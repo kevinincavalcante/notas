@@ -187,21 +187,36 @@ export default function NoteEditor({
         method: "POST",
       });
       const data = await res.json();
-      if (res.ok && data.note) {
-        setTitle(data.note.title);
-        setBody(data.note.body);
-        setColor(data.note.color);
-        setIsPinned(data.note.is_pinned);
-        setIsArchived(data.note.is_archived);
+      if (res.ok) {
+        const nextTitle = data.note?.title ?? data.restored?.title ?? version.title ?? "";
+        const nextBody = data.note?.body ?? data.restored?.body ?? version.body ?? "";
 
+        // Cancela qualquer timer de auto-save pendente para não sobrescrever com o texto antigo
+        if (saveTimerRef.current) {
+          clearTimeout(saveTimerRef.current);
+          saveTimerRef.current = null;
+        }
+
+        // Atualiza estado local imediatamente
+        setTitle(nextTitle);
+        setBody(nextBody);
+        setSaveStatus("saved");
+
+        // Atualiza ref
+        latestStateRef.current = {
+          ...latestStateRef.current,
+          title: nextTitle,
+          body: nextBody,
+        };
+
+        // Notifica o pai para atualizar a lista na sidebar
         await onUpdate({
-          title: data.note.title,
-          body: data.note.body,
-          color: data.note.color,
-          is_pinned: data.note.is_pinned,
-          is_archived: data.note.is_archived,
+          title: nextTitle,
+          body: nextBody,
           skipPatch: true,
         });
+      } else {
+        alert("Erro ao restaurar versão no servidor: " + (data.error || "Erro desconhecido"));
       }
     } catch (err) {
       console.error("Erro ao restaurar versão:", err);
