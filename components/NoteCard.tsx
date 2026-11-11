@@ -26,6 +26,15 @@ export default function NoteCard({
   const imageAttachments = note.attachments?.filter((a) => a.mime_type.startsWith("image/")) || [];
   const audioAttachments = note.attachments?.filter((a) => a.mime_type.startsWith("audio/")) || [];
   const detectedUrls = extractUrls(note.body);
+  // Esconde a sintaxe de imagem markdown no texto do card (a imagem já aparece como preview)
+  const displayBody = (note.body_snippet || note.body).replace(
+    /!\[[^\]]*\]\([^)]*\)/g,
+    ""
+  );
+  const displayTitle = (note.title_snippet || note.title).replace(
+    /!\[[^\]]*\]\([^)]*\)/g,
+    ""
+  );
 
   return (
     <div
@@ -68,17 +77,17 @@ export default function NoteCard({
             <h3
               className="font-semibold text-slate-900 dark:text-white text-base leading-snug break-words"
               dangerouslySetInnerHTML={{
-                __html: note.title_snippet || note.title,
+                __html: displayTitle,
               }}
             />
           )}
 
           {/* Corpo do texto */}
-          {note.body && (
+          {displayBody && (
             <p
               className="text-slate-700 dark:text-slate-300 text-sm whitespace-pre-wrap break-words leading-relaxed line-clamp-6 font-normal"
               dangerouslySetInnerHTML={{
-                __html: note.body_snippet || note.body,
+                __html: displayBody,
               }}
             />
           )}

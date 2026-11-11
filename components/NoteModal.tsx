@@ -336,15 +336,19 @@ export default function NoteModal({
     });
   }
 
-  /** Insere texto na posição do cursor. */
+  /** Insere texto na posição do cursor; se o editor não estiver focado, anexa no fim do corpo. */
   function insertAtCursor(text: string) {
     const el = bodyTextareaRef.current;
-    const start = el ? (el.selectionStart ?? body.length) : body.length;
-    const end = el ? (el.selectionEnd ?? start) : body.length;
-    setBody(body.slice(0, start) + text + body.slice(end));
+    const focused = Boolean(el && document.activeElement === el);
+    const start = focused ? (el!.selectionStart ?? body.length) : body.length;
+    const end = focused ? (el!.selectionEnd ?? start) : body.length;
+    // Sem foco explícito, a referência vai pro fim (nunca para o topo da nota)
+    const separator = !focused && body.trim().length > 0 ? "\n" : "";
+    const fullText = separator + text;
+    setBody(body.slice(0, start) + fullText + body.slice(end));
     requestAnimationFrame(() => {
       el?.focus();
-      const pos = start + text.length;
+      const pos = start + fullText.length;
       el?.setSelectionRange(pos, pos);
     });
   }
@@ -363,7 +367,14 @@ export default function NoteModal({
 
   if (!isOpen) return null;
 
-  const imageAttachments = note.attachments?.filter((a) => a.mime_type.startsWith("image/")) || [];
+  const imageAttachments =
+    note.attachments?.filter(
+      (a) =>
+        a.mime_type.startsWith("image/") &&
+        // Imagens já inseridas no corpo (![...](/api/attachments/id)) ficam
+        // apenas no editor/preview — não repetem na grade de anexos
+        !body.includes(`/api/attachments/${a.id}`)
+    ) || [];
   const audioAttachments = note.attachments?.filter((a) => a.mime_type.startsWith("audio/")) || [];
   const detectedUrls = extractUrls(body);
 
