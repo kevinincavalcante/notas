@@ -148,7 +148,7 @@ export default function NoteEditor({
         setViewMode("edit");
       }
     } else {
-      // Atualizações de props vindas do pai (ex: pin ou color modificados externamente)
+      // Atualizações de props vindas do pai
       setColor(note.color);
       setIsPinned(note.is_pinned);
       setIsArchived(note.is_archived);
@@ -634,7 +634,7 @@ export default function NoteEditor({
         {/* Lado direito: status de salvamento + ações */}
         <div className="flex items-center gap-2">
           {/* Indicador de Salvamento */}
-          <span className="text-[11px] font-mono text-slate-400 hidden sm:inline flex items-center gap-1">
+          <span className="text-[11px] font-mono text-slate-400 hidden sm:inline-flex items-center gap-1">
             {saveStatus === "saving" && <span className="text-amber-500">Salvando...</span>}
             {saveStatus === "saved" && (
               <span className="text-emerald-500 flex items-center gap-0.5">
@@ -769,9 +769,9 @@ export default function NoteEditor({
       )}
 
       {/* Área Central: Documento Caderno */}
-      <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
         {/* Cabeçalho do Documento: Título limpo estilo Notion */}
-        <div className="px-6 pt-5 pb-2">
+        <div className="px-6 pt-5 pb-2 shrink-0">
           <input
             type="text"
             value={title}
@@ -784,7 +784,7 @@ export default function NoteEditor({
 
         {/* Marcadores / Tags da nota */}
         {note.tags && note.tags.length > 0 && (
-          <div className="px-6 pb-2 flex flex-wrap gap-1.5">
+          <div className="px-6 pb-2 flex flex-wrap gap-1.5 shrink-0">
             {note.tags.map((tag) => (
               <span
                 key={tag.id}
@@ -804,7 +804,7 @@ export default function NoteEditor({
         <div
           onDragOver={(e) => e.preventDefault()}
           onDrop={handleDrop}
-          className="flex-1 min-h-[300px] flex px-6 pb-6 gap-6 relative"
+          className="flex-1 min-h-0 flex px-6 pb-4 gap-6 relative overflow-hidden"
         >
           {/* Coluna do Editor */}
           {(viewMode === "split" || viewMode === "edit") && (
@@ -815,112 +815,110 @@ export default function NoteEditor({
                 onChange={handleBodyChange}
                 onBlur={flushSave}
                 placeholder="Escreva algo... (Cole imagens com Ctrl+V ou arraste do sistema, use markdown livremente)"
-                className="w-full h-full p-4 text-sm font-mono bg-white/40 dark:bg-black/20 rounded-2xl border border-black/5 dark:border-white/5 outline-none resize-none text-slate-800 dark:text-slate-100 placeholder-slate-400 leading-relaxed focus:ring-1 focus:ring-amber-400/50"
+                className="w-full h-full p-4 text-sm font-mono bg-white/40 dark:bg-black/20 rounded-2xl border border-black/5 dark:border-white/5 outline-none resize-none text-slate-800 dark:text-slate-100 placeholder-slate-400 leading-relaxed focus:ring-1 focus:ring-amber-400/50 overflow-y-auto"
               />
             </div>
           )}
 
           {/* Divisória Vertical quando em modo Split */}
           {viewMode === "split" && (
-            <div className="hidden md:block w-px bg-black/5 dark:border-white/5 self-stretch my-2" />
+            <div className="hidden md:block w-px bg-black/5 dark:border-white/5 self-stretch my-2 shrink-0" />
           )}
 
-          {/* Coluna do Preview Markdown */}
+          {/* Coluna do Preview Markdown com previews de links integrados */}
           {(viewMode === "split" || viewMode === "preview") && (
             <div
               className={`${
                 viewMode === "split" ? "w-1/2" : "w-full max-w-3xl mx-auto"
-              } h-full p-4 overflow-y-auto bg-white/40 dark:bg-black/20 rounded-2xl border border-black/5 dark:border-white/5`}
+              } h-full p-4 overflow-y-auto bg-white/40 dark:bg-black/20 rounded-2xl border border-black/5 dark:border-white/5 space-y-6 flex flex-col`}
             >
-              <MarkdownView content={body} onSetImageWidth={setImageWidth} />
+              {/* Conteúdo Renderizado em Markdown */}
+              <div className="flex-1">
+                <MarkdownView content={body} onSetImageWidth={setImageWidth} />
+              </div>
+
+              {/* Previews de Links Ricos integrados diretamente dentro da coluna de preview */}
+              {detectedUrls.length > 0 && (
+                <div className="pt-4 border-t border-black/5 dark:border-white/5 space-y-3">
+                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
+                    Prévia de links
+                  </span>
+                  <div className="space-y-3">
+                    {detectedUrls.map((url) => (
+                      <LinkPreview key={url} url={url} />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Gravações de Voz integradas no preview */}
+              {audioAttachments.length > 0 && (
+                <div className="pt-4 border-t border-black/5 dark:border-white/5 space-y-2">
+                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
+                    Áudios Gravados
+                  </span>
+                  <div className="space-y-2">
+                    {audioAttachments.map((audio) => (
+                      <div
+                        key={audio.id}
+                        className="flex items-center gap-2 p-2 rounded-xl bg-white/60 dark:bg-slate-800/60 border border-black/5 dark:border-white/5"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <AudioPlayer
+                            src={`/api/attachments/${audio.id}`}
+                            durationSeconds={audio.duration_seconds}
+                            fileName={audio.file_name}
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteAttachment(audio.id)}
+                          className="p-1.5 text-slate-400 hover:text-red-500 transition rounded-lg"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Imagens anexadas avulsas (que não estão embutidas no markdown) */}
+              {imageAttachments.length > 0 && (
+                <div className="pt-4 border-t border-black/5 dark:border-white/5 space-y-2">
+                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
+                    Galeria de Anexos
+                  </span>
+                  <div className="grid grid-cols-2 gap-3">
+                    {imageAttachments.map((img) => (
+                      <div
+                        key={img.id}
+                        className="relative group rounded-xl overflow-hidden border border-black/10 aspect-video bg-black/5"
+                      >
+                        <img
+                          src={`/api/attachments/${img.id}`}
+                          alt={img.file_name}
+                          className="w-full h-full object-cover"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteAttachment(img.id)}
+                          className="absolute top-1.5 right-1.5 p-1 bg-black/70 text-white rounded-lg opacity-0 group-hover:opacity-100 transition hover:bg-red-600"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
 
-        {/* Seção Extra: Anexos e Links ricos */}
-        {(imageAttachments.length > 0 || audioAttachments.length > 0 || detectedUrls.length > 0) && (
-          <div className="px-6 pb-6 space-y-4 border-t border-black/5 dark:border-white/5 pt-4 bg-black/5 dark:bg-black/10">
-            {/* Previews de Links Ricos */}
-            {detectedUrls.length > 0 && (
-              <div className="space-y-2">
-                <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                  Links no texto
-                </span>
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                  {detectedUrls.map((url) => (
-                    <LinkPreview key={url} url={url} />
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Gravações de Voz */}
-            {audioAttachments.length > 0 && (
-              <div className="space-y-2">
-                <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                  Áudios Gravados
-                </span>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {audioAttachments.map((audio) => (
-                    <div
-                      key={audio.id}
-                      className="flex items-center gap-2 p-2 rounded-xl bg-white/60 dark:bg-slate-800/60 border border-black/5 dark:border-white/5"
-                    >
-                      <div className="flex-1 min-w-0">
-                        <AudioPlayer
-                          src={`/api/attachments/${audio.id}`}
-                          durationSeconds={audio.duration_seconds}
-                          fileName={audio.file_name}
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteAttachment(audio.id)}
-                        className="p-1.5 text-slate-400 hover:text-red-500 transition rounded-lg"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Imagens anexadas avulsas */}
-            {imageAttachments.length > 0 && (
-              <div className="space-y-2">
-                <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                  Galeria de Anexos
-                </span>
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                  {imageAttachments.map((img) => (
-                    <div
-                      key={img.id}
-                      className="relative group rounded-xl overflow-hidden border border-black/10 aspect-video bg-black/5"
-                    >
-                      <img
-                        src={`/api/attachments/${img.id}`}
-                        alt={img.file_name}
-                        className="w-full h-full object-cover"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteAttachment(img.id)}
-                        className="absolute top-1.5 right-1.5 p-1 bg-black/70 text-white rounded-lg opacity-0 group-hover:opacity-100 transition hover:bg-red-600"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
         {/* Gravador de Áudio ativo */}
         {isRecording && (
-          <div className="px-6 pb-4">
+          <div className="px-6 pb-4 shrink-0">
             <VoiceRecorder
               onRecorded={handleVoiceRecorded}
               onCancel={() => setIsRecording(false)}
@@ -929,7 +927,7 @@ export default function NoteEditor({
         )}
 
         {uploading && (
-          <div className="mx-6 mb-4 flex items-center gap-2 p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 rounded-xl text-amber-700 dark:text-amber-300 text-xs font-medium">
+          <div className="mx-6 mb-4 flex items-center gap-2 p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 rounded-xl text-amber-700 dark:text-amber-300 text-xs font-medium shrink-0">
             <UploadCloud className="w-4 h-4 animate-bounce" />
             Processando e salvando na nuvem...
           </div>
