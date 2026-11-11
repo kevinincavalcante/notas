@@ -45,6 +45,13 @@ export default function NoteModal({
   const [uploading, setUploading] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const historyPushedRef = useRef(false);
+
+  // Mantém referência dos dados mais recentes para salvar com precisão
+  const latestStateRef = useRef({ title, body, color, isPinned, isArchived });
+  useEffect(() => {
+    latestStateRef.current = { title, body, color, isPinned, isArchived };
+  }, [title, body, color, isPinned, isArchived]);
 
   useEffect(() => {
     setTitle(note.title);
@@ -54,26 +61,50 @@ export default function NoteModal({
     setIsArchived(note.is_archived);
   }, [note]);
 
-  if (!isOpen) return null;
+  // Intercepta o botão "Voltar" do navegador/Android no celular para fechar a nota
+  useEffect(() => {
+    if (!isOpen) return;
 
-  async function handleClose() {
-    // Salva alterações se houve modificação
+    window.history.pushState({ noteModalOpen: true }, "");
+    historyPushedRef.current = true;
+
+    const onPopState = () => {
+      historyPushedRef.current = false;
+      closeAndSave();
+    };
+
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+    };
+  }, [isOpen]);
+
+  async function closeAndSave() {
+    const current = latestStateRef.current;
     if (
-      title !== note.title ||
-      body !== note.body ||
-      color !== note.color ||
-      isPinned !== note.is_pinned ||
-      isArchived !== note.is_archived
+      current.title !== note.title ||
+      current.body !== note.body ||
+      current.color !== note.color ||
+      current.isPinned !== note.is_pinned ||
+      current.isArchived !== note.is_archived
     ) {
       await onUpdate({
-        title,
-        body,
-        color,
-        is_pinned: isPinned,
-        is_archived: isArchived,
+        title: current.title,
+        body: current.body,
+        color: current.color,
+        is_pinned: current.isPinned,
+        is_archived: current.isArchived,
       });
     }
     onClose();
+  }
+
+  function handleManualClose() {
+    if (historyPushedRef.current) {
+      historyPushedRef.current = false;
+      window.history.back();
+    }
+    closeAndSave();
   }
 
   async function uploadImageFile(file: File) {
@@ -170,17 +201,21 @@ export default function NoteModal({
     }
   }
 
+  if (!isOpen) return null;
+
   const imageAttachments = note.attachments?.filter((a) => a.mime_type.startsWith("image/")) || [];
   const audioAttachments = note.attachments?.filter((a) => a.mime_type.startsWith("audio/")) || [];
   const detectedUrls = extractUrls(body);
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs cursor-pointer"
+      onClick={handleManualClose}
       onPaste={handlePaste}
     >
       <div
-        className={`w-full max-w-2xl max-h-[90vh] rounded-2xl shadow-2xl border flex flex-col overflow-hidden note-color-${color}`}
+        className={`w-full max-w-2xl max-h-[90vh] rounded-2xl shadow-2xl border flex flex-col overflow-hidden cursor-default note-color-${color}`}
+        onClick={(e) => e.stopPropagation()}
       >
         {/* Header com Pin e Fechar */}
         <div className="p-4 flex items-center justify-between border-b border-black/5 dark:border-white/5">
@@ -198,7 +233,7 @@ export default function NoteModal({
 
           <button
             type="button"
-            onClick={handleClose}
+            onClick={handleManualClose}
             className="p-2 text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 rounded-full transition"
           >
             <X className="w-5 h-5" />
@@ -350,7 +385,7 @@ export default function NoteModal({
 
           <button
             type="button"
-            onClick={handleClose}
+            onClick={handleManualClose}
             className="px-5 py-2 bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 rounded-xl font-medium text-sm transition"
           >
             Concluir
