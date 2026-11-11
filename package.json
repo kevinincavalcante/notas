@@ -2,6 +2,8 @@
   "name": "notas",
   "version": "1.0.0",
   "private": true,
+  "author": "kevinincavalcante <kevinin.santos@gmail.com>",
+  "main": "dist-electron/main.cjs",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -9,7 +11,10 @@
     "db:init": "node scripts/init-db.mjs",
     "db:rebuild": "node scripts/init-db.mjs --rebuild-fts",
     "test:sync": "tsx scripts/test-sync.mts",
-    "test:sync:replica": "tsx scripts/test-sync-replica.mts"
+    "test:sync:replica": "tsx scripts/test-sync-replica.mts",
+    "electron:bundle": "esbuild electron/main.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist-electron/main.cjs",
+    "electron:start": "npm run build && npm run electron:bundle && electron .",
+    "electron:deb": "npm run build && npm run electron:bundle && electron-builder --linux deb"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1166.0",
@@ -33,9 +38,17 @@
     "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "electron": "^45.3.0",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
     "postcss": "^8.5.32",
     "tailwindcss": "^4.3.5",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
+  },
+  "allowScripts": {
+    "electron@45.3.0": true,
+    "esbuild@0.28.2": true,
+    "electron-winstaller@5.4.0": true
   }
 }

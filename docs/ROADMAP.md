@@ -45,9 +45,10 @@ Android consomem essa mesma base.
 Requisito do dono do app: **estável, dados baixados localmente, sincronizando
 quando alterado**.
 
-- **Banco**: adapter trocável em `lib/` —
-  - `TursoDriver` (atual, para quando hospedado)
-  - `LocalDriver` — SQLite em arquivo local (`better-sqlite3`) dentro do Electron
+- **Banco**: `lib/turso.ts` escolhe por ambiente —
+  - Web/hospedado: Turso (atual, via `TURSO_LINK`)
+  - Desktop: SQLite em arquivo (`NOTES_DB_PATH`) — **mesma API libSQL**, o app
+    inteiro funciona sem saber qual banco está por trás (implementado ✅)
 - **Anexos**: driver de disco local **já existe** em `lib/storage.ts` → passa a
   ser o padrão no desktop; no mobile, armazenamento do app.
 - **Motor de sync em TS puro** (compartilhado entre desktop e mobile):
@@ -78,9 +79,9 @@ quando alterado**.
 
 | # | Fase | Status |
 |---|------|--------|
-| 1 | **Sync engine + `/api/sync`** — contrato v1 fechado em `docs/SYNC.md` | 🔨 aprovado |
-| 2 | **App Linux (Electron)** — sidecar Next + DB adapter local + sync no main process | ⏳ |
-| 3 | **Empacotamento Linux** — `electron-builder`: **.deb** (decisão do dono; AppImage descartado) | ⏳ |
+| 1 | **Sync engine + `/api/sync`** — contrato em `docs/SYNC.md`; motor como biblioteca + testes e2e (12/12 e 13/13) | ✅ |
+| 2 | **App Linux (Electron)** — sidecar Next + SQLite local + sync em background; bootado e sincronizado em ambiente de teste | 🔨 falta gerar o `.deb` **na máquina x86 do dono** |
+| 3 | **Empacotamento Linux** — `electron-builder`: **.deb** (pipeline provado; `npm run electron:deb` no PC do dono) | 🔨 |
 | 4 | **App Android** — stack decidido na fase 3 | ⏳ |
 
 ### Concluído

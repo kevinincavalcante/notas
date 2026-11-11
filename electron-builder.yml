@@ -1,0 +1,15 @@
+appId: app.notas.desktop
+productName: Notas
+
+# v1: sem asar — menos surfada com .next e módulos nativos (libsql, sharp)
+asar: false
+
+files:
+  - dist-electron/**/*
+  - .next/**/*
+  - public/**/*
+  - package.json
+
+linux:
+  target: deb
+  category: Office

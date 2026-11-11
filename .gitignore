@@ -23,3 +23,8 @@ yarn-error.log*
 .DS_Store
 .npmrc
 skills/
+
+# Electron
+dist/
+dist-electron/
+release/
