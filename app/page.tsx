@@ -1,27 +1,31 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import Header from "@/components/Header";
-import QuickNoteCreator from "@/components/QuickNoteCreator";
-import NoteCard from "@/components/NoteCard";
-import NoteModal from "@/components/NoteModal";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import Sidebar from "@/components/Sidebar";
+import NoteEditor from "@/components/NoteEditor";
 import { Note, Attachment } from "@/types/note";
-import { Pin, StickyNote, SearchX } from "lucide-react";
+import { StickyNote, Plus, Menu } from "lucide-react";
 
 export default function DashboardPage() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [searchResults, setSearchResults] = useState<Note[] | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedNote, setSelectedNote] = useState<Note | null>(null);
+  const [activeTagFilter, setActiveTagFilter] = useState<string | null>(null);
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   // Carrega as notas iniciais
   const loadNotes = useCallback(async () => {
     try {
       const res = await fetch("/api/notes?archived=0");
       const data = await res.json();
-      if (res.ok) {
-        setNotes(data.notes || []);
+      if (res.ok && Array.isArray(data.notes)) {
+        setNotes(data.notes);
+        // Seleciona a primeira nota no desktop caso nenhuma esteja selecionada
+        if (data.notes.length > 0 && typeof window !== "undefined" && window.innerWidth >= 768) {
+          setSelectedNoteId((prev) => prev || data.notes[0].id);
+        }
       }
     } catch (err) {
       console.error("Erro ao carregar notas:", err);
@@ -34,7 +38,7 @@ export default function DashboardPage() {
     loadNotes();
   }, [loadNotes]);
 
-  // Efeito da busca reativa FTS5 (com AbortController para evitar corrida de respostas)
+  // Busca reativa FTS5
   useEffect(() => {
     if (!searchQuery.trim()) {
       setSearchResults(null);
@@ -60,12 +64,22 @@ export default function DashboardPage() {
 
     performSearch();
     return () => {
-      // Cancela a requisição pendente se a query mudou ou o componente desmontou
       controller.abort();
     };
   }, [searchQuery]);
 
-  // PATCH compartilhado com verificação de sucesso (retorna true quando o banco confirmou)
+  // Lista de notas a exibir (busca ou lista geral)
+  const displayedNotes = useMemo(() => {
+    return searchResults !== null ? searchResults : notes;
+  }, [notes, searchResults]);
+
+  // Nota selecionada atual (mantém sincronizada com a lista de notas)
+  const selectedNote = useMemo(() => {
+    if (!selectedNoteId) return null;
+    return notes.find((n) => n.id === selectedNoteId) || null;
+  }, [notes, selectedNoteId]);
+
+  // PATCH compartilhado
   async function patchNote(noteId: string, fields: Record<string, unknown>): Promise<boolean> {
     try {
       const res = await fetch(`/api/notes/${noteId}`, {
@@ -80,108 +94,39 @@ export default function DashboardPage() {
     }
   }
 
-  // Handler para nova nota criada no QuickNoteCreator
-  function handleNoteCreated(newNote: Note) {
-    setNotes((prev) => [newNote, ...prev]);
-  }
-
-  // Handler para atualizar cor
-  async function handleChangeColor(noteId: string, color: string) {
-    const previous = notes.find((n) => n.id === noteId);
-    setNotes((prev) =>
-      prev.map((n) => (n.id === noteId ? { ...n, color, updated_at: Date.now() } : n))
-    );
-    if (selectedNote && selectedNote.id === noteId) {
-      setSelectedNote((prev) => (prev ? { ...prev, color } : null));
-    }
-    const ok = await patchNote(noteId, { color });
-    if (!ok && previous) {
-      // Falha no servidor: desfaz a mudança otimista para manter UI e banco em sincronia
-      setNotes((prev) =>
-        prev.map((n) =>
-          n.id === noteId ? { ...n, color: previous.color, updated_at: previous.updated_at } : n
-        )
-      );
-      if (selectedNote && selectedNote.id === noteId) {
-        setSelectedNote((prev) => (prev ? { ...prev, color: previous.color } : null));
-      }
-    }
-  }
-
-  // Handler para alternar fixação
-  async function handleTogglePin(noteId: string, currentPin: boolean) {
-    const nextPin = !currentPin;
-    setNotes((prev) =>
-      prev.map((n) => (n.id === noteId ? { ...n, is_pinned: nextPin, updated_at: Date.now() } : n))
-    );
-    const ok = await patchNote(noteId, { is_pinned: nextPin });
-    if (!ok) {
-      // Falha no servidor: desfaz a mudança otimista
-      setNotes((prev) =>
-        prev.map((n) => (n.id === noteId ? { ...n, is_pinned: currentPin } : n))
-      );
-    }
-  }
-
-  // Handler para alternar arquivamento
-  async function handleToggleArchive(noteId: string, currentArchive: boolean) {
-    const nextArchive = !currentArchive;
-    // Guarda a nota para restaurar caso o servidor falhe
-    const removed = notes.find((n) => n.id === noteId);
-    // Remove da lista do dashboard
-    setNotes((prev) => prev.filter((n) => n.id !== noteId));
-    const ok = await patchNote(noteId, { is_archived: nextArchive });
-    if (!ok && removed) {
-      // Falha no servidor: devolve a nota à lista na posição original
-      setNotes((prev) => {
-        const idx = prev.findIndex((n) => n.id === removed.id);
-        if (idx !== -1) return prev;
-        return [removed, ...prev];
-      });
-    }
-  }
-
-  // Handler para excluir nota
-  async function handleDeleteNote(noteId: string) {
-    if (!confirm("Deseja realmente excluir esta nota?")) return;
-    // Guarda a nota e sua posição para restaurar em caso de falha
-    const removed = notes.find((n) => n.id === noteId);
-    setNotes((prev) => prev.filter((n) => n.id !== noteId));
-    if (selectedNote && selectedNote.id === noteId) {
-      setSelectedNote(null);
-    }
+  // Criar uma nova nota
+  async function handleCreateNote() {
     try {
-      const res = await fetch(`/api/notes/${noteId}`, { method: "DELETE" });
-      if (!res.ok && removed) {
-        console.error("Falha ao excluir nota no servidor");
-        setNotes((prev) => {
-          const idx = prev.findIndex((n) => n.id === removed.id);
-          if (idx !== -1) return prev;
-          return [removed, ...prev];
-        });
-        if (selectedNote && selectedNote.id === noteId) {
-          setSelectedNote(removed);
-        }
+      const res = await fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: "",
+          body: "",
+          color: "default",
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.note) {
+        const newNote: Note = {
+          ...data.note,
+          attachments: [],
+          tags: [],
+        };
+        setNotes((prev) => [newNote, ...prev]);
+        setSelectedNoteId(newNote.id);
+        setIsSidebarOpen(false); // Fecha sidebar no mobile para mostrar o editor
       }
     } catch (err) {
-      console.error("Erro ao excluir nota:", err);
-      if (removed) {
-        setNotes((prev) => {
-          const idx = prev.findIndex((n) => n.id === removed.id);
-          if (idx !== -1) return prev;
-          return [removed, ...prev];
-        });
-        if (selectedNote && selectedNote.id === noteId) {
-          setSelectedNote(removed);
-        }
-      }
+      console.error("Erro ao criar nota:", err);
+      alert("Erro ao criar nova nota.");
     }
   }
 
-  // Handler para salvar edições do modal
+  // Atualizar nota (do NoteEditor)
   async function handleUpdateNote(updatedFields: Partial<Note> & { skipPatch?: boolean }) {
-    if (!selectedNote) return;
-    const noteId = selectedNote.id;
+    if (!selectedNoteId) return;
+    const noteId = selectedNoteId;
     const { skipPatch, ...fields } = updatedFields;
 
     const previous = notes.find((n) => n.id === noteId);
@@ -189,12 +134,11 @@ export default function DashboardPage() {
       prev.map((n) => (n.id === noteId ? { ...n, ...fields, updated_at: Date.now() } : n))
     );
 
-    // Se a restauração já atualizou o banco diretamente, não faz outro PATCH
     if (skipPatch) return;
 
     const ok = await patchNote(noteId, fields);
     if (!ok && previous) {
-      // Falha no servidor: desfaz a mudança otimista
+      // Falha no servidor: desfaz otimismo
       const { updated_at, ...revertFields } = previous;
       void updated_at;
       setNotes((prev) =>
@@ -205,181 +149,176 @@ export default function DashboardPage() {
     }
   }
 
-  // Anexos no modal
-  function handleAddAttachment(attachment: Attachment) {
+  // Alternar fixação
+  async function handleTogglePin() {
     if (!selectedNote) return;
     const noteId = selectedNote.id;
-    const updatedAttachments = [...(selectedNote.attachments || []), attachment];
+    const nextPin = !selectedNote.is_pinned;
 
-    setSelectedNote({ ...selectedNote, attachments: updatedAttachments });
     setNotes((prev) =>
-      prev.map((n) => (n.id === noteId ? { ...n, attachments: updatedAttachments } : n))
+      prev.map((n) => (n.id === noteId ? { ...n, is_pinned: nextPin, updated_at: Date.now() } : n))
+    );
+
+    const ok = await patchNote(noteId, { is_pinned: nextPin });
+    if (!ok) {
+      setNotes((prev) =>
+        prev.map((n) =>
+          n.id === noteId ? { ...n, is_pinned: selectedNote.is_pinned } : n
+        )
+      );
+    }
+  }
+
+  // Alternar arquivamento
+  async function handleToggleArchive() {
+    if (!selectedNote) return;
+    const noteId = selectedNote.id;
+    const nextArchive = !selectedNote.is_archived;
+
+    // Remove da lista
+    const removed = selectedNote;
+    setNotes((prev) => prev.filter((n) => n.id !== noteId));
+
+    // Seleciona a próxima nota se houver
+    const remaining = notes.filter((n) => n.id !== noteId);
+    setSelectedNoteId(remaining.length > 0 ? remaining[0].id : null);
+
+    const ok = await patchNote(noteId, { is_archived: nextArchive });
+    if (!ok && removed) {
+      setNotes((prev) => [removed, ...prev]);
+      setSelectedNoteId(removed.id);
+    }
+  }
+
+  // Excluir nota
+  async function handleDeleteNote() {
+    if (!selectedNote) return;
+    if (!confirm("Deseja realmente excluir esta nota?")) return;
+
+    const noteId = selectedNote.id;
+    const removed = selectedNote;
+    const remaining = notes.filter((n) => n.id !== noteId);
+
+    setNotes(remaining);
+    setSelectedNoteId(remaining.length > 0 ? remaining[0].id : null);
+
+    try {
+      const res = await fetch(`/api/notes/${noteId}`, { method: "DELETE" });
+      if (!res.ok) {
+        setNotes((prev) => [removed, ...prev]);
+        setSelectedNoteId(removed.id);
+      }
+    } catch (err) {
+      console.error("Erro ao excluir nota:", err);
+      setNotes((prev) => [removed, ...prev]);
+      setSelectedNoteId(removed.id);
+    }
+  }
+
+  // Anexos
+  function handleAddAttachment(attachment: Attachment) {
+    if (!selectedNoteId) return;
+    const noteId = selectedNoteId;
+    setNotes((prev) =>
+      prev.map((n) => {
+        if (n.id !== noteId) return n;
+        const currentAtts = n.attachments || [];
+        return { ...n, attachments: [...currentAtts, attachment] };
+      })
     );
   }
 
   function handleRemoveAttachment(attachmentId: string) {
-    if (!selectedNote) return;
-    const noteId = selectedNote.id;
-    const updatedAttachments = (selectedNote.attachments || []).filter(
-      (a) => a.id !== attachmentId
-    );
-
-    setSelectedNote({ ...selectedNote, attachments: updatedAttachments });
+    if (!selectedNoteId) return;
+    const noteId = selectedNoteId;
     setNotes((prev) =>
-      prev.map((n) => (n.id === noteId ? { ...n, attachments: updatedAttachments } : n))
+      prev.map((n) => {
+        if (n.id !== noteId) return n;
+        const currentAtts = n.attachments || [];
+        return {
+          ...n,
+          attachments: currentAtts.filter((a) => a.id !== attachmentId),
+        };
+      })
     );
   }
 
-  const pinnedNotes = notes.filter((n) => n.is_pinned);
-  const otherNotes = notes.filter((n) => !n.is_pinned);
+  function handleSelectNote(note: Note) {
+    setSelectedNoteId(note.id);
+    setIsSidebarOpen(false);
+  }
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col">
-      <Header searchQuery={searchQuery} onSearchChange={setSearchQuery} />
+    <div className="h-dvh w-full flex overflow-hidden bg-slate-950 text-slate-100">
+      {/* ── Sidebar de Navegação (estilo Obsidian / Joplin) ── */}
+      <Sidebar
+        notes={displayedNotes}
+        selectedNoteId={selectedNoteId}
+        onSelectNote={handleSelectNote}
+        onCreateNote={handleCreateNote}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
+        activeTagFilter={activeTagFilter}
+        onTagFilter={setActiveTagFilter}
+      />
 
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
-        {/* Caixa de criação rápida estilo Keep (oculta durante busca) */}
-        {!searchQuery && <QuickNoteCreator onNoteCreated={handleNoteCreated} />}
-
+      {/* ── Área Principal / Editor ── */}
+      <main className="flex-1 h-full flex flex-col min-w-0 bg-slate-950 overflow-hidden">
         {loading ? (
-          <div className="flex justify-center items-center py-20 text-slate-400">
-            Carregando notas...
+          <div className="flex-1 flex items-center justify-center text-slate-500 text-sm">
+            Carregando suas notas...
           </div>
-        ) : searchResults !== null ? (
-          /* Visualização dos Resultados da Busca FTS5 */
-          <div>
-            <h2 className="text-xs font-semibold tracking-wider text-slate-500 uppercase mb-4">
-              Resultados da Busca ({searchResults.length})
-            </h2>
-
-            {searchResults.length === 0 ? (
-              <div className="text-center py-16 text-slate-400 flex flex-col items-center gap-2">
-                <SearchX className="w-12 h-12 text-slate-300 dark:text-slate-600" />
-                <p className="text-sm">Nenhuma nota encontrada para &quot;{searchQuery}&quot;.</p>
-              </div>
-            ) : (
-              <div className="columns-1 sm:columns-2 md:columns-3 lg:columns-4 gap-4 space-y-4">
-                {searchResults.map((note) => (
-                  <div key={note.id} className="break-inside-avoid">
-                    <NoteCard
-                      note={note}
-                      onClick={() => setSelectedNote(note)}
-                      onTogglePin={(e) => {
-                        e.stopPropagation();
-                        handleTogglePin(note.id, note.is_pinned);
-                      }}
-                      onToggleArchive={(e) => {
-                        e.stopPropagation();
-                        handleToggleArchive(note.id, note.is_archived);
-                      }}
-                      onDelete={(e) => {
-                        e.stopPropagation();
-                        handleDeleteNote(note.id);
-                      }}
-                      onChangeColor={(color) => handleChangeColor(note.id, color)}
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+        ) : selectedNote ? (
+          <NoteEditor
+            key={selectedNote.id}
+            note={selectedNote}
+            onUpdate={handleUpdateNote}
+            onDelete={handleDeleteNote}
+            onTogglePin={handleTogglePin}
+            onToggleArchive={handleToggleArchive}
+            onAddAttachment={handleAddAttachment}
+            onRemoveAttachment={handleRemoveAttachment}
+            onMenuClick={() => setIsSidebarOpen(true)}
+          />
         ) : (
-          /* Visualização Padrão: Fixadas e Outras */
-          <div className="space-y-8">
-            {/* Notas Fixadas */}
-            {pinnedNotes.length > 0 && (
-              <div>
-                <h2 className="text-xs font-bold tracking-wider text-slate-500 dark:text-slate-400 uppercase mb-3 flex items-center gap-1.5">
-                  <Pin className="w-3.5 h-3.5 fill-current" />
-                  Fixadas
-                </h2>
-                <div className="columns-1 sm:columns-2 md:columns-3 lg:columns-4 gap-4 space-y-4">
-                  {pinnedNotes.map((note) => (
-                    <div key={note.id} className="break-inside-avoid">
-                      <NoteCard
-                        note={note}
-                        onClick={() => setSelectedNote(note)}
-                        onTogglePin={(e) => {
-                          e.stopPropagation();
-                          handleTogglePin(note.id, note.is_pinned);
-                        }}
-                        onToggleArchive={(e) => {
-                          e.stopPropagation();
-                          handleToggleArchive(note.id, note.is_archived);
-                        }}
-                        onDelete={(e) => {
-                          e.stopPropagation();
-                          handleDeleteNote(note.id);
-                        }}
-                        onChangeColor={(color) => handleChangeColor(note.id, color)}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+          <div className="flex-1 flex flex-col h-full">
+            {/* Header mobile para abrir menu quando nenhuma nota está aberta */}
+            <div className="md:hidden p-3 border-b border-slate-800 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsSidebarOpen(true)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-lg transition"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+              <span className="font-semibold text-sm text-slate-300">Notas</span>
+            </div>
 
-            {/* Outras Notas */}
-            {otherNotes.length > 0 && (
-              <div>
-                {pinnedNotes.length > 0 && (
-                  <h2 className="text-xs font-bold tracking-wider text-slate-500 dark:text-slate-400 uppercase mb-3">
-                    Outras
-                  </h2>
-                )}
-                <div className="columns-1 sm:columns-2 md:columns-3 lg:columns-4 gap-4 space-y-4">
-                  {otherNotes.map((note) => (
-                    <div key={note.id} className="break-inside-avoid">
-                      <NoteCard
-                        note={note}
-                        onClick={() => setSelectedNote(note)}
-                        onTogglePin={(e) => {
-                          e.stopPropagation();
-                          handleTogglePin(note.id, note.is_pinned);
-                        }}
-                        onToggleArchive={(e) => {
-                          e.stopPropagation();
-                          handleToggleArchive(note.id, note.is_archived);
-                        }}
-                        onDelete={(e) => {
-                          e.stopPropagation();
-                          handleDeleteNote(note.id);
-                        }}
-                        onChangeColor={(color) => handleChangeColor(note.id, color)}
-                      />
-                    </div>
-                  ))}
-                </div>
+            {/* Estado Vazio */}
+            <div className="flex-1 flex flex-col items-center justify-center p-6 text-center select-none">
+              <div className="w-16 h-16 bg-amber-400/10 text-amber-400 rounded-2xl flex items-center justify-center mb-4 shadow-sm border border-amber-400/20">
+                <StickyNote className="w-8 h-8" />
               </div>
-            )}
-
-            {notes.length === 0 && (
-              <div className="text-center py-24 text-slate-400 flex flex-col items-center gap-3">
-                <StickyNote className="w-14 h-14 text-slate-300 dark:text-slate-700" />
-                <p className="text-base font-medium text-slate-500 dark:text-slate-400">
-                  Nenhuma nota por enquanto.
-                </p>
-                <p className="text-xs text-slate-400">
-                  Crie sua primeira nota usando a caixa acima!
-                </p>
-              </div>
-            )}
+              <h2 className="text-lg font-semibold text-white mb-1">
+                Nenhuma nota selecionada
+              </h2>
+              <p className="text-sm text-slate-400 max-w-sm mb-6 leading-relaxed">
+                Selecione uma nota na lista lateral ou crie uma nova nota para começar a escrever.
+              </p>
+              <button
+                type="button"
+                onClick={handleCreateNote}
+                className="flex items-center gap-2 px-4 py-2 bg-amber-400 hover:bg-amber-300 text-slate-950 font-semibold text-sm rounded-xl transition shadow-sm active:scale-95"
+              >
+                <Plus className="w-4 h-4" />
+                Criar uma nota
+              </button>
+            </div>
           </div>
         )}
       </main>
-
-      {/* Modal de visualização e edição detalhada */}
-      {selectedNote && (
-        <NoteModal
-          note={selectedNote}
-          isOpen={Boolean(selectedNote)}
-          onClose={() => setSelectedNote(null)}
-          onUpdate={handleUpdateNote}
-          onDelete={() => handleDeleteNote(selectedNote.id)}
-          onAddAttachment={handleAddAttachment}
-          onRemoveAttachment={handleRemoveAttachment}
-        />
-      )}
     </div>
   );
 }

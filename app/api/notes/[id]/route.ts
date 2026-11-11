@@ -3,6 +3,7 @@ import { db } from "@/lib/turso";
 import crypto from "crypto";
 import { getTagsByNoteId } from "@/lib/tags";
 import { syncUrlAutoTags } from "@/lib/url-autotag";
+import { deleteAttachmentFile } from "@/lib/storage";
 
 export async function GET(
   _request: Request,
@@ -157,7 +158,29 @@ export async function DELETE(
   try {
     const { id } = await params;
 
-    // Turso executará o ON DELETE CASCADE nas attachments e note_versions automaticamente
+    // 1. Busca todos os anexos (imagens, áudios) vinculados à nota antes de deletar
+    const attResult = await db.execute({
+      sql: `SELECT storage_key FROM attachments WHERE note_id = ?`,
+      args: [id],
+    });
+
+    // 2. Remove todos os arquivos do Cloudflare R2 / Storage local em paralelo
+    if (attResult.rows.length > 0) {
+      await Promise.allSettled(
+        attResult.rows.map(async (row) => {
+          const fileId = row.storage_key as string;
+          if (fileId) {
+            try {
+              await deleteAttachmentFile(fileId);
+            } catch (storageErr) {
+              console.warn(`Aviso ao excluir arquivo "${fileId}" do storage:`, storageErr);
+            }
+          }
+        })
+      );
+    }
+
+    // 3. Remove a nota do Turso (cascade remove attachments e note_versions)
     await db.execute({
       sql: `DELETE FROM notes WHERE id = ?`,
       args: [id],
