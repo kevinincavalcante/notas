@@ -94,3 +94,57 @@ body {
   .note-color-clay { background-color: #442f19; border-color: #583c20; }
   .note-color-chalk { background-color: #3c3f41; border-color: #4e5254; }
 }
+
+/* Syntax Highlighting (Highlight.js) */
+.hljs {
+  color: #e2e8f0;
+}
+.hljs-subst {
+  color: #e2e8f0;
+}
+.hljs-comment,
+.hljs-quote {
+  color: #64748b;
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-section {
+  color: #c084fc; /* purple-400 */
+  font-weight: 600;
+}
+.hljs-string,
+.hljs-addition,
+.hljs-title {
+  color: #4ade80; /* green-400 */
+}
+.hljs-attr {
+  color: #38bdf8; /* sky-400 (chaves JSON, atributos) */
+}
+.hljs-number,
+.hljs-literal {
+  color: #fbbf24; /* amber-400 */
+}
+.hljs-variable,
+.hljs-template-variable {
+  color: #f472b6; /* pink-400 */
+}
+.hljs-type,
+.hljs-built_in,
+.hljs-symbol,
+.hljs-bullet {
+  color: #2dd4bf; /* teal-400 */
+}
+.hljs-params {
+  color: #93c5fd; /* blue-300 */
+}
+.hljs-punctuation {
+  color: #94a3b8; /* slate-400 */
+}
+.hljs-tag,
+.hljs-name {
+  color: #f87171; /* red-400 */
+}
+.hljs-deletion {
+  color: #f87171;
+}

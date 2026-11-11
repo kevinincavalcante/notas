@@ -22,6 +22,7 @@ import {
   ListTodo,
   Quote,
   Code2,
+  SquareCode,
   Link2,
   Minus,
   ImagePlus,
@@ -815,6 +816,7 @@ export default function NoteEditor({
           <button type="button" onClick={() => insertAroundSelection("*", "*", "itálico")} title="Itálico" className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition"><Italic className="w-3.5 h-3.5" /></button>
           <button type="button" onClick={() => insertAroundSelection("~~", "~~", "riscado")} title="Riscado" className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition"><Strikethrough className="w-3.5 h-3.5" /></button>
           <button type="button" onClick={() => insertAroundSelection("`", "`", "código")} title="Código inline" className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition"><Code2 className="w-3.5 h-3.5" /></button>
+          <button type="button" onClick={() => insertAroundSelection("```\n", "\n```", "código aqui")} title="Bloco de código" className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition"><SquareCode className="w-3.5 h-3.5" /></button>
 
           <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
 
