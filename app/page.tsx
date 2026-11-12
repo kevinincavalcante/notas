@@ -133,16 +133,40 @@ export default function DashboardPage() {
   });
   tabHandlersRef.current = { new: handleCreateNote, close: closeActiveTab, next: () => cycleTab(1), prev: () => cycleTab(-1) };
 
+  // Botão de sync (só desktop): dispara ciclo imediato no processo main
+  const [syncState, setSyncState] = useState<{ busy: boolean; error: string | null; at: number | null } | null>(null);
+  const loadNotesRef = useRef(loadNotes);
+  loadNotesRef.current = loadNotes;
+  function handleSyncNow() {
+    setSyncState((s) => ({ busy: true, error: null, at: s?.at ?? null }));
+    void (
+      window as unknown as {
+        notasDesktop?: { syncNow?: () => Promise<void> };
+      }
+    ).notasDesktop?.syncNow?.();
+  }
+
   useEffect(() => {
     const api = (
       window as unknown as {
-        notasDesktop?: { onTabCommand: (cb: (cmd: string) => void) => void };
+        notasDesktop?: {
+          onTabCommand: (cb: (cmd: string) => void) => void;
+          syncNow?: () => Promise<{ ok: boolean; error?: string } | undefined>;
+          onSyncStatus?: (
+            cb: (s: { ok: boolean; at?: number; error?: string; changed?: boolean }) => void
+          ) => void;
+        };
       }
     ).notasDesktop;
     if (!api?.onTabCommand) return;
     api.onTabCommand((cmd) => {
       const handler = tabHandlersRef.current[cmd as keyof typeof tabHandlersRef.current];
       if (handler) handler();
+    });
+    api.onSyncStatus?.((s) => {
+      setSyncState({ busy: false, error: s.ok ? null : s.error || "erro", at: s.at || null });
+      // pull trouxe mudança → a lista local pode estar diferente agora
+      if (s.ok && s.changed) loadNotesRef.current();
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -405,6 +429,8 @@ export default function DashboardPage() {
               onSelect={(id) => setActiveTabId(id)}
               onClose={closeTab}
               onNew={handleCreateNote}
+              onSync={syncState === null ? undefined : handleSyncNow}
+              syncIndicator={syncState}
             />
 
             <div className="flex-1 flex flex-col min-h-0">

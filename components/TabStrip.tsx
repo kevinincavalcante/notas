@@ -1,6 +1,12 @@
 "use client";
 
-import { Plus, X } from "lucide-react";
+import { Plus, RefreshCw, X } from "lucide-react";
+
+export interface SyncIndicator {
+  busy?: boolean;
+  error?: string | null;
+  at?: number | null;
+}
 
 interface TabStripProps {
   tabs: { id: string; title: string }[];
@@ -8,13 +14,33 @@ interface TabStripProps {
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onNew: () => void;
+  /** Presente só no desktop (Electron): botão de sync manual + indicador. */
+  onSync?: () => void;
+  syncIndicator?: SyncIndicator | null;
 }
 
 /**
  * Barra de abas estilo Chrome: largura fixa por aba, título truncado,
- * × no hover (e sempre visível na aba ativa) e botão + pra nova aba.
+ * × no hover (e sempre visível na aba ativa), botão + pra nova aba e —
+ * no desktop — botão de sincronizar com indicador do último ciclo.
  */
-export default function TabStrip({ tabs, activeId, onSelect, onClose, onNew }: TabStripProps) {
+export default function TabStrip({
+  tabs,
+  activeId,
+  onSelect,
+  onClose,
+  onNew,
+  onSync,
+  syncIndicator,
+}: TabStripProps) {
+  const busy = syncIndicator?.busy;
+  const hasError = Boolean(syncIndicator?.error);
+  const syncTitle = syncIndicator?.error
+    ? `Sync falhou: ${syncIndicator.error}`
+    : syncIndicator?.at
+      ? `Sincronizado ${new Date(syncIndicator.at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} — clicar sincroniza agora`
+      : "Sincronizar agora";
+
   return (
     <div className="flex items-center gap-1 px-2 pt-1.5 shrink-0 bg-slate-100/50 dark:bg-slate-900/30 border-b border-black/5 dark:border-white/5 overflow-x-auto">
       {tabs.map((tab) => {
@@ -65,6 +91,24 @@ export default function TabStrip({ tabs, activeId, onSelect, onClose, onNew }: T
       >
         <Plus className="w-3.5 h-3.5" />
       </button>
+
+      {/* Sync manual — só no desktop (Electron) */}
+      {onSync && (
+        <button
+          type="button"
+          onClick={onSync}
+          disabled={busy}
+          aria-label="Sincronizar agora"
+          title={syncTitle}
+          className={`shrink-0 p-1.5 rounded-lg active:scale-90 transition ${
+            hasError
+              ? "text-red-500 hover:bg-red-500/10"
+              : "text-slate-500 dark:text-slate-400 hover:bg-amber-400/15 hover:text-amber-600 dark:hover:text-amber-400"
+          } ${busy ? "opacity-60" : ""}`}
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${busy ? "animate-spin" : ""}`} />
+        </button>
+      )}
     </div>
   );
 }

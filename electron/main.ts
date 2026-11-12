@@ -1,11 +1,14 @@
-import { app, BrowserWindow, shell, Menu } from "electron";
+import { app, BrowserWindow, ipcMain, shell, Menu } from "electron";
 import http from "http";
 import { join } from "path";
 import { createClient } from "@libsql/client";
 import "./env"; // PRIMEIRO: carrega a config antes de qualquer lib abrir client de banco
 import { ensureSchema } from "../lib/db-schema";
-import { startSyncLoop } from "../lib/sync-replica";
+import { startSyncLoop, syncOnce } from "../lib/sync-replica";
 import { envSource, localDbPath, isDev } from "./env";
+
+/** Janela ativa — o sync envia o status pra ela via IPC. */
+let mainWindow: BrowserWindow | null = null;
 
 /**
  * Processo main do Notas (Electron):
@@ -41,6 +44,10 @@ async function createWindow(url: string): Promise<BrowserWindow> {
 
   installAppMenu(win);
   await win.loadURL(url);
+  mainWindow = win;
+  win.on("closed", () => {
+    if (mainWindow === win) mainWindow = null;
+  });
   return win;
 }
 
@@ -147,6 +154,25 @@ app.whenReady().then(async () => {
             );
           }
         },
+        onStatus: (s) => mainWindow?.webContents.send("sync-status", s),
+      });
+      // Botão "sync agora" da UI: um ciclo imediato, sem esperar o laço
+      ipcMain.handle("sync-now", async () => {
+        try {
+          const r = await syncOnce(localClient, remote);
+          const s = {
+            ok: true,
+            at: Date.now(),
+            changed:
+              (r.pulledNotes || 0) + (r.pulledVersions || 0) + r.appliedTombstones + r.conflicts.length > 0,
+          };
+          mainWindow?.webContents.send("sync-status", s);
+          return s;
+        } catch (err) {
+          const s = { ok: false, at: Date.now(), error: err instanceof Error ? err.message : String(err) };
+          mainWindow?.webContents.send("sync-status", s);
+          return s;
+        }
       });
       console.log("[SYNC] laço iniciado (30s + backoff)");
     } else {
