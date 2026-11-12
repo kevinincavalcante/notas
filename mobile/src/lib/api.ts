@@ -77,3 +77,10 @@ export async function authHeaders(): Promise<Record<string, string>> {
   if (!token) return {};
   return { Authorization: `Bearer ${token}` };
 }
+
+/** Config pronta pro sync — null quando não está logado. */
+export async function getSyncApi(): Promise<{ baseUrl: string; token: string } | null> {
+  const token = await getStoredToken();
+  if (!token) return null;
+  return { baseUrl: await getApiUrl(), token };
+}

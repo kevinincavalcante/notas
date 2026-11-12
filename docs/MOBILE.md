@@ -59,5 +59,8 @@ A gerar: build com EAS ou local (`expo run:android --variant release`), com
 ## Estado
 
 - ✅ Base técnica: réplica sincronizando de verdade (e2e 12/12)
-- ⏳ UI: aguardando os designs do dono — a tela atual é só status/login
-- ⏳ Anexos: câmera/áudio/download sob demanda (fase 4.4, depois da UI)
+- ✅ UI v1 (design do dono, estilo OneNote): blocos recentes + chips de tags na
+  horizontal com filtro, long-press (fixar/arquivar/excluir), editor com autosave
+  e flush no voltar, busca FTS local, config — sync em background (foreground
+  do app + puxar pra recarregar + debounce pós-mutação)
+- ⏳ Anexos: câmera/áudio/download sob demanda (fase 4.4)

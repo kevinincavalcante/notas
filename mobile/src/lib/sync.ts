@@ -35,3 +35,67 @@ export async function syncOnceHttp(
     return (await res.json()) as Record<string, unknown>;
   });
 }
+
+// ---- Sync de fundo (usado pelas telas) ----
+
+const subs = new Set<() => void>();
+
+/**
+ * Provedor do banco local — setado no boot do app (evita importar o
+ * expo-sqlite aqui, o que arrastaria react-native pro teste em Node).
+ */
+let clientProvider: () => Promise<Client> = async () => {
+  throw new Error("banco local não inicializado");
+};
+
+export function setLocalClientProvider(fn: () => Promise<Client>): void {
+  clientProvider = fn;
+}
+
+/** Chama `fn` ao fim de cada sync bem-sucedida (pra telas recarregarem). */
+export function onSynced(fn: () => void): () => void {
+  subs.add(fn);
+  return () => {
+    subs.delete(fn);
+  };
+}
+
+let inFlight = false;
+let lastResult: ReplicaSyncResult | null = null;
+let lastError: string | null = null;
+
+export function getLastSync(): { result: ReplicaSyncResult | null; error: string | null } {
+  return { result: lastResult, error: lastError };
+}
+
+/**
+ * Um ciclo silencioso — barra múltiplas chamadas em paralelo e avisa
+ * as telas no fim. Falha só registra (tenta de novo na próxima).
+ */
+export async function syncQuiet(api: SyncApiConfig): Promise<boolean> {
+  if (inFlight) return false;
+  inFlight = true;
+  try {
+    const client = await clientProvider();
+    lastResult = await syncOnceHttp(client, api);
+    lastError = null;
+    subs.forEach((fn) => fn());
+    return true;
+  } catch (e) {
+    lastError = e instanceof Error ? e.message : String(e);
+    return false;
+  } finally {
+    inFlight = false;
+  }
+}
+
+let timer: ReturnType<typeof setTimeout> | null = null;
+
+/** Agendar sync logo após uma mutação local (debounce curto). */
+export function scheduleQuietSync(api: SyncApiConfig, delayMs = 900): void {
+  if (timer) clearTimeout(timer);
+  timer = setTimeout(() => {
+    timer = null;
+    void syncQuiet(api);
+  }, delayMs);
+}

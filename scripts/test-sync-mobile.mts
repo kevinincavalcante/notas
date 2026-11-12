@@ -44,7 +44,8 @@ const { DatabaseSync } = await import("node:sqlite");
 const { ensureSchema } = await import("../lib/db-schema.js");
 const { logChange } = await import("../lib/sync-log.js");
 const { createExpoClient } = await import("../mobile/src/lib/sqlite-client.js");
-const { syncOnceHttp } = await import("../mobile/src/lib/sync.js");
+const { syncOnceHttp, setLocalClientProvider } = await import("../mobile/src/lib/sync.js");
+const core = await import("../mobile/src/lib/db-core.js");
 
 const token = await createToken({ username: process.env.APP_USER || "sync-test" });
 const auth = { Authorization: `Bearer ${token}` };
@@ -89,6 +90,7 @@ const localPath = join(dir, "notas.db");
 const sqlite = new ExpoSqliteShim(localPath);
 const local = createExpoClient(sqlite);
 await ensureSchema(local);
+setLocalClientProvider(() => Promise.resolve(local));
 console.log(`Réplica mobile: ${localPath}\n`);
 
 let pass = 0;
@@ -115,15 +117,12 @@ try {
   const logAfterBoot = await local.execute(`SELECT COUNT(*) AS c FROM change_log`);
   check("pull não polui o change_log local", Number(logAfterBoot.rows[0].c) === 0);
 
-  // ---- 2. Escrita local → push via API → chega no Turso ----
-  const localNoteId = randomUUID();
-  const now = Date.now();
-  await local.execute({
-    sql: `INSERT INTO notes (id, title, body, color, is_pinned, is_archived, created_at, updated_at)
-          VALUES (?, ?, ?, 'default', 0, 0, ?, ?)`,
-    args: [localNoteId, "MOBILE TEST local", "criada no celular", now, now],
+  // ---- 2. Escrita local (caminho real do app) → push via API → chega no Turso ----
+  const localNoteId = await core.createNote(local);
+  await core.updateNote(local, localNoteId, {
+    title: "MOBILE TEST local",
+    body: "criada no celular",
   });
-  await logChange("note", localNoteId, "upsert", local);
 
   const s2 = await syncOnceHttp(local, { baseUrl: BASE, token });
   check("push local→remoto reporta 1 nota", s2.pushedNotes === 1, { pushed: s2.pushedNotes });
@@ -176,12 +175,8 @@ try {
   check("exclusão remota apagou a nota no celular", aposDelete.rows.length === 0);
   check("túmulo contabilizado no pull", s5.appliedTombstones >= 1, { applied: s5.appliedTombstones });
 
-  // ---- 6. Exclusão local → tombstone chega no remoto ----
-  await local.execute({
-    sql: `INSERT INTO tombstones (id, entity, deleted_at) VALUES (?, 'note', ?)`,
-    args: [localNoteId, Date.now()],
-  });
-  await logChange("tombstone", localNoteId, "delete", local);
+  // ---- 6. Exclusão local (tombstone do caminho real do app) → remoto ----
+  await core.deleteNote(local, localNoteId);
   await syncOnceHttp(local, { baseUrl: BASE, token });
   const remotaAposTombo = await remote.execute({
     sql: `SELECT 1 AS x FROM notes WHERE id = ?`,

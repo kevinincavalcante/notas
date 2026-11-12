@@ -1,142 +1,205 @@
-import { useCallback, useEffect, useState } from "react";
 import {
-  ActivityIndicator,
+  AppState,
+  FlatList,
   Pressable,
+  RefreshControl,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
-import { openDatabaseSync } from "expo-sqlite";
-import { ensureSchema } from "../../../lib/db-schema";
-import { createExpoClient } from "../lib/sqlite-client";
-import { syncOnceHttp } from "../lib/sync";
+import { useRouter } from "expo-router";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { Client } from "@libsql/client";
+import TopBar from "../components/TopBar";
+import ChipsRow from "../components/ChipsRow";
+import NoteCard from "../components/NoteCard";
+import ActionSheet, { type ActionItem } from "../components/ActionSheet";
+import {
+  createNote,
+  deleteNote,
+  getDb,
+  listNotes,
+  listTags,
+  setNoteArchived,
+  setNotePinned,
+  tagsForNotes,
+  type NoteRow,
+  type TagRow,
+} from "../lib/db";
 import {
   DEFAULT_API_URL,
   getApiUrl,
   getStoredToken,
   getStoredUser,
   login,
-  logout,
   setApiUrl,
 } from "../lib/api";
-import type { ReplicaSyncResult } from "../../../lib/sync-core";
+import { onSynced, scheduleQuietSync, setLocalClientProvider, syncQuiet, type SyncApiConfig } from "../lib/sync";
 
 /**
- * Tela de status da base técnica — prova o tubo completo:
- * SQLite local → schema → login (JWT no SecureStore) → POST /api/sync.
- * A UI de verdade vem com os designs do dono.
+ * Home — estilo OneNote: blocos com as notas recentes e chips de
+ * marcadores deslizando na horizontal. Long-press: fixar/arquivar/excluir.
  */
-export default function StatusScreen() {
-  const [ready, setReady] = useState(false);
+export default function HomeScreen() {
+  const router = useRouter();
+
+  // boot / auth
+  const [booted, setBooted] = useState(false);
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<string | null>(null);
-  const [apiUrl, setApiUrlState] = useState(DEFAULT_API_URL);
+
+  // login (só quando sem token)
   const [userInput, setUserInput] = useState("");
   const [passInput, setPassInput] = useState("");
-  const [urlInput, setUrlInput] = useState("");
   const [showUrlField, setShowUrlField] = useState(false);
-  const [syncResult, setSyncResult] = useState<ReplicaSyncResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [noteCount, setNoteCount] = useState<number | null>(null);
+  const [urlInput, setUrlInput] = useState("");
+  const [loginError, setLoginError] = useState<string | null>(null);
 
+  // dados
+  const [notes, setNotes] = useState<NoteRow[]>([]);
+  const [tagsByNote, setTagsByNote] = useState<Record<string, string[]>>({});
+  const [tags, setTags] = useState<TagRow[]>([]);
+  const [activeTag, setActiveTag] = useState<string | null>(null);
+
+  // sync
+  const apiRef = useRef<SyncApiConfig | null>(null);
+  const [syncing, setSyncing] = useState(false);
+
+  // menu de ações (long-press)
+  const [sheetNote, setSheetNote] = useState<NoteRow | null>(null);
+
+  const reload = useCallback(async () => {
+    const { client } = await getDb();
+    const list = await listNotes(client, activeTag);
+    setNotes(list);
+    setTagsByNote(await tagsForNotes(client, list.map((n) => n.id)));
+    setTags(await listTags(client));
+  }, [activeTag]);
+
+  const runSync = useCallback(async () => {
+    const cfg = apiRef.current;
+    if (!cfg) return;
+    setSyncing(true);
+    await syncQuiet(cfg);
+    setSyncing(false);
+  }, []);
+
+  function scheduleSync() {
+    const cfg = apiRef.current;
+    if (cfg) scheduleQuietSync(cfg);
+  }
+
+  // boot: banco + sessão + primeira sync
   useEffect(() => {
     (async () => {
-      try {
-        const db = openDatabaseSync("notas.db");
-        await db.execAsync("PRAGMA foreign_keys = ON");
-        await ensureSchema(createExpoClient(db));
-        const [t, u, url] = await Promise.all([getStoredToken(), getStoredUser(), getApiUrl()]);
-        setToken(t);
-        setUser(u);
-        setApiUrlState(url);
-        setUrlInput(url === DEFAULT_API_URL ? "" : url);
-      } catch (e) {
-        setError(`Falha no banco local: ${String(e)}`);
-      } finally {
-        setReady(true);
+      await getDb(); // força schema/abertura antes de qualquer tela
+      setLocalClientProvider(() => getDb().then((d) => d.client));
+      const [t, u, url] = await Promise.all([getStoredToken(), getStoredUser(), getApiUrl()]);
+      setToken(t);
+      setUser(u);
+      setUrlInput(url === DEFAULT_API_URL ? "" : url);
+      setBooted(true);
+      if (t) {
+        apiRef.current = { baseUrl: url, token: t };
+        setTimeout(() => void runSync(), 1200);
       }
     })();
-  }, []);
+  }, [runSync]);
 
-  const refreshCount = useCallback(async () => {
-    try {
-      const db = openDatabaseSync("notas.db");
-      const client = createExpoClient(db);
-      const res = await client.execute("SELECT COUNT(*) AS c FROM notes");
-      setNoteCount(Number(res.rows[0]?.c ?? 0));
-    } catch {
-      setNoteCount(null);
-    }
-  }, []);
+  // sync no ciclo de vida: app volta pro foreground → sincroniza
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (s) => {
+      if (s === "active") void runSync();
+    });
+    return () => sub.remove();
+  }, [runSync]);
+
+  // telas recarregam quando um sync termina
+  useEffect(() => onSynced(() => void reload()), [reload]);
 
   useEffect(() => {
-    if (token) void refreshCount();
-  }, [token, syncResult, refreshCount]);
+    if (token) void reload();
+  }, [token, activeTag, reload]);
 
   async function handleLogin() {
-    setBusy(true);
-    setError(null);
+    setLoginError(null);
     if (showUrlField && urlInput.trim()) {
       await setApiUrl(urlInput);
-      setApiUrlState(urlInput.trim());
     }
     const result = await login(userInput, passInput);
     if (result.ok) {
-      const [t, u] = await Promise.all([getStoredToken(), getStoredUser()]);
+      const [t, u, url] = await Promise.all([getStoredToken(), getStoredUser(), getApiUrl()]);
       setToken(t);
       setUser(u);
-      setPassInput("");
+      apiRef.current = { baseUrl: url, token: t! };
+      void runSync();
     } else {
-      setError(result.error || "Login falhou.");
-    }
-    setBusy(false);
-  }
-
-  async function handleSync() {
-    if (!token) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const db = openDatabaseSync("notas.db");
-      const result = await syncOnceHttp(createExpoClient(db), {
-        baseUrl: apiUrl,
-        token,
-      });
-      setSyncResult(result);
-    } catch (e) {
-      setError(String(e instanceof Error ? e.message : e));
-    } finally {
-      setBusy(false);
+      setLoginError(result.error || "Login falhou.");
     }
   }
 
-  async function handleLogout() {
-    await logout();
-    setToken(null);
-    setUser(null);
-    setSyncResult(null);
-    setNoteCount(null);
+  async function runSheetAction(note: NoteRow, fn: (client: Client, id: string) => Promise<void>) {
+    const { client } = await getDb();
+    await fn(client, note.id);
+    scheduleSync();
+    void reload();
   }
 
-  if (!ready) {
+  const sheetNoteRef = sheetNote;
+  const sheetItems: ActionItem[] = sheetNoteRef
+    ? [
+        {
+          label: sheetNoteRef.is_pinned ? "Desafixar" : "Fixar",
+          onPress: () => {
+            void runSheetAction(sheetNoteRef, (client, id) =>
+              setNotePinned(client, id, !sheetNoteRef.is_pinned)
+            );
+          },
+        },
+        {
+          label: "Arquivar",
+          onPress: () => {
+            void runSheetAction(sheetNoteRef, (client, id) =>
+              setNoteArchived(client, id, true)
+            );
+          },
+        },
+        {
+          label: "Excluir",
+          destructive: true,
+          onPress: () => {
+            void runSheetAction(sheetNoteRef, (client, id) => deleteNote(client, id));
+          },
+        },
+      ]
+    : [];
+
+  async function handleFab() {
+    const { client } = await getDb();
+    const id = await createNote(client);
+    scheduleSync();
+    router.push(`/note/${id}`);
+  }
+
+  if (!booted) {
     return (
-      <View style={[styles.container, styles.center]}>
-        <ActivityIndicator size="large" />
+      <View style={[styles.root, styles.center]}>
+        <Text style={styles.muted}>Abrindo suas notas…</Text>
       </View>
     );
   }
 
   if (!token) {
     return (
-      <View style={[styles.container, styles.center]}>
+      <View style={[styles.root, styles.center, styles.login]}>
         <Text style={styles.title}>Notas</Text>
-        <Text style={styles.subtitle}>{apiUrl}</Text>
+        <Text style={styles.subtitle}>{DEFAULT_API_URL}</Text>
 
         <TextInput
           style={styles.input}
           placeholder="Usuário"
+          placeholderTextColor="#71717a"
           autoCapitalize="none"
           value={userInput}
           onChangeText={setUserInput}
@@ -144,22 +207,21 @@ export default function StatusScreen() {
         <TextInput
           style={styles.input}
           placeholder="Senha"
+          placeholderTextColor="#71717a"
           secureTextEntry
           value={passInput}
           onChangeText={setPassInput}
           onSubmitEditing={() => void handleLogin()}
         />
 
-        <Pressable
-          onPress={() => setShowUrlField((v) => !v)}
-          style={styles.linkWrap}
-        >
+        <Pressable onPress={() => setShowUrlField((v) => !v)} hitSlop={8}>
           <Text style={styles.link}>{showUrlField ? "usar API padrão" : "usar outra API"}</Text>
         </Pressable>
         {showUrlField && (
           <TextInput
             style={styles.input}
             placeholder={`URL da API (padrão: ${DEFAULT_API_URL})`}
+            placeholderTextColor="#71717a"
             autoCapitalize="none"
             autoCorrect={false}
             value={urlInput}
@@ -167,142 +229,176 @@ export default function StatusScreen() {
           />
         )}
 
-        <Pressable
-          style={[styles.button, busy && styles.buttonDisabled]}
-          onPress={() => void handleLogin()}
-          disabled={busy}
-        >
-          <Text style={styles.buttonText}>{busy ? "Entrando..." : "Entrar"}</Text>
+        <Pressable style={styles.button} onPress={() => void handleLogin()}>
+          <Text style={styles.buttonText}>Entrar</Text>
         </Pressable>
-
-        {error && <Text style={styles.error}>{error}</Text>}
+        {loginError && <Text style={styles.error}>{loginError}</Text>}
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Notas</Text>
-      <Text style={styles.subtitle}>
-        logado como {user ?? "?"} · {apiUrl}
-      </Text>
+    <View style={styles.root}>
+      <TopBar
+        user={user}
+        onAvatar={() => router.push("/config")}
+        right={[{ label: "⌕", onPress: () => router.push("/search") }]}
+      />
+      <ChipsRow tags={tags} active={activeTag} onSelect={setActiveTag} />
 
-      <View style={styles.card}>
-        <Text style={styles.cardLabel}>Notas locais</Text>
-        <Text style={styles.cardValue}>{noteCount ?? "—"}</Text>
-      </View>
+      <FlatList
+        data={notes}
+        keyExtractor={(item) => item.id}
+        contentContainerStyle={styles.list}
+        ListHeaderComponent={
+          <Text style={styles.section}>{activeTag ? "Bloco" : "Recentes"}</Text>
+        }
+        ListEmptyComponent={
+          <View style={styles.empty}>
+            <Text style={styles.emptyIcon}>🗒</Text>
+            <Text style={styles.emptyText}>
+              {activeTag
+                ? "Nada com esse marcador ainda."
+                : "Nada por aqui — crie sua primeira nota."}
+            </Text>
+          </View>
+        }
+        refreshControl={
+          <RefreshControl
+            refreshing={syncing}
+            onRefresh={() => void runSync()}
+            tintColor="#a1a1aa"
+          />
+        }
+        renderItem={({ item }) => (
+          <NoteCard
+            note={item}
+            tags={tagsByNote[item.id] || []}
+            onPress={() => router.push(`/note/${item.id}`)}
+            onLongPress={() => setSheetNote(item)}
+          />
+        )}
+      />
 
-      <Pressable
-        style={[styles.button, busy && styles.buttonDisabled]}
-        onPress={() => void handleSync()}
-        disabled={busy}
-      >
-        <Text style={styles.buttonText}>{busy ? "Sincronizando..." : "Sync agora"}</Text>
+      <Pressable style={styles.fab} onPress={() => void handleFab()}>
+        <Text style={styles.fabText}>＋</Text>
       </Pressable>
 
-      {syncResult && (
-        <View style={styles.card}>
-          <Text style={styles.cardLabel}>Última sync</Text>
-          <Text style={styles.mono}>
-            {`push: ${syncResult.pushedNotes} notas · ${syncResult.pushedVersions} versões
-pull: ${syncResult.pulledNotes} notas · ${syncResult.pulledVersions} versões
-túmulos aplicados: ${syncResult.appliedTombstones}
-cursor: ${syncResult.cursor}${syncResult.conflicts.length > 0 ? `
-conflitos: ${syncResult.conflicts.join(", ")}` : ""}`}
-          </Text>
-        </View>
-      )}
-
-      {error && <Text style={styles.error}>{error}</Text>}
-
-      <Pressable style={styles.linkWrap} onPress={() => void handleLogout()}>
-        <Text style={styles.link}>Sair</Text>
-      </Pressable>
+      <ActionSheet visible={Boolean(sheetNote)} items={sheetItems} onClose={() => setSheetNote(null)} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
-    backgroundColor: "#f8fafc",
-    padding: 24,
-    gap: 12,
+    backgroundColor: "#101012",
   },
   center: {
     justifyContent: "center",
-    maxWidth: 420,
+    alignItems: "center",
+  },
+  login: {
+    padding: 28,
+    gap: 12,
+    alignSelf: "stretch",
+    maxWidth: 440,
     width: "100%",
-    alignSelf: "center",
+    marginHorizontal: "auto",
   },
   title: {
-    fontSize: 32,
-    fontWeight: "700",
-    color: "#0f172a",
+    fontSize: 34,
+    fontWeight: "800",
+    color: "#fafafa",
   },
   subtitle: {
     fontSize: 13,
-    color: "#64748b",
-    marginBottom: 12,
+    color: "#71717a",
+    marginBottom: 10,
   },
   input: {
     borderWidth: 1,
-    borderColor: "#e2e8f0",
+    borderColor: "#2c2c31",
     borderRadius: 12,
+    backgroundColor: "#1c1c1f",
+    color: "#fafafa",
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 15,
-    backgroundColor: "#fff",
+    alignSelf: "stretch",
   },
   button: {
     backgroundColor: "#fbbf24",
     borderRadius: 12,
     paddingVertical: 14,
     alignItems: "center",
-  },
-  buttonDisabled: {
-    opacity: 0.6,
+    alignSelf: "stretch",
+    marginTop: 6,
   },
   buttonText: {
     color: "#1c1917",
     fontWeight: "700",
     fontSize: 16,
   },
-  linkWrap: {
-    alignSelf: "center",
-    padding: 6,
-  },
   link: {
-    color: "#2563eb",
+    color: "#60a5fa",
     fontSize: 13,
-  },
-  card: {
-    backgroundColor: "#fff",
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-    borderRadius: 12,
-    padding: 14,
-    gap: 4,
-  },
-  cardLabel: {
-    fontSize: 12,
-    color: "#64748b",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  cardValue: {
-    fontSize: 28,
-    fontWeight: "700",
-    color: "#0f172a",
-  },
-  mono: {
-    fontFamily: undefined,
-    fontSize: 13,
-    color: "#334155",
-    lineHeight: 20,
+    alignSelf: "flex-start",
+    paddingVertical: 4,
   },
   error: {
-    color: "#dc2626",
+    color: "#f87171",
     fontSize: 13,
+  },
+  muted: {
+    color: "#71717a",
+  },
+  section: {
+    color: "#71717a",
+    fontSize: 11.5,
+    textTransform: "uppercase",
+    letterSpacing: 1,
+    paddingHorizontal: 4,
+    paddingBottom: 6,
+    paddingTop: 8,
+  },
+  list: {
+    paddingHorizontal: 14,
+    paddingBottom: 100,
+  },
+  empty: {
+    alignItems: "center",
+    paddingVertical: 60,
+    gap: 8,
+  },
+  emptyIcon: {
+    fontSize: 40,
+  },
+  emptyText: {
+    color: "#71717a",
+    textAlign: "center",
+    paddingHorizontal: 40,
+  },
+  fab: {
+    position: "absolute",
+    right: 18,
+    bottom: 24,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "#fbbf24",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOpacity: 0.4,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+  fabText: {
+    color: "#1c1917",
+    fontSize: 26,
+    fontWeight: "700",
+    marginTop: -2,
   },
 });
