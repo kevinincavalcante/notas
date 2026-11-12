@@ -44,9 +44,11 @@ jobs:
         run: npx expo prebuild -p android --no-install
         working-directory: mobile
 
-      # Só o ABI do celular do dono: compila 4x menos C++ e APK ~2x menor
+      # Só o ABI do celular do dono: compila 4x menos C++ e APK ~2x menor.
+      # sed (e não echo >>): anexar sem quebra de linha corrompia a última
+      # propriedade do arquivo e quebrava o JSON.parse do autolinking.
       - name: Focar build em arm64-v8a
-        run: echo "reactNativeArchitectures=arm64-v8a" >> android/gradle.properties
+        run: sed -i 's/^reactNativeArchitectures=.*/reactNativeArchitectures=arm64-v8a/' android/gradle.properties
         working-directory: mobile
 
       - name: Cache Gradle
