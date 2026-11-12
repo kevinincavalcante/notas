@@ -51,6 +51,21 @@ npm run build && npm run electron:bundle
 npx electron .                   # roda o app direto do repo
 ```
 
+## Atalhos de aba (só no desktop)
+
+Estilo browser — o menu nativo do Electron manda os comandos por IPC:
+
+| Atalho | Ação |
+|---|---|
+| `Ctrl+N` | Nova aba com nota nova (a atual continua aberta) |
+| `Ctrl+W` | Fecha a aba atual (salva antes de fechar) |
+| `Ctrl+Tab` | Próxima aba |
+| `Ctrl+Shift+Tab` | Aba anterior |
+
+No web/navegador esses atalhos pertencem ao browser e não existem conflito —
+lá a barra de abas funciona só pelo clique. Nota já aberta clicada na sidebar
+vira a aba ativa em vez de abrir duplicada.
+
 ## Configuração do app empacotado
 
 Na primeira execução, o app procura a config em

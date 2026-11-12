@@ -128,6 +128,13 @@ export default function NoteEditor({
     }
   }, [note, onUpdate]);
 
+  // Fecha a aba / desmonta = salva o que estiver pendente antes de sumir
+  useEffect(() => {
+    return () => {
+      void flushSave();
+    };
+  }, [flushSave]);
+
   // Ao mudar de nota: salva a nota anterior (se tiver alterações) e carrega os novos dados
   const prevNoteIdRef = useRef(note.id);
   useEffect(() => {

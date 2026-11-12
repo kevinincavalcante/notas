@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell } from "electron";
+import { app, BrowserWindow, shell, Menu } from "electron";
 import http from "http";
 import { join } from "path";
 import { createClient } from "@libsql/client";
@@ -29,6 +29,7 @@ async function createWindow(url: string): Promise<BrowserWindow> {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: join(__dirname, "preload.cjs"),
     },
   });
 
@@ -38,8 +39,64 @@ async function createWindow(url: string): Promise<BrowserWindow> {
     return { action: "deny" };
   });
 
+  installAppMenu(win);
   await win.loadURL(url);
   return win;
+}
+
+/**
+ * Menu nativo com os atalhos de aba (estilo browser):
+ *   Ctrl+N  nova aba (nova nota, sem fechar a atual)
+ *   Ctrl+W  fecha a aba atual
+ *   Ctrl+Tab / Ctrl+Shift+Tab  próxima / anterior
+ * Os comandos vão por IPC pro renderer (page.tsx cuida do estado das abas).
+ * O menu fica escondido (autoHideMenuBar) — os atalhos continuam valendo.
+ */
+function installAppMenu(win: BrowserWindow): void {
+  const send = (cmd: string) => () => win.webContents.send("tabs-command", cmd);
+
+  const menu = Menu.buildFromTemplate([
+    {
+      label: "Arquivo",
+      submenu: [
+        { label: "Nova aba (nova nota)", accelerator: "CmdOrCtrl+N", click: send("new") },
+        { label: "Fechar aba", accelerator: "CmdOrCtrl+W", click: send("close") },
+        { type: "separator" },
+        { role: "quit", label: "Sair" },
+      ],
+    },
+    {
+      label: "Editar",
+      submenu: [
+        { role: "undo", label: "Desfazer" },
+        { role: "redo", label: "Refazer" },
+        { type: "separator" },
+        { role: "cut", label: "Cortar" },
+        { role: "copy", label: "Copiar" },
+        { role: "paste", label: "Colar" },
+        { role: "selectAll", label: "Selecionar tudo" },
+      ],
+    },
+    {
+      label: "Abas",
+      submenu: [
+        { label: "Próxima aba", accelerator: "Ctrl+Tab", click: send("next") },
+        { label: "Aba anterior", accelerator: "Shift+Ctrl+Tab", click: send("prev") },
+      ],
+    },
+    {
+      label: "Exibir",
+      submenu: [
+        { role: "reload", label: "Recarregar" },
+        { role: "toggleDevTools" },
+        { type: "separator" },
+        { role: "resetZoom", label: "Zoom padrão" },
+        { role: "zoomIn", label: "Ampliar" },
+        { role: "zoomOut", label: "Reduzir" },
+      ],
+    },
+  ]);
+  Menu.setApplicationMenu(menu);
 }
 
 /** Sobe o app Next em-processo (sidecar) e devolve a porta local. */

@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Sidebar from "@/components/Sidebar";
 import NoteEditor from "@/components/NoteEditor";
+import TabStrip from "@/components/TabStrip";
 import { Note, Attachment, Tag } from "@/types/note";
 import { StickyNote, Plus, Menu } from "lucide-react";
 import { useUI } from "@/components/UIProvider";
@@ -12,10 +13,59 @@ export default function DashboardPage() {
   const [searchResults, setSearchResults] = useState<Note[] | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTagFilter, setActiveTagFilter] = useState<string | null>(null);
-  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  // Abas estilo browser (desktop): várias notas abertas de uma vez.
+  // selectedNoteId continua existindo como alias da aba ativa.
+  const [openTabs, setOpenTabs] = useState<string[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const { confirm, showToast } = useUI();
+
+  // Espelho sempre-fresco do notes (usado em paths async de save/exclusão,
+  // ex: flush de save no unmount de uma aba recém-excluída)
+  const notesRef = useRef<Note[]>([]);
+  useEffect(() => {
+    notesRef.current = notes;
+  }, [notes]);
+
+  const selectedNoteId = activeTabId;
+
+  /** Abre uma nota em nova aba (não fecha a atual) e ativa ela. */
+  function openTabNew(noteId: string) {
+    setOpenTabs((prev) => (prev.includes(noteId) ? prev : [...prev, noteId]));
+    setActiveTabId(noteId);
+  }
+
+  /** Ativa a aba da nota se já aberta; senão abre em nova aba. */
+  function openTab(noteId: string) {
+    if (openTabs.includes(noteId)) {
+      setActiveTabId(noteId);
+    } else {
+      openTabNew(noteId);
+    }
+  }
+
+  /** Fecha uma aba; se era a ativa, ativa a vizinha. No-op se não está aberta. */
+  function closeTab(tabId: string) {
+    if (!openTabs.includes(tabId)) return;
+    const idx = openTabs.indexOf(tabId);
+    const rest = openTabs.filter((t) => t !== tabId);
+    setOpenTabs(rest);
+    if (activeTabId === tabId) {
+      setActiveTabId(rest.length > 0 ? rest[Math.min(idx, rest.length - 1)] : null);
+    }
+  }
+
+  function closeActiveTab() {
+    if (activeTabId) closeTab(activeTabId);
+  }
+
+  function cycleTab(dir: 1 | -1) {
+    if (openTabs.length < 2 || !activeTabId) return;
+    const idx = openTabs.indexOf(activeTabId);
+    const next = openTabs[(idx + dir + openTabs.length) % openTabs.length];
+    setActiveTabId(next);
+  }
 
   const loadNotes = useCallback(async () => {
     try {
@@ -24,7 +74,9 @@ export default function DashboardPage() {
       if (res.ok && Array.isArray(data.notes)) {
         setNotes(data.notes);
         if (data.notes.length > 0 && typeof window !== "undefined" && window.innerWidth >= 768) {
-          setSelectedNoteId((prev) => prev || data.notes[0].id);
+          // Desktop: abre a primeira nota como aba inicial (só no boot)
+          setOpenTabs((prev) => (prev.length > 0 ? prev : [data.notes[0].id]));
+          setActiveTabId((prev) => prev ?? data.notes[0].id);
         }
       }
     } catch (err) {
@@ -71,10 +123,43 @@ export default function DashboardPage() {
     return searchResults !== null ? searchResults : notes;
   }, [notes, searchResults]);
 
+  // Comandos de aba vindos do menu nativo do Electron (Ctrl+N/W/Tab).
+  // Uma única assinatura IPC; handlers sempre-frescos via ref.
+  const tabHandlersRef = useRef({
+    new: () => {},
+    close: () => {},
+    next: () => {},
+    prev: () => {},
+  });
+  tabHandlersRef.current = { new: handleCreateNote, close: closeActiveTab, next: () => cycleTab(1), prev: () => cycleTab(-1) };
+
+  useEffect(() => {
+    const api = (
+      window as unknown as {
+        notasDesktop?: { onTabCommand: (cb: (cmd: string) => void) => void };
+      }
+    ).notasDesktop;
+    if (!api?.onTabCommand) return;
+    api.onTabCommand((cmd) => {
+      const handler = tabHandlersRef.current[cmd as keyof typeof tabHandlersRef.current];
+      if (handler) handler();
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const selectedNote = useMemo(() => {
     if (!selectedNoteId) return null;
     return notes.find((n) => n.id === selectedNoteId) || null;
   }, [notes, selectedNoteId]);
+
+  const tabsData = useMemo(
+    () =>
+      openTabs.map((id) => ({
+        id,
+        title: notes.find((n) => n.id === id)?.title || "",
+      })),
+    [openTabs, notes]
+  );
 
   async function patchNote(
     noteId: string,
@@ -115,7 +200,8 @@ export default function DashboardPage() {
           tags: [],
         };
         setNotes((prev) => [newNote, ...prev]);
-        setSelectedNoteId(newNote.id);
+        // Aba nova: a atual continua aberta (Ctrl+N no Electron usa isto)
+        openTabNew(newNote.id);
         setIsSidebarOpen(false);
       }
     } catch (err) {
@@ -124,17 +210,24 @@ export default function DashboardPage() {
     }
   }
 
-  async function handleUpdateNote(updatedFields: Partial<Note> & { skipPatch?: boolean }) {
-    if (!selectedNoteId) return;
-    const noteId = selectedNoteId;
+  async function handleUpdateNote(
+    updatedFields: Partial<Note> & { skipPatch?: boolean },
+    targetNoteId: string | null = selectedNoteId
+  ) {
+    const noteId = targetNoteId;
+    if (!noteId) return;
     const { skipPatch, ...fields } = updatedFields;
 
-    const previous = notes.find((n) => n.id === noteId);
+    const previous = notesRef.current.find((n) => n.id === noteId);
     setNotes((prev) =>
       prev.map((n) => (n.id === noteId ? { ...n, ...fields, updated_at: Date.now() } : n))
     );
 
     if (skipPatch) return;
+
+    // Nota pode ter sido excluída no meio (flush de save no unmount da aba):
+    // nesse caso não patcha nem reverte
+    if (!notesRef.current.some((n) => n.id === noteId)) return;
 
     const result = await patchNote(noteId, fields);
 
@@ -145,7 +238,7 @@ export default function DashboardPage() {
       );
     }
 
-    if (!result.ok && previous) {
+    if (!result.ok && previous && notesRef.current.some((n) => n.id === noteId)) {
       const { updated_at, ...revertFields } = previous;
       void updated_at;
       setNotes((prev) =>
@@ -185,17 +278,13 @@ export default function DashboardPage() {
     const nextArchive = !target.is_archived;
 
     setNotes((prev) => prev.filter((n) => n.id !== noteId));
-
-    if (selectedNoteId === noteId) {
-      const remaining = notes.filter((n) => n.id !== noteId);
-      setSelectedNoteId(remaining.length > 0 ? remaining[0].id : null);
-    }
+    closeTab(noteId);
 
     const ok = await patchNote(noteId, { is_archived: nextArchive });
     if (!ok) {
       setNotes((prev) => [target, ...prev]);
-      if (selectedNoteId === null) {
-        setSelectedNoteId(target.id);
+      if (!notesRef.current.some((n) => n.id === noteId) || openTabs.length === 0) {
+        openTabNew(target.id);
       }
     }
   }
@@ -216,28 +305,26 @@ export default function DashboardPage() {
     const remaining = notes.filter((n) => n.id !== noteId);
 
     setNotes(remaining);
-    if (selectedNoteId === noteId) {
-      setSelectedNoteId(remaining.length > 0 ? remaining[0].id : null);
-    }
+    closeTab(noteId);
 
     try {
       const res = await fetch(`/api/notes/${noteId}`, { method: "DELETE" });
       if (!res.ok && removed) {
         setNotes((prev) => [removed, ...prev]);
-        setSelectedNoteId(removed.id);
+        openTabNew(removed.id);
       }
     } catch (err) {
       console.error("Erro ao excluir nota:", err);
       if (removed) {
         setNotes((prev) => [removed, ...prev]);
-        setSelectedNoteId(removed.id);
+        openTabNew(removed.id);
       }
     }
   }
 
-  function handleAddAttachment(attachment: Attachment) {
-    if (!selectedNoteId) return;
-    const noteId = selectedNoteId;
+  function handleAddAttachment(attachment: Attachment, targetNoteId?: string | null) {
+    const noteId = targetNoteId ?? selectedNoteId;
+    if (!noteId) return;
     setNotes((prev) =>
       prev.map((n) => {
         if (n.id !== noteId) return n;
@@ -247,9 +334,9 @@ export default function DashboardPage() {
     );
   }
 
-  function handleRemoveAttachment(attachmentId: string) {
-    if (!selectedNoteId) return;
-    const noteId = selectedNoteId;
+  function handleRemoveAttachment(attachmentId: string, targetNoteId?: string | null) {
+    const noteId = targetNoteId ?? selectedNoteId;
+    if (!noteId) return;
     setNotes((prev) =>
       prev.map((n) => {
         if (n.id !== noteId) return n;
@@ -263,7 +350,8 @@ export default function DashboardPage() {
   }
 
   function handleSelectNote(note: Note) {
-    setSelectedNoteId(note.id);
+    // Estilo browser: nota já aberta vira a aba ativa; senão abre em nova aba
+    openTab(note.id);
     setIsSidebarOpen(false);
   }
 
@@ -290,51 +378,79 @@ export default function DashboardPage() {
           <div className="flex-1 flex items-center justify-center text-slate-400 dark:text-slate-500 text-sm">
             Carregando suas notas...
           </div>
-        ) : selectedNote ? (
-          <NoteEditor
-            key={selectedNote.id}
-            note={selectedNote}
-            onUpdate={handleUpdateNote}
-            onDelete={() => handleDeleteNote(selectedNote.id)}
-            onTogglePin={() => handleTogglePin(selectedNote.id)}
-            onToggleArchive={() => handleToggleArchive(selectedNote.id)}
-            onAddAttachment={handleAddAttachment}
-            onRemoveAttachment={handleRemoveAttachment}
-            onMenuClick={() => setIsSidebarOpen(true)}
-          />
         ) : (
-          <div className="flex-1 flex flex-col h-full">
-            <div className="md:hidden p-3 border-b border-slate-200 dark:border-slate-800 flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setIsSidebarOpen(true)}
-                className="p-1.5 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white rounded-lg transition"
-              >
-                <Menu className="w-5 h-5" />
-              </button>
-              <span className="font-semibold text-sm text-slate-800 dark:text-slate-300">Notas</span>
-            </div>
+          <>
+            <TabStrip
+              tabs={tabsData}
+              activeId={selectedNoteId}
+              onSelect={(id) => setActiveTabId(id)}
+              onClose={closeTab}
+            />
 
-            <div className="flex-1 flex flex-col items-center justify-center p-6 text-center select-none">
-              <div className="w-16 h-16 bg-amber-400/10 text-amber-500 rounded-2xl flex items-center justify-center mb-4 shadow-xs border border-amber-400/20">
-                <StickyNote className="w-8 h-8" />
-              </div>
-              <h2 className="text-lg font-semibold text-slate-900 dark:text-white mb-1">
-                Nenhuma nota selecionada
-              </h2>
-              <p className="text-sm text-slate-600 dark:text-slate-400 max-w-sm mb-6 leading-relaxed">
-                Selecione uma nota na lista lateral ou crie uma nova nota para começar a escrever.
-              </p>
-              <button
-                type="button"
-                onClick={handleCreateNote}
-                className="flex items-center gap-2 px-4 py-2 bg-amber-400 hover:bg-amber-300 active:bg-amber-500 text-slate-950 font-semibold text-sm rounded-xl transition shadow-xs active:scale-95"
-              >
-                <Plus className="w-4 h-4" />
-                Criar uma nota
-              </button>
+            <div className="flex-1 flex flex-col min-h-0">
+              {/* Uma instância de editor por aba aberta — escondidas com display:none
+                  preservam scroll, undo/redo e cursor de cada nota */}
+              {openTabs.map((tabId) => {
+                const note = notes.find((n) => n.id === tabId);
+                if (!note) return null;
+                const isActive = tabId === selectedNoteId;
+                return (
+                  <div
+                    key={tabId}
+                    className={isActive ? "flex-1 flex flex-col min-h-0" : "hidden"}
+                  >
+                    <NoteEditor
+                      note={note}
+                      onUpdate={(fields) => handleUpdateNote(fields, tabId)}
+                      onDelete={() => handleDeleteNote(tabId)}
+                      onTogglePin={() => handleTogglePin(tabId)}
+                      onToggleArchive={() => handleToggleArchive(tabId)}
+                      onAddAttachment={(attachment) => handleAddAttachment(attachment, tabId)}
+                      onRemoveAttachment={(attachmentId) =>
+                        handleRemoveAttachment(attachmentId, tabId)
+                      }
+                      onMenuClick={() => setIsSidebarOpen(true)}
+                    />
+                  </div>
+                );
+              })}
+
+              {openTabs.length === 0 && (
+                <div className="flex-1 flex flex-col h-full">
+                  <div className="md:hidden p-3 border-b border-slate-200 dark:border-slate-800 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsSidebarOpen(true)}
+                      className="p-1.5 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white rounded-lg transition"
+                    >
+                      <Menu className="w-5 h-5" />
+                    </button>
+                    <span className="font-semibold text-sm text-slate-800 dark:text-slate-300">Notas</span>
+                  </div>
+
+                  <div className="flex-1 flex flex-col items-center justify-center p-6 text-center select-none">
+                    <div className="w-16 h-16 bg-amber-400/10 text-amber-500 rounded-2xl flex items-center justify-center mb-4 shadow-xs border border-amber-400/20">
+                      <StickyNote className="w-8 h-8" />
+                    </div>
+                    <h2 className="text-lg font-semibold text-slate-900 dark:text-white mb-1">
+                      Nenhuma nota selecionada
+                    </h2>
+                    <p className="text-sm text-slate-600 dark:text-slate-400 max-w-sm mb-6 leading-relaxed">
+                      Selecione uma nota na lista lateral ou crie uma nova nota para começar a escrever.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleCreateNote}
+                      className="flex items-center gap-2 px-4 py-2 bg-amber-400 hover:bg-amber-300 active:bg-amber-500 text-slate-950 font-semibold text-sm rounded-xl transition shadow-xs active:scale-95"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Criar uma nota
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
+          </>
         )}
       </main>
     </div>
