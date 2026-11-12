@@ -1,9 +1,11 @@
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View, type TextInputInstance } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View, BackHandler, type TextInputInstance } from "react-native";
+import { WebView } from "react-native-webview";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import ActionSheet, { type ActionItem } from "../../components/ActionSheet";
 import { autoList } from "../../lib/auto-list";
+import { bodyToHtml } from "../../lib/markdown-html";
 import {
   deleteNote,
   getDb,
@@ -38,6 +40,9 @@ export default function NoteScreen() {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [showColors, setShowColors] = useState(false);
   const [selOverride, setSelOverride] = useState<{ start: number; end: number } | undefined>();
+  // Modo Joplin: existentes abrem em LEITURA (preview markdown, texto
+  // selecionável); ✏️ entra em edição. Nota nova abre direto editando.
+  const [mode, setMode] = useState<"read" | "edit">("read");
 
   // lista numerada automática: texto anterior + flag do Enter
   const prevBodyRef = useRef("");
@@ -115,10 +120,28 @@ export default function NoteScreen() {
       setLoaded(true);
       // Nota nova/sem nada: abre direto no body com o teclado (estilo Keep)
       if (!note.title && !note.body) {
+        setMode("edit");
         setTimeout(() => bodyRef.current?.focus(), 350);
+      } else {
+        setMode("read");
       }
     })();
   }, [noteId]);
+
+  // Volta pro modo leitura quando entra em edição (gesto de voltar do Android)
+  useEffect(() => {
+    if (mode !== "edit") return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      switchToRead();
+      return true;
+    });
+    return () => sub.remove();
+  }, [mode]);
+
+  const switchToRead = useCallback(() => {
+    void flushSave();
+    setMode("read");
+  }, [flushSave]);
 
   // autosave com debounce (título/corpo)
   function touch(text: "title" | "body", value: string) {
@@ -258,13 +281,55 @@ export default function NoteScreen() {
         >
           <Text style={styles.back}>‹</Text>
         </Pressable>
-        <Text style={styles.status}>
-          {status === "saved" ? "Salvo" : status === "saving" ? "Salvando…" : "…"}
-        </Text>
-        <View style={{ width: 30 }} />
+        <View style={styles.headerRight}>
+          {mode === "edit" && (
+            <Text style={styles.status}>
+              {status === "saved" ? "Salvo" : status === "saving" ? "Salvando…" : "…"}
+            </Text>
+          )}
+          {/* ✏️ modo Joplin: alterna leitura ↔ edição */}
+          <Pressable
+            onPress={() => (mode === "edit" ? switchToRead() : setMode("edit"))}
+            hitSlop={8}
+            style={({ pressed }) => [styles.modeBtn, pressed && { opacity: 0.7 }]}
+          >
+            <Text style={styles.modeIcon}>{mode === "edit" ? "✅" : "✏️"}</Text>
+          </Pressable>
+          <Pressable onPress={() => setSheetOpen(true)} hitSlop={8}>
+            <Text style={styles.more}>⋯</Text>
+          </Pressable>
+        </View>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+      {mode === "read" ? (
+        /* ---- MODO LEITURA: preview markdown selecionável (estilo desktop) ---- */
+        <ScrollView
+          contentContainerStyle={styles.scroll}
+          keyboardShouldPersistTaps="handled"
+        >
+          <Text selectable style={styles.readTitle}>
+            {title || "Sem título"}
+          </Text>
+          <WebView
+            source={{ html: bodyToHtml(body) }}
+            style={styles.readBody}
+            javaScriptEnabled={false}
+            originWhitelist={["*"]}
+            setSupportMultipleWindows={false}
+            onShouldStartLoadWithRequest={(req) => {
+              // Links do markdown abrem no navegador do sistema
+              if (req.url.startsWith("http")) {
+                import("react-native").then(({ Linking }) => void Linking.openURL(req.url));
+                return false;
+              }
+              return true;
+            }}
+          />
+        </ScrollView>
+      ) : (
+        /* ---- MODO EDIÇÃO: o editor de sempre ---- */
+        <>
+          <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <TextInput
           style={styles.titleInput}
           value={title}
@@ -326,6 +391,8 @@ export default function NoteScreen() {
           </Pressable>
         </View>
       </View>
+        </>
+      )}
 
       <ActionSheet visible={sheetOpen} items={sheetItems} onClose={() => setSheetOpen(false)} />
     </View>
@@ -353,6 +420,27 @@ const styles = StyleSheet.create({
     color: "#fafafa",
     fontSize: 30,
     paddingHorizontal: 8,
+  },
+  headerRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+  },
+  modeBtn: {
+    padding: 4,
+  },
+  modeIcon: {
+    fontSize: 18,
+  },
+  readTitle: {
+    color: "#fafafa",
+    fontSize: 26,
+    fontWeight: "700",
+    marginBottom: 8,
+  },
+  readBody: {
+    flex: 1,
+    backgroundColor: "transparent",
   },
   status: {
     color: "#71717a",
