@@ -69,6 +69,7 @@ export default function HomeScreen() {
   const apiRef = useRef<SyncApiConfig | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [pulling, setPulling] = useState(false); // spinner só no gesto do usuário
 
   // menu de ações (long-press)
   const [sheetNote, setSheetNote] = useState<NoteRow | null>(null);
@@ -265,14 +266,13 @@ export default function HomeScreen() {
       />
       <ChipsRow tags={tags} active={activeTag} onSelect={setActiveTag} />
 
-      {(syncing || syncError) && (
+      {syncError && (
         <Pressable
           onPress={() => void runSync()}
-          disabled={syncing}
           style={({ pressed }) => [styles.syncLine, pressed && { opacity: 0.7 }]}
         >
-          <Text style={syncing ? styles.syncMuted : styles.syncError}>
-            {syncing ? "Sincronizando…" : `Sync falhou: ${syncError} — toque pra tentar de novo`}
+          <Text style={styles.syncError}>
+            {`Sync falhou: ${syncError} — toque pra tentar de novo`}
           </Text>
         </Pressable>
       )}
@@ -294,8 +294,11 @@ export default function HomeScreen() {
         }
         refreshControl={
           <RefreshControl
-            refreshing={syncing}
-            onRefresh={() => void runSync()}
+            refreshing={pulling}
+            onRefresh={() => {
+              setPulling(true);
+              void runSync().finally(() => setPulling(false));
+            }}
             tintColor="#a1a1aa"
           />
         }

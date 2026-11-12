@@ -2,6 +2,7 @@
 // via POST /api/sync + Bearer JWT — o APK não carrega credenciais do Turso.
 // O remoto HTTP vive na lib compartilhada (mesma peça que o desktop usa):
 export { syncOnceHttp, makeHttpSyncRun, type SyncApiConfig } from "../../../lib/sync-http";
+import type { SyncApiConfig } from "../../../lib/sync-http";
 import type { Client } from "@libsql/client";
 import type { ReplicaSyncResult } from "../../../lib/sync-core";
 import { syncOnceHttp } from "../../../lib/sync-http";
