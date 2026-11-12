@@ -8,13 +8,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 node scripts/bump-versioncode.mjs
+VC=$(cat mobile/android/notas-versioncode.txt)
 
 cd mobile/android
-./gradlew assembleRelease --no-daemon
+./gradlew assembleRelease --no-daemon "-PnotasVersionCode=$VC"
 
 APK=app/build/outputs/apk/release/app-release.apk
 VER=$(node -p "require('../app.json').expo.version")
-VC=$(grep -oE 'versionCode [0-9]+' app/build.gradle | grep -oE '[0-9]+')
+
 cp "$APK" "/tmp/notas-${VER}-v${VC}.apk"
 
 cd ../..
