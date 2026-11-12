@@ -31,7 +31,11 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
+  const token =
+    request.cookies.get(AUTH_COOKIE_NAME)?.value ||
+    // Clientes sem cookie (app mobile): Bearer token no header
+    request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim() ||
+    "";
 
   if (!token) {
     if (pathname.startsWith("/api/")) {

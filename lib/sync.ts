@@ -1,4 +1,5 @@
 import { db } from "@/lib/turso";
+import type { SyncPush, SyncResult, PushedNote } from "@/lib/sync-types";
 import { logChange } from "@/lib/sync-log";
 import { syncBodyAutoTags } from "@/lib/url-autotag";
 import { deleteAttachmentFile } from "@/lib/storage";
@@ -25,57 +26,7 @@ import type { Client } from "@libsql/client";
  * deduplica nos dois sentidos e o bootstrap (watermark 0) backfilla tudo.
  */
 
-export interface PushedNote {
-  id: string;
-  title: string;
-  body: string;
-  color: string;
-  is_pinned: number | boolean;
-  is_archived: number | boolean;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface PushedAttachment {
-  id: string;
-  note_id: string;
-  storage_key: string;
-  file_name: string;
-  mime_type: string;
-  file_size: number;
-  duration_seconds: number | null;
-  created_at: number;
-}
-
-export interface PushedTombstone {
-  id: string;
-  deleted_at: number;
-}
-
-export interface PushedVersion {
-  id: string;
-  note_id: string;
-  title: string;
-  body: string;
-  created_at: number;
-}
-
-export interface SyncPush {
-  notes?: PushedNote[];
-  attachments?: PushedAttachment[];
-  /** ids de anexos apagados na réplica que enviou */
-  attachments_removed?: string[];
-  tombstones?: PushedTombstone[];
-  /** versões do histórico com created_at >= versions_watermark */
-  versions?: PushedVersion[];
-  /** maior created_at de versão que a réplica que envia já viu (0 = bootstrap) */
-  versions_watermark?: number;
-}
-
-interface SyncResult {
-  cursor: number;
-  conflicts: string[];
-}
+export type { PushedNote, PushedAttachment, PushedTombstone, PushedVersion, SyncPush, SyncResult } from "@/lib/sync-types";
 
 /**
  * Remove uma nota e seus binários do storage — usada tanto pelo DELETE da API

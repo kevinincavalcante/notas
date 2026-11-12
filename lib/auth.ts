@@ -12,7 +12,11 @@ export async function getSession(): Promise<SessionPayload | null> {
 }
 
 export async function getSessionFromRequest(req: NextRequest): Promise<SessionPayload | null> {
-  const token = req.cookies.get(AUTH_COOKIE_NAME)?.value;
+  const token =
+    req.cookies.get(AUTH_COOKIE_NAME)?.value ||
+    // App mobile (Expo): Bearer token no header em vez de cookie
+    req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim() ||
+    "";
   if (!token) return null;
   return verifyToken(token);
 }

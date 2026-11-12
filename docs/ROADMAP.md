@@ -63,15 +63,15 @@ quando alterado**.
   "embedded replica/sync" da Turso mudaram de rumo em 2025 — verificar o estado
   atual antes de considerar. O desenho acima funciona sem eles.
 
-### 3. Android = Expo ou Capacitor (em aberto ⏳)
-- **Expo/React Native**: UI nativa nova (o UI React DOM não reaproveita), mas
-  o motor de sync e a lógica de domínio são reutilizados (JS puro +
-  `expo-sqlite`).
-- **Capacitor**: reusa a mesma web UI com muito menos trabalho, menos "nativo".
-- **Decidir com o app desktop na mão.**
-- Nota para Expo: a API hoje usa cookie `HttpOnly`; o fetch do RN não gerencia
-  cookies bem → o `proxy.ts` precisará aceitar `Authorization: Bearer`, token
-  guardado no SecureStore.
+### 3. Android = Expo (decidido ✅)
+- **Expo/React Native**: UI nativa nova (o UI React DOM não reaproveita), motor
+  de sync e lógica de domínio reutilizados (JS puro + `expo-sqlite`).
+- **Capacitor descartado** (decisão do dono, junto com o design do app).
+- **Hospedagem da API**: Vercel (`api.exemplo.invalid`) — o celular
+  sincroniza via `POST /api/sync` + `Authorization: Bearer` (APK não carrega
+  credenciais do Turso); token do login vai no SecureStore.
+- Build focado em `arm64-v8a` (celular do dono).
+- Designs finais da UI ainda a definir pelo dono.
 
 ---
 
@@ -82,7 +82,7 @@ quando alterado**.
 | 1 | **Sync engine + `/api/sync`** — contrato em `docs/SYNC.md`; motor como biblioteca + testes e2e (15/15 e 17/17, já com sync do histórico de versões) | ✅ |
 | 2 | **App Linux (Electron)** — sidecar Next + SQLite local + sync em background; bootado e sincronizado em ambiente de teste | 🔨 falta gerar o `.deb` **na máquina x86 do dono** |
 | 3 | **Empacotamento Linux** — `electron-builder`: **.deb** (pipeline provado; `npm run electron:deb` no PC do dono) | 🔨 |
-| 4 | **App Android** — stack decidido na fase 3 | ⏳ |
+| 4 | **App Android (Expo)** — base técnica feita: réplica expo-sqlite sincronizando via `POST /api/sync` + Bearer (e2e 12/12); UI nativa com os designs do dono | 🔨 base pronta, UI pendente |
 
 ### Concluído
 - ✅ Sync do histórico de versões (`note_versions`) no motor — marca d'água `created_at`, bootstrap backfilla o histórico inteiro no desktop (v1.1)

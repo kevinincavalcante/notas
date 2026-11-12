@@ -64,9 +64,12 @@ export async function POST(request: Request) {
 
     const token = await createToken({ username: expectedUser });
 
+    // `token` vai no corpo pro app mobile (Expo): guarda no SecureStore e
+    // usa Authorization: Bearer — cookies HttpOnly são coisa de browser.
     const response = NextResponse.json({
       success: true,
       user: { username: expectedUser },
+      token,
     });
 
     response.cookies.set({
