@@ -385,6 +385,7 @@ export default function DashboardPage() {
               activeId={selectedNoteId}
               onSelect={(id) => setActiveTabId(id)}
               onClose={closeTab}
+              onNew={handleCreateNote}
             />
 
             <div className="flex-1 flex flex-col min-h-0">

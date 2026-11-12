@@ -1,39 +1,38 @@
 "use client";
 
-import { X } from "lucide-react";
+import { Plus, X } from "lucide-react";
 
 interface TabStripProps {
   tabs: { id: string; title: string }[];
   activeId: string | null;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
+  onNew: () => void;
 }
 
 /**
- * Barra de abas estilo browser — discreta: pills finas, título truncado,
- * × aparece no hover. Visível em web e desktop (no web vira só uma barra
- * de abas clicável; os atalhos Ctrl+N/W ficam só no Electron).
+ * Barra de abas estilo Chrome: largura fixa por aba, título truncado,
+ * × no hover (e sempre visível na aba ativa) e botão + pra nova aba.
  */
-export default function TabStrip({ tabs, activeId, onSelect, onClose }: TabStripProps) {
-  if (tabs.length === 0) return null;
-
+export default function TabStrip({ tabs, activeId, onSelect, onClose, onNew }: TabStripProps) {
   return (
-    <div className="flex items-end gap-1 px-2 pt-1.5 overflow-x-auto shrink-0 bg-slate-100/50 dark:bg-slate-900/30 border-b border-black/5 dark:border-white/5">
+    <div className="flex items-center gap-1 px-2 pt-1.5 shrink-0 bg-slate-100/50 dark:bg-slate-900/30 border-b border-black/5 dark:border-white/5 overflow-x-auto">
       {tabs.map((tab) => {
         const isActive = tab.id === activeId;
         return (
-          <button
+          <div
             key={tab.id}
-            type="button"
+            role="button"
+            tabIndex={0}
             onClick={() => onSelect(tab.id)}
             aria-pressed={isActive}
-            className={`group flex items-center gap-1.5 pl-3 pr-1.5 py-1.5 rounded-t-lg text-xs max-w-44 min-w-20 shrink-0 transition border ${
+            className={`group flex items-center gap-1.5 pl-3 pr-1.5 py-1.5 rounded-t-lg text-xs w-44 shrink-0 cursor-pointer transition border ${
               isActive
                 ? "bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white font-semibold border-black/5 dark:border-white/10 border-b-transparent shadow-xs"
                 : "text-slate-500 dark:text-slate-400 hover:bg-black/5 dark:hover:bg-white/5 border-transparent"
             }`}
           >
-            <span className="truncate flex-1 text-left">
+            <span className="truncate flex-1 text-left select-none">
               {tab.title || "Sem título"}
             </span>
             <span
@@ -43,14 +42,29 @@ export default function TabStrip({ tabs, activeId, onSelect, onClose }: TabStrip
                 e.stopPropagation();
                 onClose(tab.id);
               }}
-              className="p-0.5 rounded-md hover:bg-black/10 dark:hover:bg-white/10 opacity-0 group-hover:opacity-100 focus:opacity-100 transition"
+              className={`p-0.5 rounded-md hover:bg-black/10 dark:hover:bg-white/10 transition ${
+                isActive
+                  ? "opacity-70 hover:opacity-100"
+                  : "opacity-0 group-hover:opacity-100"
+              }`}
               aria-label="Fechar aba"
             >
               <X className="w-3 h-3" />
             </span>
-          </button>
+          </div>
         );
       })}
+
+      {/* Nova aba — sempre visível, no fim da fila */}
+      <button
+        type="button"
+        onClick={onNew}
+        aria-label="Nova aba"
+        title="Nova aba (Ctrl+N no desktop)"
+        className="shrink-0 p-1.5 rounded-lg text-slate-500 dark:text-slate-400 hover:bg-amber-400/15 hover:text-amber-600 dark:hover:text-amber-400 active:scale-90 transition"
+      >
+        <Plus className="w-3.5 h-3.5" />
+      </button>
     </div>
   );
 }
