@@ -3,6 +3,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import ActionSheet, { type ActionItem } from "../../components/ActionSheet";
+import { autoList } from "../../lib/auto-list";
 import {
   deleteNote,
   getDb,
@@ -35,6 +36,11 @@ export default function NoteScreen() {
   const [color, setColor] = useState("default");
   const [status, setStatus] = useState<"saved" | "saving" | "unsaved">("saved");
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [selOverride, setSelOverride] = useState<{ start: number; end: number } | undefined>();
+
+  // lista numerada automática: texto anterior + flag do Enter
+  const prevBodyRef = useRef("");
+  const enterRef = useRef(false);
 
   const savedRef = useRef<NoteRow | null>(null); // snapshot do que já foi gravado
   const latestRef = useRef({ title: "", body: "", color: "default" });
@@ -79,6 +85,7 @@ export default function NoteScreen() {
       }
       savedRef.current = note;
       latestRef.current = { title: note.title, body: note.body, color: note.color };
+      prevBodyRef.current = note.body;
       setTitle(note.title);
       setBody(note.body);
       setColor(note.color);
@@ -99,6 +106,28 @@ export default function NoteScreen() {
     setStatus("unsaved");
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => void flushSave(), 700);
+  }
+
+  // lista numerada automática: intercepta a digitação e aplica as regras
+  function onBodyChange(text: string) {
+    const edit = autoList(prevBodyRef.current, text, { enter: enterRef.current });
+    enterRef.current = false;
+    if (edit) {
+      setBody(edit.text);
+      prevBodyRef.current = edit.text;
+      if (edit.cursor >= 0) setSelOverride({ start: edit.cursor, end: edit.cursor });
+      touch("body", edit.text);
+      return;
+    }
+    prevBodyRef.current = text;
+    touch("body", text);
+  }
+
+  // sai do modo "cursor empurrado" na primeira seleção que não for a nossa
+  function onBodySelection(sel: { start: number; end: number }) {
+    setSelOverride((current) =>
+      current && current.start === sel.start && current.end === sel.end ? current : undefined
+    );
   }
 
   // sai da tela = salva o que ficou pendente
@@ -238,8 +267,13 @@ export default function NoteScreen() {
         <TextInput
           style={styles.bodyInput}
           value={body}
-          onChangeText={(t) => touch("body", t)}
-          placeholder="Escreva aqui… (markdown)"
+          onChangeText={onBodyChange}
+          onSelectionChange={(e) => onBodySelection(e.nativeEvent.selection)}
+          onKeyPress={(e) => {
+            if (e.nativeEvent.key === "Enter") enterRef.current = true;
+          }}
+          selection={selOverride}
+          placeholder="Escreva aqui… (markdown; digite um nº + 2 espaços pra lista)"
           placeholderTextColor="#52525b"
           multiline
           textAlignVertical="top"

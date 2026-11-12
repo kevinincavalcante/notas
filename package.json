@@ -11,6 +11,8 @@
     "db:init": "node scripts/init-db.mjs",
     "db:rebuild": "node scripts/init-db.mjs --rebuild-fts",
     "test:sync": "tsx scripts/test-sync.mts",
+    "test:auto-list": "tsx scripts/test-auto-list.mts",
+    "apk": "bash scripts/build-apk.sh",
     "test:sync:replica": "tsx scripts/test-sync-replica.mts",
     "test:sync:mobile": "tsx scripts/test-sync-mobile.mts",
     "electron:bundle": "esbuild electron/main.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist-electron/main.cjs && cp electron/preload.cjs dist-electron/preload.cjs",
