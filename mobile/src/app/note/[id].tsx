@@ -302,17 +302,16 @@ export default function NoteScreen() {
       </View>
 
       {mode === "read" ? (
-        /* ---- MODO LEITURA: preview markdown selecionável (estilo desktop) ---- */
-        <ScrollView
-          contentContainerStyle={styles.scroll}
-          keyboardShouldPersistTaps="handled"
-        >
+        /* ---- MODO LEITURA: preview markdown selecionável (estilo desktop) ----
+           WebView rola POR DENTRO — dentro de ScrollView ela colapsa a zero */
+        <View style={{ flex: 1, paddingHorizontal: 20 }}>
           <Text selectable style={styles.readTitle}>
             {title || "Sem título"}
           </Text>
           <WebView
             source={{ html: bodyToHtml(body) }}
             style={styles.readBody}
+            backgroundColor="transparent"
             javaScriptEnabled={false}
             originWhitelist={["*"]}
             setSupportMultipleWindows={false}
@@ -325,7 +324,7 @@ export default function NoteScreen() {
               return true;
             }}
           />
-        </ScrollView>
+        </View>
       ) : (
         /* ---- MODO EDIÇÃO: o editor de sempre ---- */
         <>
@@ -437,6 +436,7 @@ const styles = StyleSheet.create({
     fontSize: 26,
     fontWeight: "700",
     marginBottom: 8,
+    paddingHorizontal: 0,
   },
   readBody: {
     flex: 1,
