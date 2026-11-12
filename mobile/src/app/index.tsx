@@ -1,5 +1,6 @@
 import {
   ActivityIndicator,
+  Alert,
   AppState,
   FlatList,
   Pressable,
@@ -17,8 +18,12 @@ import TopBar from "../components/TopBar";
 import ChipsRow from "../components/ChipsRow";
 import NoteCard from "../components/NoteCard";
 import ActionSheet, { type ActionItem } from "../components/ActionSheet";
+import * as ImagePicker from "expo-image-picker";
+import * as ImageManipulator from "expo-image-manipulator";
+import { uploadAttachment } from "../lib/attachments";
 import {
   createNote,
+  updateNote,
   deleteNote,
   getDb,
   listNotes,
@@ -75,6 +80,7 @@ export default function HomeScreen() {
 
   // menu de ações (long-press)
   const [sheetNote, setSheetNote] = useState<NoteRow | null>(null);
+  const [photoSheetOpen, setPhotoSheetOpen] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -214,6 +220,66 @@ export default function HomeScreen() {
     router.push(`/note/${id}`);
   }
 
+  async function handleCreateChecklist() {
+    const { client } = await getDb();
+    const id = await createNote(client, { body: "- [ ] " });
+    scheduleSync();
+    void reload();
+    router.push(`/note/${id}?mode=edit`);
+  }
+
+  async function handleCreateAudio() {
+    const { client } = await getDb();
+    const id = await createNote(client);
+    scheduleSync();
+    void reload();
+    router.push(`/note/${id}?startAudio=1`);
+  }
+
+  async function handleCreatePhoto(useCamera: boolean) {
+    try {
+      const result = useCamera
+        ? await ImagePicker.launchCameraAsync({ quality: 0.9 })
+        : await ImagePicker.launchImageLibraryAsync({ quality: 0.9, selectionLimit: 5 });
+      if (result.canceled || result.assets.length === 0) return;
+
+      const { client } = await getDb();
+      const id = await createNote(client);
+
+      for (const asset of result.assets) {
+        let uri = asset.uri;
+        let fileName = asset.fileName || `foto-${Date.now()}.jpg`;
+        let mimeType = asset.mimeType || "image/jpeg";
+        if (mimeType.startsWith("image/")) {
+          try {
+            const out = await ImageManipulator.manipulateAsync(
+              asset.uri,
+              [{ resize: { width: 1600 } }],
+              { compress: 0.8, format: ImageManipulator.SaveFormat.WEBP }
+            );
+            uri = out.uri;
+            fileName = fileName.replace(/\.[^.]+$/, "") + ".webp";
+            mimeType = "image/webp";
+          } catch (e) {
+            console.warn("Compressao falhou, enviando original:", e);
+          }
+        }
+        const att = await uploadAttachment({ uri, fileName, mimeType, noteId: id });
+        if (att) {
+          const imgMarkdown = `\n\n![${att.file_name}](/api/attachments/${att.id})\n\n`;
+          await updateNote(client, id, { body: imgMarkdown.trim() });
+        }
+      }
+
+      scheduleSync();
+      void reload();
+      router.push(`/note/${id}`);
+    } catch (e) {
+      console.warn("Falha ao criar nota com foto:", e);
+      Alert.alert("Erro", "Nao foi possivel criar nota com imagem.");
+    }
+  }
+
   if (!booted) {
     return (
       <View style={[styles.root, styles.center]}>
@@ -303,7 +369,7 @@ export default function HomeScreen() {
       <FlatList
         data={notes}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.list}
+        contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + 90 }]}
         ListEmptyComponent={
           <View style={styles.empty}>
             {syncing && notes.length === 0 ? (
@@ -344,14 +410,53 @@ export default function HomeScreen() {
         )}
       />
 
-      <Pressable
-        style={[styles.fab, { bottom: insets.bottom + 18 }]}
-        onPress={() => void handleFab()}
-      >
-        <Text style={styles.fabText}>＋</Text>
-      </Pressable>
+      {/* Barra de Acoes Rapidas estilo Google Keep */}
+      <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+        <View style={styles.bottomBarActions}>
+          <Pressable
+            style={({ pressed }) => [styles.barActionBtn, pressed && styles.barActionPressed]}
+            onPress={() => void handleCreateChecklist()}
+            hitSlop={8}
+            accessibilityLabel="Nova lista de tarefas"
+          >
+            <Text style={styles.barActionIcon}>☑️</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.barActionBtn, pressed && styles.barActionPressed]}
+            onPress={() => void handleCreateAudio()}
+            hitSlop={8}
+            accessibilityLabel="Nova nota de voz"
+          >
+            <Text style={styles.barActionIcon}>🎙️</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.barActionBtn, pressed && styles.barActionPressed]}
+            onPress={() => setPhotoSheetOpen(true)}
+            hitSlop={8}
+            accessibilityLabel="Nova nota com foto"
+          >
+            <Text style={styles.barActionIcon}>📷</Text>
+          </Pressable>
+        </View>
+
+        <Pressable
+          style={({ pressed }) => [styles.fab, pressed && { transform: [{ scale: 0.95 }] }]}
+          onPress={() => void handleFab()}
+          accessibilityLabel="Nova nota de texto"
+        >
+          <Text style={styles.fabText}>＋</Text>
+        </Pressable>
+      </View>
 
       <ActionSheet visible={Boolean(sheetNote)} items={sheetItems} onClose={() => setSheetNote(null)} />
+      <ActionSheet
+        visible={photoSheetOpen}
+        items={[
+          { label: "Tirar foto (Camera)", onPress: () => void handleCreatePhoto(true) },
+          { label: "Escolher da galeria", onPress: () => void handleCreatePhoto(false) },
+        ]}
+        onClose={() => setPhotoSheetOpen(false)}
+      />
     </View>
   );
 }
@@ -437,13 +542,44 @@ const styles = StyleSheet.create({
     textAlign: "center",
     paddingHorizontal: 40,
   },
-  fab: {
+  bottomBar: {
     position: "absolute",
-    right: 18,
-    bottom: 24,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "#18181b",
+    borderTopWidth: 1,
+    borderTopColor: "#27272a",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingTop: 10,
+    paddingHorizontal: 18,
+  },
+  bottomBarActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+  },
+  barActionBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#27272a",
+  },
+  barActionPressed: {
+    backgroundColor: "#3f3f46",
+    transform: [{ scale: 0.92 }],
+  },
+  barActionIcon: {
+    fontSize: 20,
+  },
+  fab: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     backgroundColor: "#fbbf24",
     alignItems: "center",
     justifyContent: "center",

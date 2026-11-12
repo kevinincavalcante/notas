@@ -132,7 +132,7 @@ export default function DashboardPage() {
     next: () => {},
     prev: () => {},
   });
-  tabHandlersRef.current = { new: handleCreateNote, close: closeActiveTab, next: () => cycleTab(1), prev: () => cycleTab(-1) };
+  tabHandlersRef.current = { new: () => handleCreateNote(), close: closeActiveTab, next: () => cycleTab(1), prev: () => cycleTab(-1) };
 
   // Botão de sync (só desktop): dispara ciclo imediato no processo main
   const [syncState, setSyncState] = useState<{ busy: boolean; error: string | null; at: number | null } | null>(null);
@@ -222,14 +222,15 @@ export default function DashboardPage() {
     }
   }
 
-  async function handleCreateNote() {
+  async function handleCreateNote(type?: "text" | "checklist" | "photo" | "audio") {
     try {
+      const initialBody = type === "checklist" ? "- [ ] " : "";
       const res = await fetch("/api/notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title: "",
-          body: "",
+          body: initialBody,
           color: "default",
         }),
       });
@@ -245,6 +246,13 @@ export default function DashboardPage() {
         // Aba nova: a atual continua aberta (Ctrl+N no Electron usa isto)
         openTabNew(newNote.id);
         setIsSidebarOpen(false);
+
+        if (type === "photo") {
+          setTimeout(() => {
+            const input = document.querySelector('input[type="file"][accept*="image"]') as HTMLInputElement;
+            input?.click();
+          }, 350);
+        }
       }
     } catch (err) {
       console.error("Erro ao criar nota:", err);
@@ -446,7 +454,7 @@ export default function DashboardPage() {
               activeId={selectedNoteId}
               onSelect={(id) => setActiveTabId(id)}
               onClose={closeTab}
-              onNew={handleCreateNote}
+              onNew={() => handleCreateNote()}
               onSync={syncState === null ? undefined : handleSyncNow}
               syncIndicator={syncState}
             />
@@ -509,7 +517,7 @@ export default function DashboardPage() {
                     </p>
                     <button
                       type="button"
-                      onClick={handleCreateNote}
+                      onClick={() => handleCreateNote()}
                       className="flex items-center gap-2 px-4 py-2 bg-amber-400 hover:bg-amber-300 active:bg-amber-500 text-slate-950 font-semibold text-sm rounded-xl transition shadow-xs active:scale-95"
                     >
                       <Plus className="w-4 h-4" />

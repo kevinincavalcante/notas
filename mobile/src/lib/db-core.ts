@@ -142,7 +142,10 @@ export async function getNote(client: Client, id: string): Promise<NoteRow | nul
 
 // ---- Escrita (toda mutação loga no change_log) ----
 
-export async function createNote(client: Client): Promise<string> {
+export async function createNote(
+  client: Client,
+  initial?: { title?: string; body?: string; color?: string }
+): Promise<string> {
   const id = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto?.randomUUID
     ? globalThis.crypto.randomUUID()
     : `n-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -150,9 +153,16 @@ export async function createNote(client: Client): Promise<string> {
   await client.execute({
     sql: `
       INSERT INTO notes (id, title, body, color, is_pinned, is_archived, created_at, updated_at)
-      VALUES (?, '', '', 'default', 0, 0, ?, ?)
+      VALUES (?, ?, ?, ?, 0, 0, ?, ?)
     `,
-    args: [id, now, now],
+    args: [
+      id,
+      initial?.title ?? "",
+      initial?.body ?? "",
+      initial?.color ?? "default",
+      now,
+      now,
+    ],
   });
   await logChange(client, "note", id, "upsert");
   return id;

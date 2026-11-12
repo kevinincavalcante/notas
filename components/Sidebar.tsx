@@ -15,6 +15,7 @@ import {
   Archive,
   ArchiveRestore,
   Trash2,
+  ListTodo,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -23,7 +24,7 @@ interface SidebarProps {
   notes: Note[];
   selectedNoteId: string | null;
   onSelectNote: (note: Note) => void;
-  onCreateNote: () => void;
+  onCreateNote?: (type?: "text" | "checklist" | "photo" | "audio") => void;
   searchQuery: string;
   onSearchChange: (query: string) => void;
   isOpen: boolean;
@@ -260,15 +261,44 @@ export default function Sidebar({
           </div>
         </div>
 
-        <div className="px-3 pb-3 shrink-0">
+        <div className="px-3 pb-3 shrink-0 space-y-1.5">
           <button
             type="button"
-            onClick={onCreateNote}
+            onClick={() => onCreateNote?.("text")}
             className="w-full flex items-center justify-center gap-2 py-2 bg-amber-400 hover:bg-amber-300 active:bg-amber-500 text-slate-950 font-semibold text-sm rounded-lg transition active:scale-[0.98] shadow-xs"
           >
             <Plus className="w-4 h-4" />
             Nova Nota
           </button>
+          <div className="grid grid-cols-3 gap-1">
+            <button
+              type="button"
+              onClick={() => onCreateNote?.("checklist")}
+              title="Nova lista de tarefas"
+              className="flex items-center justify-center gap-1 py-1 px-1 bg-white dark:bg-slate-800 hover:bg-slate-200/70 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg text-[11px] font-medium border border-slate-200/80 dark:border-slate-700/60 transition shadow-2xs"
+            >
+              <ListTodo className="w-3 h-3 text-amber-500 shrink-0" />
+              <span>Lista</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onCreateNote?.("photo")}
+              title="Nova nota com foto"
+              className="flex items-center justify-center gap-1 py-1 px-1 bg-white dark:bg-slate-800 hover:bg-slate-200/70 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg text-[11px] font-medium border border-slate-200/80 dark:border-slate-700/60 transition shadow-2xs"
+            >
+              <ImageIcon className="w-3 h-3 text-emerald-500 shrink-0" />
+              <span>Foto</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onCreateNote?.("audio")}
+              title="Nova gravação de áudio"
+              className="flex items-center justify-center gap-1 py-1 px-1 bg-white dark:bg-slate-800 hover:bg-slate-200/70 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg text-[11px] font-medium border border-slate-200/80 dark:border-slate-700/60 transition shadow-2xs"
+            >
+              <Mic className="w-3 h-3 text-rose-500 shrink-0" />
+              <span>Áudio</span>
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto overflow-x-hidden px-1.5 space-y-3">

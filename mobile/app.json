@@ -35,7 +35,14 @@
       ],
       "expo-sqlite",
       "expo-secure-store",
-      "expo-audio"
+      "expo-audio",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "O app precisa de acesso às fotos para anexar às notas.",
+          "cameraPermission": "O app precisa de acesso à câmera para tirar fotos das notas."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

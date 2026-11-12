@@ -1,10 +1,10 @@
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View, BackHandler, type TextInputInstance } from "react-native";
+import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View, BackHandler, type TextInputInstance } from "react-native";
 import { WebView } from "react-native-webview";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import ActionSheet, { type ActionItem } from "../../components/ActionSheet";
-import AttachmentStrip from "../../components/AttachmentStrip";
+import AttachmentStrip, { AudioChip } from "../../components/AttachmentStrip";
 import { autoList } from "../../lib/auto-list";
 import { bodyToHtml } from "../../lib/markdown-html";
 import {
@@ -18,12 +18,18 @@ import {
   type NoteRow,
 } from "../../lib/db";
 import { NOTE_COLOR_IDS, NOTE_COLOR_SWATCH } from "../../lib/colors";
-import { notifyLocalChange, scheduleQuietSync, type SyncApiConfig } from "../../lib/sync";
+import { notifyLocalChange, onSynced, scheduleQuietSync, type SyncApiConfig } from "../../lib/sync";
 import { getSyncApi } from "../../lib/api";
 import {
   uploadAttachment,
+  deleteAttachment,
+  listAttachments,
+  cachePath,
+  cacheExists,
+  cacheAttachment,
   type UploadInput,
 } from "../../lib/attachments";
+import type { AttachmentRow } from "../../lib/db";
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
 import { useAudioRecorder, RecordingPresets, requestRecordingPermissionsAsync, setAudioModeAsync } from "expo-audio";
@@ -34,10 +40,54 @@ import { ActivityIndicator } from "react-native";
  * e flush no sair da tela (o gesto de voltar do Android fecha e salva,
  * igual no desktop).
  */
+/** Preview amplo de imagem no topo estilo Google Keep (Print 2) */
+function KeepTopImage({
+  att,
+  onRemove,
+}: {
+  att: AttachmentRow;
+  onRemove: () => void;
+}) {
+  const [uri, setUri] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const local = cachePath(att);
+      if (await cacheExists.has(att.id, local)) {
+        if (active) setUri(local);
+      } else {
+        const remote = await cacheAttachment(att);
+        if (active) setUri(remote);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [att.id]);
+
+  if (!uri) {
+    return (
+      <View style={[styles.topImage, styles.topImageLoading]}>
+        <ActivityIndicator size="small" color="#fbbf24" />
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.topImageWrap}>
+      <Image source={{ uri }} style={styles.topImage} resizeMode="cover" />
+      <Pressable style={styles.topImageRemove} onPress={onRemove} hitSlop={8}>
+        <Text style={styles.topImageRemoveText}>✕</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 export default function NoteScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ id: string }>();
+  const params = useLocalSearchParams<{ id: string; mode?: string; startAudio?: string }>();
   const noteId = params.id;
 
   const [loaded, setLoaded] = useState(false);
@@ -49,6 +99,20 @@ export default function NoteScreen() {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [showColors, setShowColors] = useState(false);
   const [selOverride, setSelOverride] = useState<{ start: number; end: number } | undefined>();
+  const [attachments, setAttachments] = useState<AttachmentRow[]>([]);
+
+  const loadAtts = useCallback(() => {
+    if (noteId) void listAttachments(noteId).then(setAttachments);
+  }, [noteId]);
+
+  useEffect(() => {
+    loadAtts();
+  }, [loadAtts]);
+
+  useEffect(() => onSynced(loadAtts), [loadAtts]);
+
+  const imageAttachments = attachments.filter((a) => a.mime_type.startsWith("image/"));
+  const audioAttachments = attachments.filter((a) => a.mime_type.startsWith("audio/"));
   // Modo Joplin: existentes abrem em LEITURA (preview markdown, texto
   // selecionável); ✏️ entra em edição. Nota nova abre direto editando.
   const [mode, setMode] = useState<"read" | "edit">("read");
@@ -115,6 +179,17 @@ export default function NoteScreen() {
     }
   }, []);
 
+  // Auto-inicia gravacao se foi aberta pelo atalho de audio
+  const autoAudioStartedRef = useRef(false);
+  useEffect(() => {
+    if (params.startAudio === "1" && loaded && !autoAudioStartedRef.current && !recording) {
+      autoAudioStartedRef.current = true;
+      setTimeout(() => {
+        void toggleRecording();
+      }, 400);
+    }
+  }, [params.startAudio, loaded, recording]);
+
   // carrega a nota
   useEffect(() => {
     (async () => {
@@ -133,8 +208,8 @@ export default function NoteScreen() {
       setColor(note.color);
       apiRef.current = await getSyncApi();
       setLoaded(true);
-      // Nota nova/sem nada: abre direto no body com o teclado (estilo Keep)
-      if (!note.title && !note.body) {
+      // Nota nova/sem nada ou solicitada com edit: abre direto no body
+      if ((!note.title && !note.body) || params.mode === "edit" || params.startAudio === "1") {
         setMode("edit");
         setTimeout(() => bodyRef.current?.focus(), 350);
       } else {
@@ -264,16 +339,35 @@ export default function NoteScreen() {
 
   /* ---- Anexos: câmera, galeria e áudio ---- */
 
-  async function runUpload(input: UploadInput) {
-    if (busyAtt) return;
+  async function runUpload(input: UploadInput): Promise<AttachmentRow | null> {
+    if (busyAtt) return null;
     setBusyAtt(true);
     try {
-      await uploadAttachment(input);
+      const att = await uploadAttachment(input);
+      loadAtts();
+      return att;
     } catch (e) {
-      // Silêncio era um bug: upload falhando precisa gritar
       Alert.alert("Anexo", e instanceof Error ? e.message : String(e));
+      return null;
     } finally {
       setBusyAtt(false);
+    }
+  }
+
+  async function handleRemoveAttachment(att: AttachmentRow) {
+    try {
+      await deleteAttachment(att);
+      setAttachments((prev) => prev.filter((a) => a.id !== att.id));
+      const regex = new RegExp(`!?\\[[^\\]]*\\]\\(/api/attachments/${att.id}\\)\\n*`, "g");
+      const current = latestRef.current.body || "";
+      const nextBody = current.replace(regex, "").trim();
+      if (nextBody !== current) {
+        touch("body", nextBody);
+      }
+      notifyLocalChange();
+      scheduleQuiet();
+    } catch (e) {
+      console.warn("Falha ao remover anexo:", e);
     }
   }
 
@@ -303,7 +397,15 @@ export default function NoteScreen() {
           console.warn("Compressão falhou, enviando original:", e);
         }
       }
-      await runUpload({ uri, fileName, mimeType, noteId: savedRef.current!.id });
+      const att = await runUpload({ uri, fileName, mimeType, noteId: savedRef.current!.id });
+      if (att) {
+        // Insere a foto no corpo da nota como Markdown estilo Keep/Joplin
+        const imgMarkdown = `\n\n![${att.file_name}](/api/attachments/${att.id})\n\n`;
+        const currentBody = latestRef.current.body || "";
+        const nextBody = currentBody ? `${currentBody.trimEnd()}${imgMarkdown}` : imgMarkdown.trim();
+        touch("body", nextBody);
+        loadAtts();
+      }
     }
   }
 
@@ -330,13 +432,18 @@ export default function NoteScreen() {
     }
     try {
       const perm = await requestRecordingPermissionsAsync();
-      if (!perm.granted) return;
+      if (!perm.granted) {
+        Alert.alert("Permissão", "Permissão de microfone necessária para gravar notas de voz.");
+        return;
+      }
       await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
-      await recorder.record();
+      await recorder.prepareToRecordAsync();
+      recorder.record();
       recordStartRef.current = Date.now();
       setRecording(true);
     } catch (e) {
       console.warn("Falha ao gravar:", e);
+      Alert.alert("Erro ao gravar áudio", e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -402,7 +509,7 @@ export default function NoteScreen() {
             {title || "Sem título"}
           </Text>
           <WebView
-            source={{ html: bodyToHtml(body) }}
+            source={{ html: bodyToHtml(body), baseUrl: apiRef.current?.baseUrl }}
             style={styles.readBody}
             backgroundColor="transparent"
             javaScriptEnabled={false}
@@ -422,9 +529,45 @@ export default function NoteScreen() {
       ) : (
         /* ---- MODO EDIÇÃO: o editor de sempre ---- */
         <>
+          {/* Banner visual durante a gravacao */}
+          {recording && (
+            <View style={styles.recordingBanner}>
+              <View style={styles.recordingDot} />
+              <Text style={styles.recordingText}>Gravando nota de voz...</Text>
+              <Pressable
+                style={styles.recordingStopBtn}
+                onPress={() => void toggleRecording()}
+              >
+                <Text style={styles.recordingStopText}>Parar</Text>
+              </Pressable>
+            </View>
+          )}
+
           <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-        <TextInput
-          style={styles.titleInput}
+            {/* Fotos em destaque amplo estilo Google Keep (Print 2) */}
+            {imageAttachments.length > 0 && (
+              <View style={styles.topImagesContainer}>
+                {imageAttachments.map((img) => (
+                  <KeepTopImage
+                    key={img.id}
+                    att={img}
+                    onRemove={() => void handleRemoveAttachment(img)}
+                  />
+                ))}
+              </View>
+            )}
+
+            {/* Audios anexados com player integrado */}
+            {audioAttachments.length > 0 && (
+              <View style={styles.audioChipsContainer}>
+                {audioAttachments.map((audio) => (
+                  <AudioChip key={audio.id} att={audio} />
+                ))}
+              </View>
+            )}
+
+            <TextInput
+              style={styles.titleInput}
           value={title}
           onChangeText={(t) => touch("title", t)}
           placeholder="Título"
@@ -650,5 +793,86 @@ const styles = StyleSheet.create({
   link: {
     color: "#60a5fa",
     fontSize: 14,
+  },
+  topImagesContainer: {
+    gap: 12,
+    marginBottom: 14,
+    marginTop: 6,
+  },
+  topImageWrap: {
+    position: "relative",
+    borderRadius: 16,
+    overflow: "hidden",
+    backgroundColor: "#1c1c1f",
+    borderWidth: 1,
+    borderColor: "#27272a",
+  },
+  topImage: {
+    width: "100%",
+    height: 250,
+    borderRadius: 16,
+  },
+  topImageLoading: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  topImageRemove: {
+    position: "absolute",
+    top: 10,
+    right: 10,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "rgba(0,0,0,0.65)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  topImageRemoveText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  audioChipsContainer: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 12,
+  },
+  recordingBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#450a0a",
+    borderWidth: 1,
+    borderColor: "#ef4444",
+    borderRadius: 12,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  recordingDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#ef4444",
+    marginRight: 8,
+  },
+  recordingText: {
+    color: "#fecaca",
+    fontSize: 13,
+    fontWeight: "600",
+    flex: 1,
+  },
+  recordingStopBtn: {
+    backgroundColor: "#ef4444",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  recordingStopText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "700",
   },
 });

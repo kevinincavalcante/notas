@@ -970,6 +970,55 @@ export default function NoteEditor({
               } h-full p-4 overflow-y-auto bg-white/40 dark:bg-black/20 rounded-2xl border border-black/5 dark:border-white/5 space-y-6 flex flex-col`}
             >
               {/* Conteúdo Renderizado em Markdown */}
+                            {/* Fotos anexadas avulsas em destaque amplo (estilo Keep / Print 5) */}
+              {imageAttachments.length > 0 && (
+                <div className="space-y-3 pb-4 border-b border-black/5 dark:border-white/5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                      Fotos anexadas
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const mds = imageAttachments
+                          .map((img) => `\n\n![${img.file_name}](/api/attachments/${img.id})\n\n`)
+                          .join("");
+                        const current = latestStateRef.current.body;
+                        const next = current ? `${current.trimEnd()}${mds}` : mds.trim();
+                        setBody(next);
+                        latestStateRef.current.body = next;
+                        onUpdate({ body: next });
+                      }}
+                      className="text-xs font-medium text-amber-600 dark:text-amber-400 hover:underline"
+                    >
+                      Inserir no corpo do texto
+                    </button>
+                  </div>
+                  <div className="space-y-4">
+                    {imageAttachments.map((img) => (
+                      <div
+                        key={img.id}
+                        className="relative group rounded-2xl overflow-hidden border border-black/10 dark:border-white/10 bg-black/5 shadow-xs"
+                      >
+                        <img
+                          src={`/api/attachments/${img.id}`}
+                          alt={img.file_name}
+                          className="w-full max-h-[520px] object-cover"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteAttachment(img.id)}
+                          className="absolute top-2.5 right-2.5 p-1.5 bg-black/70 text-white rounded-lg opacity-0 group-hover:opacity-100 transition hover:bg-red-600"
+                          title="Remover anexo"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="flex-1">
                 <MarkdownView content={body} onSetImageWidth={setImageWidth} />
               </div>
@@ -1020,35 +1069,7 @@ export default function NoteEditor({
                 </div>
               )}
 
-              {/* Imagens anexadas avulsas (que não estão embutidas no markdown) */}
-              {imageAttachments.length > 0 && (
-                <div className="pt-4 border-t border-black/5 dark:border-white/5 space-y-2">
-                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
-                    Galeria de Anexos
-                  </span>
-                  <div className="grid grid-cols-2 gap-3">
-                    {imageAttachments.map((img) => (
-                      <div
-                        key={img.id}
-                        className="relative group rounded-xl overflow-hidden border border-black/10 aspect-video bg-black/5"
-                      >
-                        <img
-                          src={`/api/attachments/${img.id}`}
-                          alt={img.file_name}
-                          className="w-full h-full object-cover"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteAttachment(img.id)}
-                          className="absolute top-1.5 right-1.5 p-1 bg-black/70 text-white rounded-lg opacity-0 group-hover:opacity-100 transition hover:bg-red-600"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+
             </div>
           )}
         </div>

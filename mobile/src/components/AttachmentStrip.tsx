@@ -111,7 +111,7 @@ function ThumbImage({ att }: { att: AttachmentRow }) {
 }
 
 /** Chip de áudio com player (toque toca/pausa). */
-function AudioChip({ att }: { att: AttachmentRow }) {
+export function AudioChip({ att }: { att: AttachmentRow }) {
   const [uri, setUri] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const player = useAudioPlayer(uri ?? null);
