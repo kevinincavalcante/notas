@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import com.facebook.react.bridge.ReactApplicationContext
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -35,7 +36,7 @@ class ShareReceiverModule : Module() {
     }
 
     AsyncFunction("getShared") { promise: Promise ->
-      val intent = appContext.reactContext?.currentActivity?.intent
+      val intent = (appContext.reactContext as? ReactApplicationContext)?.currentActivity?.intent
       val payload = extract(intent)
       if (payload != null) {
         intent?.let { clearExtras(it) }
