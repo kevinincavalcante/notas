@@ -22,24 +22,28 @@ export async function uploadAttachment(input: UploadInput): Promise<AttachmentRo
   const api = await getSyncApi();
   if (!api) throw new Error("Sem sessão — faça login novamente");
 
-  const form = new FormData();
-  // @ts-expect-error — FormData do RN aceita {uri, name, type}
-  form.append("file", {
-    uri: input.uri,
-    name: input.fileName,
-    type: input.mimeType,
-  });
-  form.append("noteId", input.noteId);
-  if (input.durationSeconds != null) {
-    form.append("duration", String(Math.round(input.durationSeconds)));
-  }
+  const uploadUrl = `${api.baseUrl.replace(/\/+$/, "")}/api/attachments/upload`;
 
-  const res = await fetch(`${api.baseUrl}/api/attachments/upload`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${api.token}` },
-    body: form,
+  // No Expo SDK 52+, o fetch global não aceita o objeto legado { uri, name, type } no FormData
+  // (causando "Unsupported FormDataPart implementation"). Usamos FileSystem.uploadAsync nativo.
+  const res = await FileSystem.uploadAsync(uploadUrl, input.uri, {
+    fieldName: "file",
+    httpMethod: "POST",
+    uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+    headers: {
+      Authorization: `Bearer ${api.token}`,
+    },
+    parameters: {
+      noteId: input.noteId,
+      ...(input.durationSeconds != null
+        ? { duration: String(Math.round(input.durationSeconds)) }
+        : {}),
+      fileName: input.fileName,
+    },
+    mimeType: input.mimeType,
   });
-  const data = (await res.json().catch(() => ({}))) as {
+
+  let data: {
     error?: string;
     attachment?: {
       id: string;
@@ -50,8 +54,15 @@ export async function uploadAttachment(input: UploadInput): Promise<AttachmentRo
       duration_seconds: number | null;
       created_at: number;
     };
-  };
-  if (!res.ok || !data.attachment) {
+  } = {};
+
+  try {
+    data = JSON.parse(res.body);
+  } catch {
+    // corpo não veio JSON válido
+  }
+
+  if (res.status < 200 || res.status >= 300 || !data.attachment) {
     throw new Error(data.error || `Upload falhou (${res.status})`);
   }
 
@@ -78,6 +89,15 @@ export async function uploadAttachment(input: UploadInput): Promise<AttachmentRo
     sql: `INSERT INTO change_log (entity, entity_id, op, at) VALUES ('attachment', ?, 'upsert', ?)`,
     args: [att.id, Date.now()],
   });
+
+  // Copia imediatamente o arquivo para o cache local para não precisar baixá-lo de novo
+  const dest = cachePath(att as unknown as AttachmentRow);
+  try {
+    await FileSystem.copyAsync({ from: input.uri, to: dest });
+  } catch (cacheErr) {
+    console.warn("Falha ao salvar no cache local:", cacheErr);
+  }
+
   notifyLocalChange();
   scheduleQuietSync(api);
   return att as unknown as AttachmentRow;

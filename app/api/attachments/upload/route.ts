@@ -22,6 +22,7 @@ export async function POST(request: Request) {
     const noteId = (formData.get("noteId") || formData.get("note_id")) as string | null;
     const durationStr = (formData.get("duration") || formData.get("duration_seconds")) as string | null;
     const duration = durationStr ? parseFloat(durationStr) : null;
+    const customFileName = (formData.get("fileName") || formData.get("file_name")) as string | null;
 
     if (!file || !noteId) {
       return NextResponse.json(
@@ -42,7 +43,7 @@ export async function POST(request: Request) {
     const fileBuffer = Buffer.from(await file.arrayBuffer());
     let processedBuffer = fileBuffer;
     let finalMimeType = file.type || "application/octet-stream";
-    let finalFileName = file.name || "arquivo";
+    let finalFileName = customFileName || file.name || "arquivo";
 
     // Otimização de Imagens com Sharp (WebP, max 1600px de largura)
     if (file.type.startsWith("image/")) {
@@ -54,7 +55,7 @@ export async function POST(request: Request) {
           .toBuffer();
 
         finalMimeType = "image/webp";
-        const nameWithoutExt = file.name.substring(0, file.name.lastIndexOf(".")) || file.name;
+        const nameWithoutExt = finalFileName.substring(0, finalFileName.lastIndexOf(".")) || finalFileName;
         finalFileName = `${nameWithoutExt}.webp`;
       } catch (sharpErr) {
         console.warn("Falha ao otimizar imagem com sharp, enviando original:", sharpErr);

@@ -1,4 +1,5 @@
 import {
+  ActivityIndicator,
   AppState,
   FlatList,
   Pressable,
@@ -58,6 +59,7 @@ export default function HomeScreen() {
   const [showUrlField, setShowUrlField] = useState(false);
   const [urlInput, setUrlInput] = useState("");
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [loggingIn, setLoggingIn] = useState(false);
 
   // dados
   const [notes, setNotes] = useState<NoteRow[]>([]);
@@ -142,19 +144,29 @@ export default function HomeScreen() {
   );
 
   async function handleLogin() {
+    if (loggingIn) return;
     setLoginError(null);
-    if (showUrlField && urlInput.trim()) {
-      await setApiUrl(urlInput);
-    }
-    const result = await login(userInput, passInput);
-    if (result.ok) {
-      const [t, u, url] = await Promise.all([getStoredToken(), getStoredUser(), getApiUrl()]);
-      setToken(t);
-      setUser(u);
-      apiRef.current = { baseUrl: url, token: t! };
-      void runSync();
-    } else {
-      setLoginError(result.error || "Login falhou.");
+    setLoggingIn(true);
+    try {
+      if (showUrlField && urlInput.trim()) {
+        await setApiUrl(urlInput);
+      }
+      const result = await login(userInput, passInput);
+      if (result.ok) {
+        const [t, u, url] = await Promise.all([getStoredToken(), getStoredUser(), getApiUrl()]);
+        const cfg = { baseUrl: url, token: t! };
+        apiRef.current = cfg;
+        // Puxa as notas antes de trocar de tela para que a Home abra com dados pré-carregados
+        await syncQuiet(cfg);
+        setToken(t);
+        setUser(u);
+      } else {
+        setLoginError(result.error || "Login falhou.");
+      }
+    } catch (e) {
+      setLoginError(e instanceof Error ? e.message : "Erro ao conectar.");
+    } finally {
+      setLoggingIn(false);
     }
   }
 
@@ -223,6 +235,7 @@ export default function HomeScreen() {
           autoCapitalize="none"
           value={userInput}
           onChangeText={setUserInput}
+          editable={!loggingIn}
         />
         <TextInput
           style={styles.input}
@@ -231,10 +244,11 @@ export default function HomeScreen() {
           secureTextEntry
           value={passInput}
           onChangeText={setPassInput}
+          editable={!loggingIn}
           onSubmitEditing={() => void handleLogin()}
         />
 
-        <Pressable onPress={() => setShowUrlField((v) => !v)} hitSlop={8}>
+        <Pressable onPress={() => setShowUrlField((v) => !v)} hitSlop={8} disabled={loggingIn}>
           <Text style={styles.link}>{showUrlField ? "usar API padrão" : "usar outra API"}</Text>
         </Pressable>
         {showUrlField && (
@@ -246,11 +260,20 @@ export default function HomeScreen() {
             autoCorrect={false}
             value={urlInput}
             onChangeText={setUrlInput}
+            editable={!loggingIn}
           />
         )}
 
-        <Pressable style={styles.button} onPress={() => void handleLogin()}>
-          <Text style={styles.buttonText}>Entrar</Text>
+        <Pressable
+          style={[styles.button, loggingIn && { opacity: 0.7 }]}
+          onPress={() => void handleLogin()}
+          disabled={loggingIn}
+        >
+          {loggingIn ? (
+            <ActivityIndicator size="small" color="#18181b" />
+          ) : (
+            <Text style={styles.buttonText}>Entrar</Text>
+          )}
         </Pressable>
         {loginError && <Text style={styles.error}>{loginError}</Text>}
       </View>
@@ -283,12 +306,21 @@ export default function HomeScreen() {
         contentContainerStyle={styles.list}
         ListEmptyComponent={
           <View style={styles.empty}>
-            <Text style={styles.emptyIcon}>🗒</Text>
-            <Text style={styles.emptyText}>
-              {activeTag
-                ? "Nada com esse marcador ainda."
-                : "Nada por aqui — crie sua primeira nota."}
-            </Text>
+            {syncing && notes.length === 0 ? (
+              <>
+                <ActivityIndicator size="small" color="#a1a1aa" />
+                <Text style={styles.emptyText}>Sincronizando suas notas…</Text>
+              </>
+            ) : (
+              <>
+                <Text style={styles.emptyIcon}>🗒</Text>
+                <Text style={styles.emptyText}>
+                  {activeTag
+                    ? "Nada com esse marcador ainda."
+                    : "Nada por aqui — crie sua primeira nota."}
+                </Text>
+              </>
+            )}
             {syncError && <Text style={styles.syncError}>{`Sync falhou: ${syncError}`}</Text>}
           </View>
         }
