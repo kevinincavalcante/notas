@@ -4,7 +4,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import ActionSheet, { type ActionItem } from "../../components/ActionSheet";
-import AttachmentStrip, { AudioChip } from "../../components/AttachmentStrip";
+import { AudioBar, FileChip } from "../../components/AttachmentStrip";
 import { autoList } from "../../lib/auto-list";
 import { bodyToHtml } from "../../lib/markdown-html";
 import {
@@ -113,6 +113,9 @@ export default function NoteScreen() {
 
   const imageAttachments = attachments.filter((a) => a.mime_type.startsWith("image/"));
   const audioAttachments = attachments.filter((a) => a.mime_type.startsWith("audio/"));
+  const fileAttachments = attachments.filter(
+    (a) => !a.mime_type.startsWith("image/") && !a.mime_type.startsWith("audio/")
+  );
   // Modo Joplin: existentes abrem em LEITURA (preview markdown, texto
   // selecionável); ✏️ entra em edição. Nota nova abre direto editando.
   const [mode, setMode] = useState<"read" | "edit">("read");
@@ -207,9 +210,14 @@ export default function NoteScreen() {
       setBody(note.body);
       setColor(note.color);
       apiRef.current = await getSyncApi();
+      // Anexos na mão já pro modo inicial (nota de áudio: corpo vazio,
+      // mas tem anexo — não é nota nova, abre em leitura)
+      const atts = await listAttachments(noteId);
+      setAttachments(atts);
       setLoaded(true);
-      // Nota nova/sem nada ou solicitada com edit: abre direto no body
-      if ((!note.title && !note.body) || params.mode === "edit" || params.startAudio === "1") {
+      // Nota nova/sem nada (sem texto E sem anexo) ou solicitada com edit:
+      // abre direto no body
+      if ((!note.title && !note.body && atts.length === 0) || params.mode === "edit" || params.startAudio === "1") {
         setMode("edit");
         setTimeout(() => bodyRef.current?.focus(), 350);
       } else {
@@ -508,6 +516,17 @@ export default function NoteScreen() {
           <Text selectable style={styles.readTitle}>
             {title || "Sem título"}
           </Text>
+          {/* Áudio e arquivos no corpo da leitura (igual fotos inline) */}
+          {(audioAttachments.length > 0 || fileAttachments.length > 0) && (
+            <View style={styles.audioChipsContainer}>
+              {audioAttachments.map((audio) => (
+                <AudioBar key={audio.id} att={audio} />
+              ))}
+              {fileAttachments.map((file) => (
+                <FileChip key={file.id} att={file} />
+              ))}
+            </View>
+          )}
           <WebView
             source={{ html: bodyToHtml(body), baseUrl: apiRef.current?.baseUrl }}
             style={styles.readBody}
@@ -524,7 +543,6 @@ export default function NoteScreen() {
               return true;
             }}
           />
-          <AttachmentStrip noteId={noteId ?? ""} canEdit />
         </View>
       ) : (
         /* ---- MODO EDIÇÃO: o editor de sempre ---- */
@@ -557,11 +575,22 @@ export default function NoteScreen() {
               </View>
             )}
 
-            {/* Audios anexados com player integrado */}
-            {audioAttachments.length > 0 && (
+            {/* Áudio e arquivos no corpo — barras largas estilo fotos */}
+            {audioAttachments.length + fileAttachments.length > 0 && (
               <View style={styles.audioChipsContainer}>
                 {audioAttachments.map((audio) => (
-                  <AudioChip key={audio.id} att={audio} />
+                  <AudioBar
+                    key={audio.id}
+                    att={audio}
+                    onRemove={(a) => void handleRemoveAttachment(a)}
+                  />
+                ))}
+                {fileAttachments.map((file) => (
+                  <FileChip
+                    key={file.id}
+                    att={file}
+                    onRemove={(a) => void handleRemoveAttachment(a)}
+                  />
                 ))}
               </View>
             )}
@@ -831,8 +860,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   audioChipsContainer: {
-    flexDirection: "row",
-    flexWrap: "wrap",
+    flexDirection: "column",
     gap: 8,
     marginBottom: 12,
   },

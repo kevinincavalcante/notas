@@ -1,123 +1,35 @@
-import { useEffect, useState, useCallback } from "react";
-import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useEffect, useState } from "react";
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
 import {
   cacheAttachment,
   cacheExists,
   cachePath,
   deleteAttachment,
-  listAttachments,
 } from "../lib/attachments";
-import { onSynced } from "../lib/sync";
 import type { AttachmentRow } from "../lib/db";
 
-/** Faixa de anexos de uma nota — nos modos leitura e edição. */
-export default function AttachmentStrip({
-  noteId,
-  canEdit,
-}: {
-  noteId: string;
-  canEdit: boolean;
-}) {
-  const [items, setItems] = useState<AttachmentRow[]>([]);
+/**
+ * Anexos que moram no CORPO da nota (igual as fotos no topo):
+ * - AudioBar: barra larga de áudio com player e progresso
+ * - FileChip: chip compacto pra outros arquivos (pdf, zip...)
+ * Fotos nunca passam por aqui (vivem no markdown/topo).
+ */
 
-  const reload = useCallback(() => {
-    void listAttachments(noteId).then(setItems);
-  }, [noteId]);
-
-  useEffect(reload, [reload]);
-
-  // upload/remoção/sync avisam — a faixa se atualiza na hora
-  useEffect(() => onSynced(reload), [reload]);
-
-  // Fotos NÃO aparecem aqui: elas vivem no corpo da nota (topo amplo no
-  // modo edição, inline no markdown do modo leitura) — mostrar de novo
-  // na faixa era redundante. A faixa fica pra áudio e outros arquivos.
-  const visible = items.filter((a) => !a.mime_type.startsWith("image/"));
-  if (visible.length === 0) return null;
-  return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      style={styles.strip}
-      contentContainerStyle={styles.stripContent}
-    >
-      {visible.map((att) => (
-        <AttachmentChip
-          key={att.id}
-          att={att}
-          canEdit={canEdit}
-          onRemoved={(id) => setItems((prev) => prev.filter((a) => a.id !== id))}
-        />
-      ))}
-    </ScrollView>
-  );
+function formatSeconds(sec: number): string {
+  const s = Math.max(0, Math.round(sec));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-function AttachmentChip({
+/** Barra larga de áudio no corpo da nota — toca/pausa, com progresso. */
+export function AudioBar({
   att,
-  canEdit,
-  onRemoved,
+  onRemove,
 }: {
   att: AttachmentRow;
-  canEdit: boolean;
-  onRemoved: (id: string) => void;
+  onRemove?: (att: AttachmentRow) => void;
 }) {
-  const isImage = att.mime_type.startsWith("image/");
-  const isAudio = att.mime_type.startsWith("audio/");
-
-  if (isImage) {
-    return (
-      <View style={styles.chipWrap}>
-        <ThumbImage att={att} />
-        {canEdit && <RemoveButton att={att} onRemoved={onRemoved} />}
-      </View>
-    );
-  }
-  if (isAudio) {
-    return (
-      <View style={styles.chipWrap}>
-        <AudioChip att={att} />
-        {canEdit && <RemoveButton att={att} onRemoved={onRemoved} />}
-      </View>
-    );
-  }
-  return (
-    <View style={[styles.chipWrap, styles.fileChip]}>
-      <Text style={styles.fileIcon}>📎</Text>
-      <Text style={styles.fileName} numberOfLines={1}>{att.file_name}</Text>
-      {canEdit && <RemoveButton att={att} onRemoved={onRemoved} />}
-    </View>
-  );
-}
-
-/** Miniatura de imagem — baixa do cache (sob demanda). */
-function ThumbImage({ att }: { att: AttachmentRow }) {
   const [uri, setUri] = useState<string | null>(null);
-  useEffect(() => {
-    (async () => {
-      if (await cacheExists.has(att.id, cachePath(att))) {
-        setUri(cachePath(att));
-      } else {
-        setUri(await cacheAttachment(att));
-      }
-    })();
-  }, [att.id]);
-
-  if (!uri) {
-    return (
-      <View style={[styles.thumb, styles.thumbLoading]}>
-        <ActivityIndicator size="small" />
-      </View>
-    );
-  }
-  return <Image source={{ uri }} style={styles.thumb} resizeMode="cover" />;
-}
-
-/** Chip de áudio com player (toque toca/pausa). */
-export function AudioChip({ att }: { att: AttachmentRow }) {
-  const [uri, setUri] = useState<string | null>(null);
-  const [ready, setReady] = useState(false);
   const player = useAudioPlayer(uri ?? null);
   const status = useAudioPlayerStatus(player);
 
@@ -128,28 +40,58 @@ export function AudioChip({ att }: { att: AttachmentRow }) {
       } else {
         setUri(await cacheAttachment(att));
       }
-      setReady(true);
     })();
   }, [att.id]);
 
   const playing = status?.playing ?? false;
-  const dur = att.duration_seconds;
-  const label = dur
-    ? `${Math.floor(dur / 60)}:${String(Math.floor(dur % 60)).padStart(2, "0")}`
-    : "áudio";
+  const total = att.duration_seconds || status?.duration || 0;
+  const current = status?.currentTime ?? 0;
+  const progress = total > 0 ? Math.min(1, current / total) : 0;
+  const label = total > 0 ? formatSeconds(total) : "áudio";
 
   return (
-    <Pressable
-      style={styles.audioChip}
-      onPress={() => {
-        if (!player || !uri) return;
-        if (playing) player.pause();
-        else player.play();
-      }}
-    >
-      <Text style={styles.audioIcon}>{!ready || !uri ? "⏳" : playing ? "⏸" : "▶"}</Text>
-      <Text style={styles.audioLabel} numberOfLines={1}>{label} · 🎙</Text>
-    </Pressable>
+    <View style={styles.audioBar}>
+      <Pressable
+        style={({ pressed }) => [styles.playBtn, pressed && { opacity: 0.8 }]}
+        onPress={() => {
+          if (!player || !uri) return;
+          if (playing) player.pause();
+          else player.play();
+        }}
+        hitSlop={4}
+      >
+        <Text style={styles.playIcon}>{!uri ? "⏳" : playing ? "⏸" : "▶"}</Text>
+      </Pressable>
+
+      <View style={styles.audioCenter}>
+        <View style={styles.audioMetaRow}>
+          <Text style={styles.audioTitle} numberOfLines={1}>🎙 Nota de voz</Text>
+          <Text style={styles.audioTime}>{label}</Text>
+        </View>
+        <View style={styles.audioTrack}>
+          <View style={[styles.audioTrackFill, { width: `${progress * 100}%` }]} />
+        </View>
+      </View>
+
+      {onRemove && <RemoveButton att={att} onRemoved={() => onRemove(att)} />}
+    </View>
+  );
+}
+
+/** Chip compacto de arquivo genérico (não-imagem, não-áudio). */
+export function FileChip({
+  att,
+  onRemove,
+}: {
+  att: AttachmentRow;
+  onRemove?: (att: AttachmentRow) => void;
+}) {
+  return (
+    <View style={styles.fileChip}>
+      <Text style={styles.fileIcon}>📎</Text>
+      <Text style={styles.fileName} numberOfLines={1}>{att.file_name}</Text>
+      {onRemove && <RemoveButton att={att} onRemoved={() => onRemove(att)} />}
+    </View>
   );
 }
 
@@ -158,7 +100,7 @@ function RemoveButton({
   onRemoved,
 }: {
   att: AttachmentRow;
-  onRemoved: (id: string) => void;
+  onRemoved: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   return (
@@ -170,7 +112,7 @@ function RemoveButton({
         setBusy(true);
         try {
           await deleteAttachment(att);
-          onRemoved(att.id);
+          onRemoved();
         } finally {
           setBusy(false);
         }
@@ -181,30 +123,52 @@ function RemoveButton({
   );
 }
 
+export function LoadingAudio() {
+  return <ActivityIndicator size="small" color="#fbbf24" />;
+}
+
 const styles = StyleSheet.create({
-  strip: {
-    flexGrow: 0,
-    flexShrink: 0,
-    maxHeight: 100,
-  },
-  stripContent: {
+  audioBar: {
     flexDirection: "row",
-    gap: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-  },
-  chipWrap: {
-    position: "relative",
-  },
-  thumb: {
-    width: 72,
-    height: 72,
-    borderRadius: 12,
+    alignItems: "center",
+    gap: 12,
     backgroundColor: "#1c1c1f",
+    borderWidth: 1,
+    borderColor: "#2c2c31",
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
   },
-  thumbLoading: {
+  playBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#fbbf24",
     alignItems: "center",
     justifyContent: "center",
+  },
+  playIcon: { fontSize: 16, color: "#18181b", fontWeight: "700" },
+  audioCenter: {
+    flex: 1,
+    gap: 6,
+  },
+  audioMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  audioTitle: { color: "#e4e4e7", fontSize: 13.5 },
+  audioTime: { color: "#a1a1aa", fontSize: 12, fontVariant: ["tabular-nums"] },
+  audioTrack: {
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#2c2c31",
+    overflow: "hidden",
+  },
+  audioTrackFill: {
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#fbbf24",
   },
   fileChip: {
     flexDirection: "row",
@@ -215,24 +179,11 @@ const styles = StyleSheet.create({
     borderColor: "#2c2c31",
     borderRadius: 12,
     paddingHorizontal: 12,
-    height: 72,
-    maxWidth: 200,
+    paddingVertical: 10,
+    maxWidth: 220,
   },
-  fileIcon: { fontSize: 18 },
+  fileIcon: { fontSize: 16 },
   fileName: { color: "#e4e4e7", fontSize: 12.5, flexShrink: 1 },
-  audioChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    backgroundColor: "#1c1c1f",
-    borderWidth: 1,
-    borderColor: "#2c2c31",
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    height: 72,
-  },
-  audioIcon: { fontSize: 18, color: "#fbbf24" },
-  audioLabel: { color: "#e4e4e7", fontSize: 13 },
   removeBtn: {
     position: "absolute",
     top: -6,
