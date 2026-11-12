@@ -210,6 +210,25 @@ export default function DashboardPage() {
     }
   }
 
+  /** Descarta nota vazia ao fechar a aba dela — sem diálogo (nada a perder).
+   *  O editor só chama quando título e corpo estão em branco e não há anexos. */
+  async function handleDiscardEmpty(noteId: string) {
+    const removed = notesRef.current.find((n) => n.id === noteId);
+
+    setNotes((prev) => prev.filter((n) => n.id !== noteId));
+    closeTab(noteId);
+
+    try {
+      const res = await fetch(`/api/notes/${noteId}`, { method: "DELETE" });
+      if (!res.ok && removed) {
+        setNotes((prev) => [removed, ...prev]);
+      }
+    } catch (err) {
+      console.error("Erro ao descartar nota vazia:", err);
+      if (removed) setNotes((prev) => [removed, ...prev]);
+    }
+  }
+
   async function handleUpdateNote(
     updatedFields: Partial<Note> & { skipPatch?: boolean },
     targetNoteId: string | null = selectedNoteId
@@ -411,6 +430,7 @@ export default function DashboardPage() {
                         handleRemoveAttachment(attachmentId, tabId)
                       }
                       onMenuClick={() => setIsSidebarOpen(true)}
+                      onDiscardIfEmpty={handleDiscardEmpty}
                     />
                   </div>
                 );

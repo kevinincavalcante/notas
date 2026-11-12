@@ -51,6 +51,8 @@ interface NoteEditorProps {
   onAddAttachment: (attachment: Attachment) => void;
   onRemoveAttachment: (attachmentId: string) => void;
   onMenuClick?: () => void;
+  /** Chamado no unmount se a nota continuar vazia (título e corpo em branco, sem anexo) — descarta */
+  onDiscardIfEmpty?: (noteId: string) => void;
 }
 
 export default function NoteEditor({
@@ -62,6 +64,7 @@ export default function NoteEditor({
   onAddAttachment,
   onRemoveAttachment,
   onMenuClick,
+  onDiscardIfEmpty,
 }: NoteEditorProps) {
   const [title, setTitle] = useState(note.title);
   const [body, setBody] = useState(note.body);
@@ -128,12 +131,28 @@ export default function NoteEditor({
     }
   }, [note, onUpdate]);
 
-  // Fecha a aba / desmonta = salva o que estiver pendente antes de sumir
+  // Espelho da nota (props) pro unmount: latestStateRef só guarda título/corpo/etc,
+  // e a checagem de descarte também precisa dos anexos
+  const notePropsRef = useRef(note);
+  useEffect(() => {
+    notePropsRef.current = note;
+  }, [note]);
+
+  // Fecha a aba / desmonta = salva o que estiver pendente antes de sumir.
+  // Aba que continua vazia (título e corpo em branco, sem anexo) é descartada:
+  // Ctrl+N esquecido não vira lixo "Sem título" no banco (e nem sincroniza).
   useEffect(() => {
     return () => {
+      const current = latestStateRef.current;
+      const semConteudo = !current.title.trim() && !current.body.trim();
+      const semAnexos = (notePropsRef.current.attachments?.length ?? 0) === 0;
+      if (semConteudo && semAnexos && onDiscardIfEmpty) {
+        onDiscardIfEmpty(current.noteId);
+        return;
+      }
       void flushSave();
     };
-  }, [flushSave]);
+  }, [flushSave, onDiscardIfEmpty]);
 
   // Ao mudar de nota: salva a nota anterior (se tiver alterações) e carrega os novos dados
   const prevNoteIdRef = useRef(note.id);
