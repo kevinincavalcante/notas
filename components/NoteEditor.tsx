@@ -142,6 +142,19 @@ export default function NoteEditor({
     notePropsRef.current = note;
   }, [note]);
 
+  // Callbacks em espelho: o efeito abaixo roda APENAS no unmount real —
+  // colocar flushSave/onDiscardIfEmpty nas deps disparava o cleanup a cada
+  // render (função nova a cada render), e o cleanup descartava nota nova
+  // ainda vazia — bug do "+ que fecha sozinho"
+  const flushSaveRef = useRef(flushSave);
+  useEffect(() => {
+    flushSaveRef.current = flushSave;
+  });
+  const onDiscardRef = useRef(onDiscardIfEmpty);
+  useEffect(() => {
+    onDiscardRef.current = onDiscardIfEmpty;
+  });
+
   // Fecha a aba / desmonta = salva o que estiver pendente antes de sumir.
   // Aba que continua vazia (título e corpo em branco, sem anexo) é descartada:
   // Ctrl+N esquecido não vira lixo "Sem título" no banco (e nem sincroniza).
@@ -150,13 +163,14 @@ export default function NoteEditor({
       const current = latestStateRef.current;
       const semConteudo = !current.title.trim() && !current.body.trim();
       const semAnexos = (notePropsRef.current.attachments?.length ?? 0) === 0;
-      if (semConteudo && semAnexos && onDiscardIfEmpty) {
-        onDiscardIfEmpty(current.noteId);
+      if (semConteudo && semAnexos && onDiscardRef.current) {
+        onDiscardRef.current(current.noteId);
         return;
       }
-      void flushSave();
+      void flushSaveRef.current();
     };
-  }, [flushSave, onDiscardIfEmpty]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Ao mudar de nota: salva a nota anterior (se tiver alterações) e carrega os novos dados
   const prevNoteIdRef = useRef(note.id);
