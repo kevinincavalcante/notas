@@ -1,4 +1,4 @@
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View, type TextInputInstance } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -44,6 +44,7 @@ export default function NoteScreen() {
   const enterRef = useRef(false);
 
   const savedRef = useRef<NoteRow | null>(null); // snapshot do que já foi gravado
+  const bodyRef = useRef<TextInputInstance | null>(null);
   const latestRef = useRef({ title: "", body: "", color: "default" });
   const apiRef = useRef<SyncApiConfig | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -52,6 +53,26 @@ export default function NoteScreen() {
     const saved = savedRef.current;
     if (!saved) return;
     const latest = latestRef.current;
+
+    // Nota vazia (título e corpo em branco, sem anexo) → descarta,
+    // igual o desktop (sem lixo "Sem título" no banco nem no sync)
+    if (latest.title.trim() === "" && latest.body.trim() === "") {
+      const { client } = await getDb();
+      const atts = await client.execute({
+        sql: `SELECT COUNT(*) AS c FROM attachments WHERE note_id = ?`,
+        args: [saved.id],
+      });
+      if (Number(atts.rows[0]?.c ?? 0) === 0) {
+        await deleteNote(client, saved.id);
+        savedRef.current = null;
+        notifyLocalChange();
+        void getSyncApi().then((cfg) => {
+          if (cfg) scheduleQuietSync(cfg);
+        });
+        return;
+      }
+    }
+
     const patch: NotePatch = {};
     if (latest.title !== saved.title) patch.title = latest.title;
     if (latest.body !== saved.body) patch.body = latest.body;
@@ -92,6 +113,10 @@ export default function NoteScreen() {
       setColor(note.color);
       apiRef.current = await getSyncApi();
       setLoaded(true);
+      // Nota nova/sem nada: abre direto no body com o teclado (estilo Keep)
+      if (!note.title && !note.body) {
+        setTimeout(() => bodyRef.current?.focus(), 350);
+      }
     })();
   }, [noteId]);
 
@@ -250,6 +275,7 @@ export default function NoteScreen() {
         />
 
         <TextInput
+          ref={bodyRef}
           style={styles.bodyInput}
           value={body}
           onChangeText={onBodyChange}
