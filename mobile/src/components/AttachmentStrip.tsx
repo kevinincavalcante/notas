@@ -30,7 +30,11 @@ export default function AttachmentStrip({
   // upload/remoção/sync avisam — a faixa se atualiza na hora
   useEffect(() => onSynced(reload), [reload]);
 
-  if (items.length === 0) return null;
+  // Fotos NÃO aparecem aqui: elas vivem no corpo da nota (topo amplo no
+  // modo edição, inline no markdown do modo leitura) — mostrar de novo
+  // na faixa era redundante. A faixa fica pra áudio e outros arquivos.
+  const visible = items.filter((a) => !a.mime_type.startsWith("image/"));
+  if (visible.length === 0) return null;
   return (
     <ScrollView
       horizontal
@@ -38,7 +42,7 @@ export default function AttachmentStrip({
       style={styles.strip}
       contentContainerStyle={styles.stripContent}
     >
-      {items.map((att) => (
+      {visible.map((att) => (
         <AttachmentChip
           key={att.id}
           att={att}

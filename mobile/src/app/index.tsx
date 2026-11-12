@@ -80,7 +80,7 @@ export default function HomeScreen() {
 
   // menu de ações (long-press)
   const [sheetNote, setSheetNote] = useState<NoteRow | null>(null);
-  const [photoSheetOpen, setPhotoSheetOpen] = useState(false);
+  const [createSheetOpen, setCreateSheetOpen] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -212,7 +212,7 @@ export default function HomeScreen() {
       ]
     : [];
 
-  async function handleFab() {
+  async function handleCreateNote() {
     const { client } = await getDb();
     const id = await createNote(client);
     scheduleSync();
@@ -410,39 +410,12 @@ export default function HomeScreen() {
         )}
       />
 
-      {/* Barra de Acoes Rapidas estilo Google Keep */}
+      {/* FAB único estilo Joplin: + abre os atalhos de criação */}
       <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-        <View style={styles.bottomBarActions}>
-          <Pressable
-            style={({ pressed }) => [styles.barActionBtn, pressed && styles.barActionPressed]}
-            onPress={() => void handleCreateChecklist()}
-            hitSlop={8}
-            accessibilityLabel="Nova lista de tarefas"
-          >
-            <Text style={styles.barActionIcon}>☑️</Text>
-          </Pressable>
-          <Pressable
-            style={({ pressed }) => [styles.barActionBtn, pressed && styles.barActionPressed]}
-            onPress={() => void handleCreateAudio()}
-            hitSlop={8}
-            accessibilityLabel="Nova nota de voz"
-          >
-            <Text style={styles.barActionIcon}>🎙️</Text>
-          </Pressable>
-          <Pressable
-            style={({ pressed }) => [styles.barActionBtn, pressed && styles.barActionPressed]}
-            onPress={() => setPhotoSheetOpen(true)}
-            hitSlop={8}
-            accessibilityLabel="Nova nota com foto"
-          >
-            <Text style={styles.barActionIcon}>📷</Text>
-          </Pressable>
-        </View>
-
         <Pressable
           style={({ pressed }) => [styles.fab, pressed && { transform: [{ scale: 0.95 }] }]}
-          onPress={() => void handleFab()}
-          accessibilityLabel="Nova nota de texto"
+          onPress={() => setCreateSheetOpen(true)}
+          accessibilityLabel="Criar nova nota"
         >
           <Text style={styles.fabText}>＋</Text>
         </Pressable>
@@ -450,12 +423,15 @@ export default function HomeScreen() {
 
       <ActionSheet visible={Boolean(sheetNote)} items={sheetItems} onClose={() => setSheetNote(null)} />
       <ActionSheet
-        visible={photoSheetOpen}
+        visible={createSheetOpen}
         items={[
-          { label: "Tirar foto (Camera)", onPress: () => void handleCreatePhoto(true) },
-          { label: "Escolher da galeria", onPress: () => void handleCreatePhoto(false) },
+          { label: "📝 Nova nota", onPress: () => void handleCreateNote() },
+          { label: "☑️ Nova tarefa", onPress: () => void handleCreateChecklist() },
+          { label: "📷 Tirar foto (câmera)", onPress: () => void handleCreatePhoto(true) },
+          { label: "🖼️ Escolher da galeria", onPress: () => void handleCreatePhoto(false) },
+          { label: "🎙️ Gravar áudio", onPress: () => void handleCreateAudio() },
         ]}
-        onClose={() => setPhotoSheetOpen(false)}
+        onClose={() => setCreateSheetOpen(false)}
       />
     </View>
   );
@@ -552,29 +528,9 @@ const styles = StyleSheet.create({
     borderTopColor: "#27272a",
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    justifyContent: "flex-end",
     paddingTop: 10,
     paddingHorizontal: 18,
-  },
-  bottomBarActions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 14,
-  },
-  barActionBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#27272a",
-  },
-  barActionPressed: {
-    backgroundColor: "#3f3f46",
-    transform: [{ scale: 0.92 }],
-  },
-  barActionIcon: {
-    fontSize: 20,
   },
   fab: {
     width: 52,

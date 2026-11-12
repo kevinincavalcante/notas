@@ -592,8 +592,6 @@ export default function NoteScreen() {
         />
       </ScrollView>
 
-      <AttachmentStrip noteId={noteId ?? ""} canEdit />
-
       {/* Barra inferior estilo Keep: mídia + 🎨 paleta + ⋯ menu */}
       <View style={[styles.toolbar, { paddingBottom: insets.bottom + 8 }]}>
         {showColors && (
