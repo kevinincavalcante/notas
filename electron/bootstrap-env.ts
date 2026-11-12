@@ -13,6 +13,7 @@ const userData = app.getPath("userData");
 const cfg = loadConfig();
 const secret = cfg.localSecret || randomBytes(32).toString("hex");
 
+const localEnvPath = join(userData, "notas-local.env");
 const sessionFile = join(userData, "notas-session.token");
 writeFileSync(
   localEnvPath,

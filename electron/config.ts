@@ -37,11 +37,14 @@ export function saveConfig(patch: Partial<DesktopConfig>): DesktopConfig {
   return next;
 }
 
-export function encryptToken(token: string): string {
+export function encryptToken(token: string): { token: string; encrypted: boolean } {
   if (safeStorage?.isEncryptionAvailable?.()) {
-    return safeStorage.encryptString(token).toString("base64");
+    return {
+      token: safeStorage.encryptString(token).toString("base64"),
+      encrypted: true,
+    };
   }
-  return token; // fallback: texto puro (SO sem cofre)
+  return { token, encrypted: false }; // fallback: texto puro (SO sem cofre)
 }
 
 export function decryptToken(stored: string | undefined, encrypted: boolean | undefined): string | null {
@@ -53,7 +56,19 @@ export function decryptToken(stored: string | undefined, encrypted: boolean | un
       return null;
     }
   }
-  return stored;
+  // Se não foi marcado explicitamente como encrypted, testa se é um JWT válido em texto puro
+  if (stored.startsWith("ey")) {
+    return stored;
+  }
+  // Tenta descriptografar caso tenha sido salvo criptografado sem a flag
+  if (safeStorage?.isEncryptionAvailable?.()) {
+    try {
+      return safeStorage.decryptString(Buffer.from(stored, "base64"));
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 export function getSessionToken(): string | null {

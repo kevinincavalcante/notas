@@ -26,10 +26,12 @@ let mainWindow: BrowserWindow | null = null;
 
 let loginWindow: BrowserWindow | null = null;
 let loginPromise: Promise<boolean> | null = null;
+let loginResolver: ((value: boolean) => void) | null = null;
 
 function openLoginWindow(): Promise<boolean> {
   if (loginPromise) return loginPromise;
   loginPromise = new Promise<boolean>((resolve) => {
+    loginResolver = resolve;
     const cfg = loadConfig();
     const win = new BrowserWindow({
       width: 430,
@@ -49,7 +51,10 @@ function openLoginWindow(): Promise<boolean> {
     win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
     win.on("closed", () => {
       loginWindow = null;
-      resolve(false);
+      if (loginResolver) {
+        loginResolver(false);
+        loginResolver = null;
+      }
       loginPromise = null;
     });
   });
@@ -58,13 +63,16 @@ function openLoginWindow(): Promise<boolean> {
 
 function loginHtml(username: string, apiUrl: string): string {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-    body{margin:0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;justify-content:center;padding-top:40px}
-    form{width:320px;display:flex;flex-direction:column;gap:12px}
-    h1{font-size:28px;margin:0 0 2px;color:#fbbf24} p{margin:0 0 10px;font-size:12.5px;color:#94a3b8}
-    input{padding:12px;border-radius:10px;border:1px solid #334155;background:#1e293b;color:#e2e8f0;font-size:14px}
-    button{padding:13px;border:none;border-radius:10px;background:#fbbf24;color:#1c1917;font-weight:700;font-size:15px;cursor:pointer}
-    .err{color:#f87171;font-size:12.5px;min-height:18px}
-    label{font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px}
+    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: #0f172a; color: #f8fafc; margin: 0; padding: 32px 28px; }
+    h1 { font-size: 24px; margin: 0 0 6px; font-weight: 700; color: #f8fafc; }
+    p { color: #94a3b8; font-size: 13px; margin: 0 0 24px; }
+    label { display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 6px; }
+    input { width: 100%; padding: 10px 12px; background: #1e293b; border: 1px solid #334155; border-radius: 8px; color: #f8fafc; font-size: 14px; margin-bottom: 16px; outline: none; }
+    input:focus { border-color: #3b82f6; }
+    button { width: 100%; padding: 11px; background: #3b82f6; color: #fff; border: 0; border-radius: 8px; font-weight: 600; font-size: 14px; cursor: pointer; margin-top: 8px; }
+    button:hover { background: #2563eb; }
+    .err { color: #ef4444; font-size: 12px; margin-top: 12px; min-height: 16px; text-align: center; }
   </style></head><body>
   <form id="f">
     <h1>Notas</h1><p>Sua conta na nuvem — o app guarda o acesso no cofre do sistema</p>
@@ -100,12 +108,18 @@ ipcMain.handle("login-submit", async (_e, data: { apiUrl?: string; username?: st
     if (!res.ok || !json.token) {
       return { ok: false, error: json.error || "Login falhou" };
     }
+    const enc = encryptToken(json.token);
     saveConfig({
       apiUrl: baseUrl,
       username: data.username,
-      token: encryptToken(json.token),
+      token: enc.token,
+      encrypted: enc.encrypted,
     });
     writeFileSync(join(app.getPath("userData"), "notas-session.token"), json.token);
+    if (loginResolver) {
+      loginResolver(true);
+      loginResolver = null;
+    }
     loginWindow?.close();
     return { ok: true };
   } catch (err) {
@@ -139,31 +153,24 @@ async function createWindow(url: string): Promise<BrowserWindow> {
     },
   });
 
+  mainWindow = win;
+  setupApplicationMenu(win);
+
   // Links de preview/notas abrem no navegador do sistema, não dentro do app
   win.webContents.setWindowOpenHandler(({ url: external }) => {
     shell.openExternal(external);
     return { action: "deny" };
   });
 
-  installAppMenu(win);
   await win.loadURL(url);
-  mainWindow = win;
-  win.on("closed", () => {
-    if (mainWindow === win) mainWindow = null;
-  });
   return win;
 }
 
-/**
- * Menu nativo com os atalhos de aba (estilo browser):
- *   Ctrl+N  nova aba (nova nota, sem fechar a atual)
- *   Ctrl+W  fecha a aba atual
- *   Ctrl+Tab / Ctrl+Shift+Tab  próxima / anterior
- * Os comandos vão por IPC pro renderer (page.tsx cuida do estado das abas).
- * O menu fica escondido (autoHideMenuBar) — os atalhos continuam valendo.
- */
-function installAppMenu(win: BrowserWindow): void {
-  const send = (cmd: string) => () => win.webContents.send("tabs-command", cmd);
+/** Menu do app com atalhos de teclado nativos pra gerenciar abas. */
+function setupApplicationMenu(win: BrowserWindow) {
+  const send = (cmd: string) => () => {
+    if (!win.isDestroyed()) win.webContents.send("tabs-command", cmd);
+  };
 
   const menu = Menu.buildFromTemplate([
     {

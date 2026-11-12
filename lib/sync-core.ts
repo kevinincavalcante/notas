@@ -99,94 +99,59 @@ export async function collectLocalPush(
   if (noteIds.size > 0) {
     const ids = idList(noteIds);
     const res = await local.execute({
-      sql: `SELECT id, title, body, color, is_pinned, is_archived, created_at, updated_at
-            FROM notes WHERE id IN (${placeholders(ids.length)})`,
+      sql: `SELECT * FROM notes WHERE id IN (${placeholders(ids.length)})`,
       args: ids,
     });
-    push.notes = res.rows.map((r) => ({
-      id: r.id as string,
-      title: r.title as string,
-      body: r.body as string,
-      color: r.color as string,
-      is_pinned: r.is_pinned as number,
-      is_archived: r.is_archived as number,
-      created_at: Number(r.created_at),
-      updated_at: Number(r.updated_at),
-    }));
+    push.notes = res.rows as unknown as SyncPush["notes"];
   }
 
-  if (attUpserts.size > 0) {
-    const ids = idList(attUpserts);
-    const res = await local.execute({
-      sql: `SELECT id, note_id, storage_key, file_name, mime_type, file_size, duration_seconds, created_at
-            FROM attachments WHERE id IN (${placeholders(ids.length)})`,
-      args: ids,
-    });
-    push.attachments = res.rows.map((r) => ({
-      id: r.id as string,
-      note_id: r.note_id as string,
-      storage_key: r.storage_key as string,
-      file_name: r.file_name as string,
-      mime_type: r.mime_type as string,
-      file_size: Number(r.file_size),
-      duration_seconds: (r.duration_seconds as number | null) ?? null,
-      created_at: Number(r.created_at),
-    }));
-  }
-
+  // Tombstones pendentes
   if (tombIds.size > 0) {
     const ids = idList(tombIds);
     const res = await local.execute({
       sql: `SELECT id, deleted_at FROM tombstones WHERE id IN (${placeholders(ids.length)})`,
       args: ids,
     });
-    push.tombstones = res.rows.map((r) => ({
-      id: r.id as string,
-      deleted_at: Number(r.deleted_at),
-    }));
+    push.tombstones = res.rows as unknown as SyncPush["tombstones"];
   }
 
-  // Versões do histórico: append-only — envia tudo com created_at >= marca
-  // d'água (na 1ª sync com watermark 0, backfilla o histórico local inteiro
-  // pro remoto). Notas tombstoned são ignoradas: versão morre com a nota.
-  const versionsRes = await local.execute({
-    sql: `
-      SELECT id, note_id, title, body, created_at FROM note_versions
-      WHERE created_at >= ?
-        AND note_id NOT IN (SELECT id FROM tombstones)
-      ORDER BY created_at ASC
-    `,
+  // Anexos criados/alterados que ainda existem
+  if (attUpserts.size > 0) {
+    const ids = idList(attUpserts);
+    const res = await local.execute({
+      sql: `SELECT * FROM attachments WHERE id IN (${placeholders(ids.length)})`,
+      args: ids,
+    });
+    push.attachments = res.rows as unknown as SyncPush["attachments"];
+  }
+
+  // Versões criadas localmente após a última marca d'água
+  const verRes = await local.execute({
+    sql: `SELECT * FROM note_versions WHERE created_at > ? ORDER BY created_at ASC`,
     args: [versionsWatermark],
   });
-  push.versions = versionsRes.rows.map((r) => ({
-    id: r.id as string,
-    note_id: r.note_id as string,
-    title: r.title as string,
-    body: r.body as string,
-    created_at: Number(r.created_at),
-  }));
-  push.versions_watermark = versionsWatermark;
+  push.versions = verRes.rows as unknown as SyncPush["versions"];
 
   return push;
 }
 
-/** Aplica o pull no banco local (sem logChange — mudanças remotas não re-pusham). */
+/** Aplica o pull incremental (ou bootstrap) vindo do remoto no banco local. */
 export async function applyPull(
   local: Client,
   result: Record<string, unknown>,
   options: PullOptions = {}
 ): Promise<{ pulledNotes: number; pulledVersions: number; appliedTombstones: number }> {
-  const deleteBinary = options.deleteBinary;
+  const { deleteBinary } = options;
   let pulledNotes = 0;
   let pulledVersions = 0;
   let appliedTombstones = 0;
 
-  // Tombstones primeiro (exclusão vence)
+  // Tombstones primeiro: exclusão do remoto apaga a cópia local
   for (const tomb of (result.tombstones as { id: string; deleted_at: number }[]) || []) {
     if (!tomb?.id) continue;
 
     const isNew = await local.execute({
-      sql: `SELECT 1 AS x FROM tombstones WHERE id = ?`,
+      sql: `SELECT 1 FROM tombstones WHERE id = ?`,
       args: [tomb.id],
     });
     if (isNew.rows.length === 0) appliedTombstones++;
@@ -262,27 +227,34 @@ export async function applyPull(
         ],
       });
       pulledNotes++;
-    } else if ((note.updated_at || 0) > Number(localRes.rows[0].updated_at)) {
-      await local.execute({
-        sql: `
-          UPDATE notes
-          SET title = ?, body = ?, color = ?, is_pinned = ?, is_archived = ?, updated_at = ?
-          WHERE id = ?
-        `,
-        args: [
-          note.title ?? "",
-          note.body ?? "",
-          note.color || "default",
-          note.is_pinned ? 1 : 0,
-          note.is_archived ? 1 : 0,
-          note.updated_at,
-          note.id,
-        ],
-      });
-      pulledNotes++;
+    } else {
+      const localUpdated = Number(localRes.rows[0].updated_at) || 0;
+      if (note.updated_at > localUpdated) {
+        await local.execute({
+          sql: `
+            UPDATE notes
+            SET title = ?, body = ?, color = ?, is_pinned = ?, is_archived = ?, updated_at = ?
+            WHERE id = ?
+          `,
+          args: [
+            note.title ?? "",
+            note.body ?? "",
+            note.color || "default",
+            note.is_pinned ? 1 : 0,
+            note.is_archived ? 1 : 0,
+            note.updated_at,
+            note.id,
+          ],
+        });
+        pulledNotes++;
+      }
     }
-    // Empate ou local mais novo: o local vence (é o mesmo critério do remoto)
   }
+
+  // Lista atualizada de notas locais vivas (para validação de FKs)
+  const notasLocais = new Set(
+    (await local.execute(`SELECT id FROM notes`)).rows.map((r) => r.id as string)
+  );
 
   for (const att of (result.attachments as {
     id: string;
@@ -294,7 +266,7 @@ export async function applyPull(
     duration_seconds: number | null;
     created_at: number;
   }[]) || []) {
-    if (!att?.id) continue;
+    if (!att?.id || !att?.note_id || !notasLocais.has(att.note_id)) continue;
     await local.execute({
       sql: `
         INSERT OR IGNORE INTO attachments
@@ -337,9 +309,6 @@ export async function applyPull(
   // Versões do histórico do remoto: append-only, dedupe por id. Só entra
   // versão de nota que existe localmente (FK não é coberta pelo OR IGNORE —
   // a nota pode ter sido tombstoned aqui entre syncs).
-  const notasLocais = new Set(
-    (await local.execute(`SELECT id FROM notes`)).rows.map((r) => r.id as string)
-  );
   for (const ver of (result.versions as {
     id: string;
     note_id: string;
@@ -370,8 +339,13 @@ export async function applyPull(
       args: [tag.id, tag.name, tag.kind || "user", tag.source || "file", tag.created_at || Date.now()],
     });
   }
+
+  const tagsLocais = new Set(
+    (await local.execute(`SELECT id FROM tags`)).rows.map((r) => r.id as string)
+  );
+
   for (const nt of (result.note_tags as { note_id: string; tag_id: string; created_at: number }[]) || []) {
-    if (!nt?.note_id || !nt?.tag_id) continue;
+    if (!nt?.note_id || !nt?.tag_id || !notasLocais.has(nt.note_id) || !tagsLocais.has(nt.tag_id)) continue;
     await local.execute({
       sql: `
         INSERT OR IGNORE INTO note_tags (note_id, tag_id, created_at)
@@ -398,41 +372,49 @@ export async function syncOnceWith(
   const pushedSeq = await getMeta(local, "sync_pushed_seq");
   const versionsWatermark = await getMeta(local, "sync_versions_watermark");
 
-  const push = await collectLocalPush(local, pushedSeq, versionsWatermark);
-  const pushedNotes = push.notes?.length || 0;
-  const pushedVersions = push.versions?.length || 0;
+  // Maior seq atual do log local — se o push for aceito, vira o novo pushedSeq
+  const maxSeqRes = await local.execute(`SELECT COALESCE(MAX(seq), 0) AS m FROM change_log`);
+  const currentMaxSeq = Number(maxSeqRes.rows[0].m);
 
-  const result = await run(lastCursor, push);
+  // Maior created_at das versões antes de enviar
+  const maxVerRes = await local.execute(`SELECT COALESCE(MAX(created_at), 0) AS m FROM note_versions`);
+  const currentMaxVer = Number(maxVerRes.rows[0].m);
+
+  const push = await collectLocalPush(local, pushedSeq, versionsWatermark);
+
+  let result: Record<string, unknown>;
+  try {
+    result = await run(lastCursor, push);
+  } catch (err) {
+    return {
+      ok: false,
+      cursor: lastCursor,
+      pushedNotes: 0,
+      pushedVersions: 0,
+      pulledNotes: 0,
+      pulledVersions: 0,
+      appliedTombstones: 0,
+      conflicts: [],
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  // Push foi aceito: avança os cursores locais
+  await setMeta(local, "sync_pushed_seq", currentMaxSeq);
+  if (currentMaxVer > versionsWatermark) {
+    await setMeta(local, "sync_versions_watermark", currentMaxVer);
+  }
 
   const { pulledNotes, pulledVersions, appliedTombstones } = await applyPull(local, result, options);
 
   const newCursor = Number(result.cursor) || lastCursor;
   await setMeta(local, "sync_cursor", newCursor);
 
-  // Marca d'água de versões: maior created_at já presente localmente — o pull
-  // de cima acabou de entrar nessa conta, então nada do remoto fica pra trás
-  const maxVerRes = await local.execute(
-    `SELECT COALESCE(MAX(created_at), 0) AS m FROM note_versions`
-  );
-  await setMeta(local, "sync_versions_watermark", Number(maxVerRes.rows[0].m));
-
-  const maxSeqRes = await local.execute(`SELECT COALESCE(MAX(seq), 0) AS m FROM change_log`);
-  const maxSeq = Number(maxSeqRes.rows[0].m);
-  await setMeta(local, "sync_pushed_seq", maxSeq);
-
-  // Poda o log local já enviado (o cursor dos OUTROS vem do remoto)
-  if (maxSeq > pushedSeq) {
-    await local.execute({
-      sql: `DELETE FROM change_log WHERE seq <= ?`,
-      args: [maxSeq],
-    });
-  }
-
   return {
     ok: true,
     cursor: newCursor,
-    pushedNotes,
-    pushedVersions,
+    pushedNotes: push.notes?.length ?? 0,
+    pushedVersions: push.versions?.length ?? 0,
     pulledNotes,
     pulledVersions,
     appliedTombstones,
