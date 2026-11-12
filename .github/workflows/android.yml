@@ -44,6 +44,11 @@ jobs:
         run: npx expo prebuild -p android --no-install
         working-directory: mobile
 
+      # Só o ABI do celular do dono: compila 4x menos C++ e APK ~2x menor
+      - name: Focar build em arm64-v8a
+        run: echo "reactNativeArchitectures=arm64-v8a" >> android/gradle.properties
+        working-directory: mobile
+
       - name: Cache Gradle
         uses: actions/cache@v4
         with:

@@ -8,7 +8,8 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useRouter, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Client } from "@libsql/client";
 import TopBar from "../components/TopBar";
@@ -35,7 +36,7 @@ import {
   login,
   setApiUrl,
 } from "../lib/api";
-import { onSynced, scheduleQuietSync, setLocalClientProvider, syncQuiet, type SyncApiConfig } from "../lib/sync";
+import { getLastSync, onSynced, scheduleQuietSync, setLocalClientProvider, syncQuiet, type SyncApiConfig } from "../lib/sync";
 
 /**
  * Home — estilo OneNote: blocos com as notas recentes e chips de
@@ -43,6 +44,7 @@ import { onSynced, scheduleQuietSync, setLocalClientProvider, syncQuiet, type Sy
  */
 export default function HomeScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
 
   // boot / auth
   const [booted, setBooted] = useState(false);
@@ -65,6 +67,8 @@ export default function HomeScreen() {
   // sync
   const apiRef = useRef<SyncApiConfig | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
 
   // menu de ações (long-press)
   const [sheetNote, setSheetNote] = useState<NoteRow | null>(null);
@@ -81,7 +85,10 @@ export default function HomeScreen() {
     const cfg = apiRef.current;
     if (!cfg) return;
     setSyncing(true);
-    await syncQuiet(cfg);
+    const ok = await syncQuiet(cfg);
+    const { error } = getLastSync();
+    setSyncError(ok ? null : error || "erro desconhecido");
+    if (ok) setLastSyncAt(Date.now());
     setSyncing(false);
   }, []);
 
@@ -121,6 +128,13 @@ export default function HomeScreen() {
   useEffect(() => {
     if (token) void reload();
   }, [token, activeTag, reload]);
+
+  // voltar pro home (do editor/busca) recarrega a lista
+  useFocusEffect(
+    useCallback(() => {
+      void reload();
+    }, [reload])
+  );
 
   async function handleLogin() {
     setLoginError(null);
@@ -179,6 +193,7 @@ export default function HomeScreen() {
     const { client } = await getDb();
     const id = await createNote(client);
     scheduleSync();
+    void reload();
     router.push(`/note/${id}`);
   }
 
@@ -246,6 +261,30 @@ export default function HomeScreen() {
       />
       <ChipsRow tags={tags} active={activeTag} onSelect={setActiveTag} />
 
+      {(syncing || syncError || lastSyncAt) && (
+        <Pressable
+          onPress={() => void runSync()}
+          disabled={syncing}
+          style={({ pressed }) => [styles.syncLine, pressed && { opacity: 0.7 }]}
+        >
+          <Text
+            style={
+              syncing
+                ? styles.syncMuted
+                : syncError
+                  ? styles.syncError
+                  : styles.syncMuted
+            }
+          >
+            {syncing
+              ? "Sincronizando…"
+              : syncError
+                ? `Sync falhou: ${syncError} — toque pra tentar de novo`
+                : `Sincronizado ${new Date(lastSyncAt || 0).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`}
+          </Text>
+        </Pressable>
+      )}
+
       <FlatList
         data={notes}
         keyExtractor={(item) => item.id}
@@ -261,6 +300,7 @@ export default function HomeScreen() {
                 ? "Nada com esse marcador ainda."
                 : "Nada por aqui — crie sua primeira nota."}
             </Text>
+            {syncError && <Text style={styles.syncError}>{`Sync falhou: ${syncError}`}</Text>}
           </View>
         }
         refreshControl={
@@ -280,7 +320,10 @@ export default function HomeScreen() {
         )}
       />
 
-      <Pressable style={styles.fab} onPress={() => void handleFab()}>
+      <Pressable
+        style={[styles.fab, { bottom: insets.bottom + 18 }]}
+        onPress={() => void handleFab()}
+      >
         <Text style={styles.fabText}>＋</Text>
       </Pressable>
 
@@ -394,6 +437,18 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
     elevation: 6,
+  },
+  syncLine: {
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+  },
+  syncMuted: {
+    color: "#6b6b74",
+    fontSize: 11.5,
+  },
+  syncError: {
+    color: "#f87171",
+    fontSize: 11.5,
   },
   fabText: {
     color: "#1c1917",

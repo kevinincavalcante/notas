@@ -1,4 +1,5 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 /** Barra superior: avatar (config) à esquerda, ações à direita. */
 export default function TopBar({
@@ -10,8 +11,9 @@ export default function TopBar({
   onAvatar: () => void;
   right?: { label: string; onPress: () => void }[];
 }) {
+  const insets = useSafeAreaInsets();
   return (
-    <View style={styles.top}>
+    <View style={[styles.top, { paddingTop: insets.top + 8 }]}>
       <Pressable onPress={onAvatar} hitSlop={8}>
         <View style={styles.avatar}>
           <Text style={styles.avatarText}>{(user?.[0] || "?").toUpperCase()}</Text>
@@ -34,7 +36,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 18,
-    paddingTop: 12,
     paddingBottom: 8,
     backgroundColor: "#18181b",
   },

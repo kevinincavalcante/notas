@@ -1,4 +1,5 @@
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 import { DEFAULT_API_URL, getApiUrl, getStoredToken, getStoredUser, logout, setApiUrl } from "../lib/api";
@@ -7,6 +8,7 @@ import { getLastSync, syncQuiet, type SyncApiConfig } from "../lib/sync";
 /** Config: conta, endereço da API, sync manual e sair. */
 export default function ConfigScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [user, setUser] = useState<string | null>(null);
   const [hasToken, setHasToken] = useState(false);
   const [url, setUrl] = useState(DEFAULT_API_URL);
@@ -55,7 +57,7 @@ export default function ConfigScreen() {
 
   return (
     <View style={styles.root}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
         <Pressable onPress={() => router.back()} hitSlop={10}>
           <Text style={styles.back}>‹</Text>
         </Pressable>
@@ -120,7 +122,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingTop: 12,
+    paddingBottom: 4,
   },
   back: {
     color: "#fafafa",

@@ -1,4 +1,5 @@
 import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import NoteCard from "../components/NoteCard";
@@ -7,6 +8,7 @@ import { getDb, searchNotes, tagsForNotes, type NoteRow } from "../lib/db";
 /** Busca local FTS5 — instantânea, sem rede (espelho da /api/notes/search). */
 export default function SearchScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<NoteRow[]>([]);
   const [tagsByNote, setTagsByNote] = useState<Record<string, string[]>>({});
@@ -25,7 +27,7 @@ export default function SearchScreen() {
 
   return (
     <View style={styles.root}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
         <Pressable onPress={() => router.back()} hitSlop={10}>
           <Text style={styles.back}>‹</Text>
         </Pressable>
@@ -77,7 +79,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 10,
     paddingHorizontal: 14,
-    paddingTop: 12,
     paddingBottom: 10,
     backgroundColor: "#18181b",
   },

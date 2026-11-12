@@ -1,4 +1,5 @@
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import ActionSheet, { type ActionItem } from "../../components/ActionSheet";
@@ -23,6 +24,7 @@ import { getSyncApi } from "../../lib/api";
  */
 export default function NoteScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ id: string }>();
   const noteId = params.id;
 
@@ -183,7 +185,7 @@ export default function NoteScreen() {
 
   return (
     <View style={styles.root}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
         <Pressable onPress={() => router.back()} hitSlop={10}>
           <Text style={styles.back}>‹</Text>
         </Pressable>
@@ -250,7 +252,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 16,
-    paddingTop: 14,
     paddingBottom: 6,
   },
   back: {
