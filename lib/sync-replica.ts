@@ -21,7 +21,9 @@ export interface ReplicaSyncResult {
   ok: boolean;
   cursor: number;
   pushedNotes: number;
+  pushedVersions: number;
   pulledNotes: number;
+  pulledVersions: number;
   appliedTombstones: number;
   conflicts: string[];
   error?: string;
@@ -46,7 +48,11 @@ async function setMeta(client: Client, key: string, value: number): Promise<void
 }
 
 /** Coleta as mudanças locais pendentes de envio, por entidade. */
-async function collectLocalPush(local: Client, pushedSeq: number): Promise<SyncPush> {
+async function collectLocalPush(
+  local: Client,
+  pushedSeq: number,
+  versionsWatermark: number
+): Promise<SyncPush> {
   const logRes = await local.execute({
     sql: `SELECT entity, entity_id, op FROM change_log WHERE seq > ? ORDER BY seq ASC`,
     args: [pushedSeq],
@@ -70,7 +76,13 @@ async function collectLocalPush(local: Client, pushedSeq: number): Promise<SyncP
     }
   }
 
-  const push: SyncPush = { notes: [], attachments: [], attachments_removed: attRemoved, tombstones: [] };
+  const push: SyncPush = {
+    notes: [],
+    attachments: [],
+    attachments_removed: attRemoved,
+    tombstones: [],
+    versions: [],
+  };
 
   const idList = (set: Set<string>) => Array.from(set);
   const placeholders = (n: number) => n > 0 ? Array.from({ length: n }, () => "?").join(",") : "";
@@ -126,6 +138,27 @@ async function collectLocalPush(local: Client, pushedSeq: number): Promise<SyncP
     }));
   }
 
+  // Versões do histórico: append-only — envia tudo com created_at >= marca
+  // d'água (na 1ª sync com watermark 0, backfilla o histórico local inteiro
+  // pro remoto). Notas tombstoned são ignoradas: versão morre com a nota.
+  const versionsRes = await local.execute({
+    sql: `
+      SELECT id, note_id, title, body, created_at FROM note_versions
+      WHERE created_at >= ?
+        AND note_id NOT IN (SELECT id FROM tombstones)
+      ORDER BY created_at ASC
+    `,
+    args: [versionsWatermark],
+  });
+  push.versions = versionsRes.rows.map((r) => ({
+    id: r.id as string,
+    note_id: r.note_id as string,
+    title: r.title as string,
+    body: r.body as string,
+    created_at: Number(r.created_at),
+  }));
+  push.versions_watermark = versionsWatermark;
+
   return push;
 }
 
@@ -133,8 +166,9 @@ async function collectLocalPush(local: Client, pushedSeq: number): Promise<SyncP
 async function applyPull(
   local: Client,
   result: Record<string, unknown>
-): Promise<{ pulledNotes: number; appliedTombstones: number }> {
+): Promise<{ pulledNotes: number; pulledVersions: number; appliedTombstones: number }> {
   let pulledNotes = 0;
+  let pulledVersions = 0;
   let appliedTombstones = 0;
 
   // Tombstones primeiro (exclusão vence)
@@ -172,6 +206,11 @@ async function applyPull(
     );
     await local.execute({
       sql: `DELETE FROM notes WHERE id = ?`,
+      args: [tomb.id],
+    });
+    // FK cascade pode estar desligado no SQLite local: limpa as versões à mão
+    await local.execute({
+      sql: `DELETE FROM note_versions WHERE note_id = ?`,
       args: [tomb.id],
     });
   }
@@ -283,6 +322,30 @@ async function applyPull(
     }
   }
 
+  // Versões do histórico do remoto: append-only, dedupe por id. Só entra
+  // versão de nota que existe localmente (FK não é coberta pelo OR IGNORE —
+  // a nota pode ter sido tombstoned aqui entre syncs).
+  const notasLocais = new Set(
+    (await local.execute(`SELECT id FROM notes`)).rows.map((r) => r.id as string)
+  );
+  for (const ver of (result.versions as {
+    id: string;
+    note_id: string;
+    title: string;
+    body: string;
+    created_at: number;
+  }[]) || []) {
+    if (!ver?.id || !ver?.note_id || !notasLocais.has(ver.note_id)) continue;
+    const resVer = await local.execute({
+      sql: `
+        INSERT OR IGNORE INTO note_versions (id, note_id, title, body, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `,
+      args: [ver.id, ver.note_id, ver.title ?? "", ver.body ?? "", ver.created_at || Date.now()],
+    });
+    if (resVer.rowsAffected > 0) pulledVersions++;
+  }
+
   // Snapshots de tags/note_tags: só completam o que falta (INSERT OR IGNORE)
   for (const tag of (result.tags as { id: string; name: string; kind: string; source: string; created_at: number }[]) || []) {
     if (!tag?.id) continue;
@@ -306,7 +369,7 @@ async function applyPull(
     });
   }
 
-  return { pulledNotes, appliedTombstones };
+  return { pulledNotes, pulledVersions, appliedTombstones };
 }
 
 /**
@@ -316,16 +379,25 @@ async function applyPull(
 export async function syncOnce(local: Client, remote: Client): Promise<ReplicaSyncResult> {
   const lastCursor = await getMeta(local, "sync_cursor");
   const pushedSeq = await getMeta(local, "sync_pushed_seq");
+  const versionsWatermark = await getMeta(local, "sync_versions_watermark");
 
-  const push = await collectLocalPush(local, pushedSeq);
+  const push = await collectLocalPush(local, pushedSeq, versionsWatermark);
   const pushedNotes = push.notes?.length || 0;
+  const pushedVersions = push.versions?.length || 0;
 
   const result = await runSync(remote, lastCursor, push);
 
-  const { pulledNotes, appliedTombstones } = await applyPull(local, result);
+  const { pulledNotes, pulledVersions, appliedTombstones } = await applyPull(local, result);
 
   const newCursor = Number(result.cursor) || lastCursor;
   await setMeta(local, "sync_cursor", newCursor);
+
+  // Marca d'água de versões: maior created_at já presente localmente — o pull
+  // de cima acabou de entrar nessa conta, então nada do remoto fica pra trás
+  const maxVerRes = await local.execute(
+    `SELECT COALESCE(MAX(created_at), 0) AS m FROM note_versions`
+  );
+  await setMeta(local, "sync_versions_watermark", Number(maxVerRes.rows[0].m));
 
   const maxSeqRes = await local.execute(`SELECT COALESCE(MAX(seq), 0) AS m FROM change_log`);
   const maxSeq = Number(maxSeqRes.rows[0].m);
@@ -343,7 +415,9 @@ export async function syncOnce(local: Client, remote: Client): Promise<ReplicaSy
     ok: true,
     cursor: newCursor,
     pushedNotes,
+    pushedVersions,
     pulledNotes,
+    pulledVersions,
     appliedTombstones,
     conflicts: (result.conflicts as string[]) || [],
   };

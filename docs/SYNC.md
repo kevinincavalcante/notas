@@ -37,6 +37,28 @@ CREATE TABLE IF NOT EXISTS tombstones (
 - O cursor de sync é o **maior `seq` global** do log — réplica nunca refaz bootstrap.
 - **Cursor 0 = bootstrap**: o log só cobre o futuro, então o pull devolve o
   estado completo (todas as notas, anexos e tombstones).
+- **Versões do histórico não entram no `change_log`**: são append-only e
+  imutáveis, sincronizadas por marca d'água de `created_at` (seção abaixo).
+
+## Versões do histórico (`note_versions`)
+
+Versões são **append-only e imutáveis** — nunca mudam depois de criadas e só
+morrem junto com a nota. Então não precisam de LWW, tombstone nem log:
+
+- Cada réplica guarda em `sync_meta` a marca d'água `sync_versions_watermark`
+  = maior `created_at` de versão já presente nela.
+- **Push**: a réplica envia versões locais com `created_at >= watermark`
+  (notas tombstoned são excluídas). A versão exatamente na fronteira pode ser
+  re-enviada a cada ciclo — `INSERT OR IGNORE` no destino deduplica. Preferimos
+  re-enviar uma linha a perder uma versão criada no mesmo ms.
+- **Pull**: o response traz versões do remoto com
+  `created_at >= push.versions_watermark`. Watermark 0 = bootstrap backfilla
+  o histórico inteiro (inclusive versões antigas, criadas antes do sync de
+  versões existir).
+- **FK não é coberta por `INSERT OR IGNORE`**: só entra versão cuja nota
+  existe do lado que recebe (`WHERE EXISTS` no push, filtro no pull).
+- Ao aplicar tombstone, a réplica apaga as `note_versions` da nota à mão
+  (o cascade pode estar desligado no SQLite local).
 
 ## Tags e vínculos: estado derivado (não sincronizado)
 
@@ -73,7 +95,11 @@ Autenticação: mesmo JWT da app (login com APP_USER/senha; token renovado em 40
       { "id": "...", "note_id": "...", "storage_key": "...", "mime_type": "image/webp",
         "size": 12345, "duration": null, "created_at": ... }
     ],
-    "tombstones": [ { "id": "note-id-apagado", "deleted_at": 1731... } ]
+    "tombstones": [ { "id": "note-id-apagado", "deleted_at": 1731... } ],
+    "versions": [              // histórico (append-only; ver seção própria)
+      { "id": "...", "note_id": "...", "title": "...", "body": "...", "created_at": 1731... }
+    ],
+    "versions_watermark": 1731 // maior created_at de versão que eu já vi (0 = bootstrap)
   }
 }
 ```
@@ -87,6 +113,7 @@ Autenticação: mesmo JWT da app (login com APP_USER/senha; token renovado em 40
   "attachments":[ ...metadados... ],
   "attachments_removed": [ "id-apagado" ],
   "tombstones": [ { "id": "...", "deleted_at": ... } ],
+  "versions":  [ ...versões do remoto com created_at >= versions_watermark do push... ],
   "tags":       [ ...snapshot completo... ],
   "note_tags":  [ ...snapshot completo... ],
   "conflicts":  [ "id-da-nota-que-eu-perdi" ]   // push que perdeu LWW, pra UI reverter otimista
@@ -102,6 +129,7 @@ Autenticação: mesmo JWT da app (login com APP_USER/senha; token renovado em 40
 5. **Re-derivação de tags**: após aplicar push, notas alteradas passam por `syncBodyAutoTags` localmente.
 6. **Tombstone no servidor**: ao receber tombstone, a réplica apaga a nota + os binários do storage e registra no change_log.
 7. **Note nunca é apagada por push de update** — só por tombstone.
+8. **Versão é append-only**: entra por id novo (`INSERT OR IGNORE`), nunca sobrescreve; só entra se a nota existir do lado que recebe; dedupe por marca d'água de `created_at` (seção própria acima).
 
 ## Implementação (código)
 
@@ -113,7 +141,7 @@ Autenticação: mesmo JWT da app (login com APP_USER/senha; token renovado em 40
 | Migração (`change_log`, `tombstones`) | `scripts/init-db.mjs` (`npm run db:init`) |
 | Teste ponta a ponta do protocolo | `scripts/test-sync.mts` (`npm run test:sync`) |
 
-Teste atual: **12/12 passando** (bootstrap, push, LWW conflito, update válido, tombstone via push, tombstone via DELETE da API).
+Teste atual: **15/15 passando** (bootstrap, push, LWW conflito, update válido, tombstone via push, tombstone via DELETE da API, versões no protocolo). Réplica: **17/17** (inclui backfill de versões antigas, push/pull incremental de versões e idempotência).
 
 ## Anexos (binário)
 
@@ -125,9 +153,9 @@ Teste atual: **12/12 passando** (bootstrap, push, LWW conflito, update válido, 
 ## Bootstrap (primeiro boot do desktop)
 
 1. Login → JWT da réplica remota.
-2. `POST /api/sync` com `cursor: 0` e push vazio → recebe **tudo** (notas, tags, versões?) + cursor.
+2. `POST /api/sync` com `cursor: 0` e push vazio → recebe **tudo** (notas, tags, **versões** — histórico completo) + cursor.
 3. Anexos: só metadados; binários baixam quando a nota abre.
-4. Versões (`note_versions`): **fora do escopo v1** — histórico de versões continua sincronizando só quando criado pela réplica que editou (fase 2 decide).
+4. Versões (`note_versions`): **sincronizadas desde o v1.1** — o bootstrap (watermark 0) backfilla todo o histórico do remoto, e depois o sync incremental troca só versões novas pela marca d'água `created_at`.
 
 ## Fluxo do sync em background
 

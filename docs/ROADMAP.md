@@ -79,12 +79,13 @@ quando alterado**.
 
 | # | Fase | Status |
 |---|------|--------|
-| 1 | **Sync engine + `/api/sync`** — contrato em `docs/SYNC.md`; motor como biblioteca + testes e2e (12/12 e 13/13) | ✅ |
+| 1 | **Sync engine + `/api/sync`** — contrato em `docs/SYNC.md`; motor como biblioteca + testes e2e (15/15 e 17/17, já com sync do histórico de versões) | ✅ |
 | 2 | **App Linux (Electron)** — sidecar Next + SQLite local + sync em background; bootado e sincronizado em ambiente de teste | 🔨 falta gerar o `.deb` **na máquina x86 do dono** |
 | 3 | **Empacotamento Linux** — `electron-builder`: **.deb** (pipeline provado; `npm run electron:deb` no PC do dono) | 🔨 |
 | 4 | **App Android** — stack decidido na fase 3 | ⏳ |
 
 ### Concluído
+- ✅ Sync do histórico de versões (`note_versions`) no motor — marca d'água `created_at`, bootstrap backfilla o histórico inteiro no desktop (v1.1)
 - ✅ Bugs críticos: reversão de updates otimistas, AbortController na busca (`f59427b`)
 - ✅ Segurança: JWT_SECRET obrigatório, `middleware.ts`→`proxy.ts` (Next 16), SSRF no `/api/metadata`, rate limit no login (`a6f3f36`)
 - ✅ Remoção do driver Box (só R2 + fallback local), coluna `box_file_id`→`storage_key`, `npm run db:rebuild` (`823c0c1`)

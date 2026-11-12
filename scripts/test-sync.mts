@@ -161,5 +161,60 @@ check(
   aposDelete.tombstones.some((t: any) => t.id === apiNote.note.id)
 );
 
+// ---- 7. Versões do histórico no protocolo ----
+check(
+  "bootstrap traz versões do histórico",
+  Array.isArray(boot.versions) && boot.versions.length > 0,
+  { recebidas: boot.versions?.length }
+);
+
+// Nota dedicada pra versão (FK exige nota existente no servidor)
+const noteComVersao = crypto.randomUUID();
+const agora = Date.now();
+const pushNotaVersao = await sync(Number(aposDelete.cursor), {
+  notes: [
+    {
+      id: noteComVersao,
+      title: "SYNC TEST versoes",
+      body: "nota pra histórico",
+      color: "default",
+      is_pinned: 0,
+      is_archived: 0,
+      created_at: agora,
+      updated_at: agora,
+    },
+  ],
+});
+const versionId = crypto.randomUUID();
+const versoes = await sync(Number(pushNotaVersao.cursor), {
+  versions: [
+    {
+      id: versionId,
+      note_id: noteComVersao,
+      title: "SYNC TEST versoes",
+      body: "estado antigo da nota",
+      created_at: agora,
+    },
+  ],
+});
+check(
+  "versão enviada no push refletida no pull",
+  (versoes.versions || []).some((v: any) => v.id === versionId),
+  { recebidas: versoes.versions?.length }
+);
+
+// Marca d'água: versões com created_at abaixo dela não voltam de novo
+const filtro = await sync(Number(versoes.cursor), { versions_watermark: agora + 1 });
+check(
+  "marca d'água filtra versões já vistas",
+  !(filtro.versions || []).some((v: any) => v.id === versionId),
+  (filtro.versions || []).length
+);
+
+// limpeza da nota de versões
+await sync(Number(filtro.cursor), {
+  tombstones: [{ id: noteComVersao, deleted_at: Date.now() }],
+});
+
 console.log(`\nResultado: ${pass} ok / ${fail} falha`);
 process.exit(fail > 0 ? 1 : 0);

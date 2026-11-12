@@ -170,6 +170,84 @@ const remotoAposTombo = await remote.execute({
 });
 check("tombstone da réplica apagou no remoto", remotoAposTombo.rows.length === 0);
 
+// ---- 8. Histórico de versões: bootstrap backfilla versões antigas do remoto ----
+const vNoteId = randomUUID();
+const nowV = Date.now();
+await remote.execute({
+  sql: `INSERT INTO notes (id, title, body, color, is_pinned, is_archived, created_at, updated_at)
+        VALUES (?, ?, ?, 'default', 0, 0, ?, ?)`,
+  args: [vNoteId, "REPLICA TEST versoes", "nota com histórico", nowV, nowV],
+});
+await logChange("note", vNoteId, "upsert", remote);
+const vOldId = randomUUID();
+await remote.execute({
+  sql: `INSERT INTO note_versions (id, note_id, title, body, created_at) VALUES (?, ?, ?, ?, ?)`,
+  args: [vOldId, vNoteId, "REPLICA TEST versoes", "estado antigo da nota", nowV - 1000],
+});
+
+// réplica NOVA (watermark 0): o bootstrap tem que trazer o histórico inteiro,
+// inclusive versões criadas antes do sync de versões existir (backfill)
+const dir2 = join(tmpdir(), `sync-replica-test-${randomUUID()}`);
+mkdirSync(dir2, { recursive: true });
+const local2 = createClient({ url: `file:${join(dir2, "notas.db")}` });
+await ensureSchema(local2);
+const s8 = await syncOnce(local2, remote);
+const versaoLocal = await local2.execute({
+  sql: `SELECT body FROM note_versions WHERE id = ?`,
+  args: [vOldId],
+});
+check("bootstrap backfilla versão antiga do remoto", versaoLocal.rows[0]?.body === "estado antigo da nota", s8);
+
+// ---- 9. Versão criada na réplica → chega no remoto ----
+const vLocalId = randomUUID();
+await local2.execute({
+  sql: `INSERT INTO note_versions (id, note_id, title, body, created_at) VALUES (?, ?, ?, ?, ?)`,
+  args: [vLocalId, vNoteId, "REPLICA TEST versoes", "estado salvo na réplica", nowV + 500],
+});
+const s9 = await syncOnce(local2, remote);
+const versaoRemota = await remote.execute({
+  sql: `SELECT body FROM note_versions WHERE id = ?`,
+  args: [vLocalId],
+});
+check("versão criada na réplica chegou no remoto", versaoRemota.rows[0]?.body === "estado salvo na réplica", s9);
+
+// Sync de novo sem mudanças: nada novo. A versão exatamente na fronteira da
+// marca d'água pode ser re-enviada (>=), mas INSERT OR IGNORE no destino
+// garante que ela não duplica — nunca se perde uma versão, no máximo re-envia
+const s9b = await syncOnce(local2, remote);
+const countRemotoApos = await remote.execute({
+  sql: `SELECT COUNT(*) AS c FROM note_versions WHERE note_id = ?`,
+  args: [vNoteId],
+});
+check(
+  "re-sync idempotente (re-envio de fronteira não duplica)",
+  s9b.pulledVersions === 0 && Number(countRemotoApos.rows[0].c) === 2,
+  { s9b, remoto: Number(countRemotoApos.rows[0].c) }
+);
+
+// ---- 10. Versão criada direto no remoto depois → pull incremental ----
+const vRemoteId = randomUUID();
+await remote.execute({
+  sql: `INSERT INTO note_versions (id, note_id, title, body, created_at) VALUES (?, ?, ?, ?, ?)`,
+  args: [vRemoteId, vNoteId, "REPLICA TEST versoes", "versao nova do remoto", nowV + 1000],
+});
+const s10 = await syncOnce(local2, remote);
+const versaoPuxada = await local2.execute({
+  sql: `SELECT body FROM note_versions WHERE id = ?`,
+  args: [vRemoteId],
+});
+check("versão nova do remoto puxada incrementalmente", versaoPuxada.rows[0]?.body === "versao nova do remoto", s10);
+
+// limpeza: nota de versões + segunda réplica
+await remote.execute({ sql: `DELETE FROM notes WHERE id = ?`, args: [vNoteId] });
+await remote.execute({
+  sql: `INSERT INTO tombstones (id, entity, deleted_at) VALUES (?, 'note', ?)`,
+  args: [vNoteId, Date.now()],
+});
+await logChange("tombstone", vNoteId, "delete", remote);
+await syncOnce(local2, remote);
+rmSync(dir2, { recursive: true, force: true });
+
 // limpeza
 rmSync(dir, { recursive: true, force: true });
 

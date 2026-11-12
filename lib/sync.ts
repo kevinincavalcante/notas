@@ -18,6 +18,11 @@ import type { Client } from "@libsql/client";
  * determinística do conteúdo (auto-tags) — cada réplica re-deriva ao aplicar
  * mudanças (syncBodyAutoTags). O response traz snapshot de tags/note_tags
  * apenas para bootstrap/rápida convergência de leitura.
+ *
+ * Versões do histórico (note_versions) trafegam por marca d'água de
+ * `created_at` (push.versions_watermark) — são append-only e imutáveis, então
+ * não precisam de LWW, tombstone nem change_log: `INSERT OR IGNORE` por id
+ * deduplica nos dois sentidos e o bootstrap (watermark 0) backfilla tudo.
  */
 
 export interface PushedNote {
@@ -47,12 +52,24 @@ export interface PushedTombstone {
   deleted_at: number;
 }
 
+export interface PushedVersion {
+  id: string;
+  note_id: string;
+  title: string;
+  body: string;
+  created_at: number;
+}
+
 export interface SyncPush {
   notes?: PushedNote[];
   attachments?: PushedAttachment[];
   /** ids de anexos apagados na réplica que enviou */
   attachments_removed?: string[];
   tombstones?: PushedTombstone[];
+  /** versões do histórico com created_at >= versions_watermark */
+  versions?: PushedVersion[];
+  /** maior created_at de versão que a réplica que envia já viu (0 = bootstrap) */
+  versions_watermark?: number;
 }
 
 interface SyncResult {
@@ -218,6 +235,29 @@ async function applyPush(client: Client, push: SyncPush): Promise<string[]> {
     }
   }
 
+  // Versões do histórico: append-only e imutáveis — entra com id novo e nunca
+  // sobrescreve (INSERT OR IGNORE deduplica re-envios da marca d'água).
+  // IMPORTANTE: OR IGNORE não cobre violação de FK — a nota pode ter sido
+  // apagada no remoto entre syncs, então só entra versão de nota viva aqui.
+  for (const ver of push.versions || []) {
+    if (!ver?.id || !ver?.note_id) continue;
+    await client.execute({
+      sql: `
+        INSERT OR IGNORE INTO note_versions (id, note_id, title, body, created_at)
+        SELECT ?, ?, ?, ?, ?
+        WHERE EXISTS (SELECT 1 FROM notes WHERE id = ?)
+      `,
+      args: [
+        ver.id,
+        ver.note_id,
+        ver.title ?? "",
+        ver.body ?? "",
+        ver.created_at || Date.now(),
+        ver.note_id,
+      ],
+    });
+  }
+
   return conflicts;
 }
 
@@ -241,7 +281,8 @@ async function rederiveTagsForNotes(
 async function collectChanges(
   client: Client,
   cursor: number,
-  conflicts: string[]
+  conflicts: string[],
+  versionsWatermark: number
 ): Promise<Record<string, unknown>> {
   const logRes = await client.execute({
     sql: `SELECT seq, entity, entity_id, op FROM change_log WHERE seq > ? ORDER BY seq ASC`,
@@ -319,6 +360,14 @@ async function collectChanges(
     }
   }
 
+  // Versões do histórico: append-only — puxa por marca d'água de created_at
+  // (não dependem do change_log; watermark 0 = bootstrap traz tudo, o que
+  // backfilla também versões antigas criadas antes do sync de versões existir)
+  const versionsRes = await client.execute({
+    sql: `SELECT id, note_id, title, body, created_at FROM note_versions WHERE created_at >= ?`,
+    args: [versionsWatermark],
+  });
+
   // Snapshots de tags/note_tags: pequenos e derivados — bootstrap e convergência
   const tagsRes = await client.execute(`SELECT id, name, kind, source, created_at FROM tags`);
   const noteTagsRes = await client.execute(`SELECT note_id, tag_id, created_at FROM note_tags`);
@@ -329,6 +378,7 @@ async function collectChanges(
     attachments,
     attachments_removed: attachmentRemoved,
     tombstones,
+    versions: versionsRes.rows,
     tags: tagsRes.rows,
     note_tags: noteTagsRes.rows,
     conflicts,
@@ -346,5 +396,5 @@ export async function runSync(
 ): Promise<Record<string, unknown>> {
   const conflicts = await applyPush(client, push);
   await rederiveTagsForNotes(client, push.notes || [], conflicts);
-  return collectChanges(client, cursor, conflicts);
+  return collectChanges(client, cursor, conflicts, push.versions_watermark ?? 0);
 }
