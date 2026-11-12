@@ -38,12 +38,13 @@ export function syncOnce(local: Client, remote: Client): Promise<ReplicaSyncResu
 
 /**
  * Laço de sync com backoff — usado pelo processo main do Electron.
+ * O acesso ao remoto é injetado (`run`: SQL direto ou HTTP — lib/sync-http).
  * `onStatus` é chamado no fim de TODO ciclo (ok ou falha) — é ele que
  * alimenta o indicador de sync da UI. Retorna a função de cancelamento.
  */
 export function startSyncLoop(
   local: Client,
-  remote: Client,
+  run: (cursor: number, push: SyncPush) => Promise<Record<string, unknown>>,
   options: {
     intervalMs?: number;
     onSync?: (r: ReplicaSyncResult) => void;
@@ -54,10 +55,10 @@ export function startSyncLoop(
   let stopped = false;
   let failures = 0;
 
-  const run = async () => {
+  const cycle = async () => {
     if (stopped) return;
     try {
-      const r = await syncOnce(local, remote);
+      const r = await syncOnceWith(local, run);
       failures = 0;
       options.onSync?.(r);
       options.onStatus?.({
@@ -76,11 +77,11 @@ export function startSyncLoop(
       });
     }
     const backoff = Math.min(failures * intervalMs, 2 * 60_000);
-    if (!stopped) setTimeout(run, intervalMs + backoff);
+    if (!stopped) setTimeout(cycle, intervalMs + backoff);
   };
 
   // primeiro ciclo logo no boot
-  setTimeout(run, 3_000);
+  setTimeout(cycle, 3_000);
 
   return () => {
     stopped = true;

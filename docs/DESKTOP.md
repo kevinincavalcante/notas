@@ -66,34 +66,26 @@ No web/navegador esses atalhos pertencem ao browser e não existem conflito —
 lá a barra de abas funciona só pelo clique. Nota já aberta clicada na sidebar
 vira a aba ativa em vez de abrir duplicada.
 
-## Configuração do app empacotado
+## Configuração do app empacotado (thin-client — sem env!)
 
-Na primeira execução, o app procura a config em
-`~/.config/Notas/notas.env` (mesmo formato do `.env.local`). Mínimo:
+Na primeira execução o app abre uma **janela de login** (igual ao celular):
+endereço da API + usuário + senha. O token fica no cofre do sistema
+(`safeStorage`) em `~/.config/Notas/notas-config.json` — **nenhuma credencial
+de Turso/R2 mora no disco**.
 
-```env
-# Sync (hub remoto das suas notas)
-TURSO_LINK=libsql://seu-banco.turso.io
-TURSO_TOKEN=eyJ...
+- **Sync**: via `POST /api/sync` + Bearer (mesmo protocolo do mobile) — polling
+  de 30s no processo main, botão ⟳ na barra de abas pra ciclo imediato.
+- **CRUD offline**: continua 100% local (sidecar Next + SQLite em
+  `~/.config/Notas/notas.db`); o sidecar roda sem tela de login (bind só em
+  127.0.0.1).
+- **Anexos**: upload/download via proxy do sidecar pra API real — R2 fica só
+  na Vercel; streaming com Range (áudio) preservado.
+- **Token expirado** (~30 dias): o indicador fica vermelho e a janela de login
+  volta (usuário pré-preenchido).
 
-# Login local (a UI continua com a tela de login; cookie persiste)
-APP_USER=admin
-APP_PASSWORD=sua-senha
-
-# Anexos (R2)
-R2_ENDPOINT=https://<account>.r2.cloudflarestorage.com
-R2_ACCESS_KEY_ID=...
-R2_SECRET_ACCESS_KEY=...
-R2_BUCKET_NAME=notas
-
-# Assinatura do cookie de sessão local
-JWT_SECRET=uma-chave-de-alta-entropia
-
-# (opcional) onde fica o banco local — default: ~/.config/Notas/notas.db
-# NOTES_DB_PATH=/caminho/notas.db
-```
-
-Sem `TURSO_LINK`/`TURSO_TOKEN` o app roda 100% local, sem sincronizar.
+Legado: um `~/.config/Notas/notas.env` antigo ainda é lido como fallback
+(ordem: `notas-local.env` gerado > `notas.env`), mas não é mais necessário —
+pode apagar. Em dev (`npm run electron:start`), `.env.local` continua válido.
 
 ## Comandos
 

@@ -20,6 +20,12 @@ function getJwtSecret(): Uint8Array {
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
+  // Modo desktop (Electron): o app roda 100% local em 127.0.0.1, o sync
+  // e o remoto vivem no processo main — nada a autenticar aqui.
+  if (process.env.NOTAS_LOCAL === "1") {
+    return NextResponse.next();
+  }
+
   // Rotas públicas que não exigem autenticação
   if (
     pathname === "/login" ||
