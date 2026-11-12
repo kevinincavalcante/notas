@@ -14,7 +14,7 @@ import {
   type NoteRow,
 } from "../../lib/db";
 import { NOTE_COLOR_IDS, NOTE_COLOR_SWATCH } from "../../lib/colors";
-import { scheduleQuietSync, type SyncApiConfig } from "../../lib/sync";
+import { notifyLocalChange, scheduleQuietSync, type SyncApiConfig } from "../../lib/sync";
 import { getSyncApi } from "../../lib/api";
 
 /**
@@ -41,8 +41,6 @@ export default function NoteScreen() {
   const apiRef = useRef<SyncApiConfig | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  latestRef.current = { title, body, color };
-
   const flushSave = useCallback(async () => {
     const saved = savedRef.current;
     if (!saved) return;
@@ -61,6 +59,7 @@ export default function NoteScreen() {
     await updateNote(client, saved.id, patch);
     savedRef.current = { ...saved, ...patch, updated_at: now };
     setStatus("saved");
+    notifyLocalChange();
     const cfg = apiRef.current ?? (await getSyncApi());
     if (cfg) {
       apiRef.current = cfg;
@@ -79,6 +78,7 @@ export default function NoteScreen() {
         return;
       }
       savedRef.current = note;
+      latestRef.current = { title: note.title, body: note.body, color: note.color };
       setTitle(note.title);
       setBody(note.body);
       setColor(note.color);
@@ -89,8 +89,13 @@ export default function NoteScreen() {
 
   // autosave com debounce (título/corpo)
   function touch(text: "title" | "body", value: string) {
-    if (text === "title") setTitle(value);
-    else setBody(value);
+    if (text === "title") {
+      setTitle(value);
+      latestRef.current.title = value;
+    } else {
+      setBody(value);
+      latestRef.current.body = value;
+    }
     setStatus("unsaved");
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => void flushSave(), 700);
@@ -186,7 +191,16 @@ export default function NoteScreen() {
   return (
     <View style={styles.root}>
       <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
-        <Pressable onPress={() => router.back()} hitSlop={10}>
+        <Pressable
+          onPress={() => {
+            if (timerRef.current) {
+              clearTimeout(timerRef.current);
+              timerRef.current = null;
+            }
+            void flushSave().finally(() => router.back());
+          }}
+          hitSlop={10}
+        >
           <Text style={styles.back}>‹</Text>
         </Pressable>
         <Text style={styles.status}>

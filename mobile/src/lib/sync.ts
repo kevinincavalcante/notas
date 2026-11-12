@@ -52,12 +52,17 @@ export function setLocalClientProvider(fn: () => Promise<Client>): void {
   clientProvider = fn;
 }
 
-/** Chama `fn` ao fim de cada sync bem-sucedida (pra telas recarregarem). */
+/** Chama `fn` ao fim de cada sync ou alteração local (pra telas recarregarem). */
 export function onSynced(fn: () => void): () => void {
   subs.add(fn);
   return () => {
     subs.delete(fn);
   };
+}
+
+/** Avisa as telas montadas que o banco local mudou (ex: flush no unmount do editor). */
+export function notifyLocalChange(): void {
+  subs.forEach((fn) => fn());
 }
 
 let inFlight = false;

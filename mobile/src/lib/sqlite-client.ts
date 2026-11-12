@@ -23,13 +23,17 @@ const READ_RE = /^\s*(SELECT|WITH|PRAGMA|VALUES)\b/i;
 
 export function createExpoClient(db: MinimalSqliteDatabase): Client {
   const execute = async (stmt: InStatement): Promise<ResultSet> => {
-    const { sql, args } =
-      typeof stmt === "string"
-        ? { sql: stmt as string, args: [] as unknown[] }
-        : stmt;
+    const sql = typeof stmt === "string" ? stmt : stmt.sql;
+    const rawArgs = typeof stmt === "string" ? undefined : stmt.args;
+    const params: unknown[] =
+      rawArgs === undefined
+        ? []
+        : Array.isArray(rawArgs)
+          ? rawArgs
+          : [rawArgs];
 
     if (READ_RE.test(sql)) {
-      const rows = (await db.getAllAsync(sql, ...(args as unknown[]))) as Record<
+      const rows = (await db.getAllAsync(sql, ...params)) as Record<
         string,
         unknown
       >[];
@@ -42,7 +46,7 @@ export function createExpoClient(db: MinimalSqliteDatabase): Client {
       } as unknown as ResultSet;
     }
 
-    const result = await db.runAsync(sql, ...(args as unknown[]));
+    const result = await db.runAsync(sql, ...params);
     return {
       columns: [],
       rows: [],

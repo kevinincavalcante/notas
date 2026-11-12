@@ -33,6 +33,7 @@ import {
   getApiUrl,
   getStoredToken,
   getStoredUser,
+  getSyncApi,
   login,
   setApiUrl,
 } from "../lib/api";
@@ -74,16 +75,21 @@ export default function HomeScreen() {
   const [sheetNote, setSheetNote] = useState<NoteRow | null>(null);
 
   const reload = useCallback(async () => {
-    const { client } = await getDb();
-    const list = await listNotes(client, activeTag);
-    setNotes(list);
-    setTagsByNote(await tagsForNotes(client, list.map((n) => n.id)));
-    setTags(await listTags(client));
+    try {
+      const { client } = await getDb();
+      const list = await listNotes(client, activeTag);
+      setNotes(list);
+      setTagsByNote(await tagsForNotes(client, list.map((n) => n.id)));
+      setTags(await listTags(client));
+    } catch (e) {
+      setSyncError(e instanceof Error ? e.message : String(e));
+    }
   }, [activeTag]);
 
   const runSync = useCallback(async () => {
-    const cfg = apiRef.current;
+    const cfg = await getSyncApi();
     if (!cfg) return;
+    apiRef.current = cfg;
     setSyncing(true);
     const ok = await syncQuiet(cfg);
     const { error } = getLastSync();

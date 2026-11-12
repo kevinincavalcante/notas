@@ -117,12 +117,21 @@ try {
   const logAfterBoot = await local.execute(`SELECT COUNT(*) AS c FROM change_log`);
   check("pull não polui o change_log local", Number(logAfterBoot.rows[0].c) === 0);
 
+  // ---- 1b. Queries da UI (listNotes sem tag, listTags, tagsForNotes) ----
+  const uiNotes = await core.listNotes(local, null);
+  const uiTags = await core.listTags(local);
+  const uiNoteTags = await core.tagsForNotes(local, uiNotes.map((n) => n.id));
+  check("listNotes(null) devolve as notas na UI", uiNotes.length > 0 && Array.isArray(uiTags) && typeof uiNoteTags === "object");
+
   // ---- 2. Escrita local (caminho real do app) → push via API → chega no Turso ----
   const localNoteId = await core.createNote(local);
   await core.updateNote(local, localNoteId, {
     title: "MOBILE TEST local",
     body: "criada no celular",
   });
+  const localList = await core.listNotes(local, null);
+  const ftsHits = await core.searchNotes(local, "MOBILE");
+  check("nota local aparece em listNotes e searchNotes", localList.some((n) => n.id === localNoteId) && ftsHits.some((n) => n.id === localNoteId));
 
   const s2 = await syncOnceHttp(local, { baseUrl: BASE, token });
   check("push local→remoto reporta 1 nota", s2.pushedNotes === 1, { pushed: s2.pushedNotes });
