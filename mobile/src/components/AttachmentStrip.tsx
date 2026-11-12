@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
 import {
@@ -8,6 +8,7 @@ import {
   deleteAttachment,
   listAttachments,
 } from "../lib/attachments";
+import { onSynced } from "../lib/sync";
 import type { AttachmentRow } from "../lib/db";
 
 /** Faixa de anexos de uma nota — nos modos leitura e edição. */
@@ -20,9 +21,14 @@ export default function AttachmentStrip({
 }) {
   const [items, setItems] = useState<AttachmentRow[]>([]);
 
-  useEffect(() => {
+  const reload = useCallback(() => {
     void listAttachments(noteId).then(setItems);
   }, [noteId]);
+
+  useEffect(reload, [reload]);
+
+  // upload/remoção/sync avisam — a faixa se atualiza na hora
+  useEffect(() => onSynced(reload), [reload]);
 
   if (items.length === 0) return null;
   return (

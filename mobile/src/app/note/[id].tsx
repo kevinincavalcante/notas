@@ -1,4 +1,4 @@
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View, BackHandler, type TextInputInstance } from "react-native";
+import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View, BackHandler, type TextInputInstance } from "react-native";
 import { WebView } from "react-native-webview";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -270,8 +270,8 @@ export default function NoteScreen() {
     try {
       await uploadAttachment(input);
     } catch (e) {
-      console.warn("Falha no upload:", e);
-      void 0;
+      // Silêncio era um bug: upload falhando precisa gritar
+      Alert.alert("Anexo", e instanceof Error ? e.message : String(e));
     } finally {
       setBusyAtt(false);
     }
