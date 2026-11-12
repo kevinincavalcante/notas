@@ -69,7 +69,6 @@ export default function HomeScreen() {
   const apiRef = useRef<SyncApiConfig | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
-  const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
 
   // menu de ações (long-press)
   const [sheetNote, setSheetNote] = useState<NoteRow | null>(null);
@@ -94,7 +93,6 @@ export default function HomeScreen() {
     const ok = await syncQuiet(cfg);
     const { error } = getLastSync();
     setSyncError(ok ? null : error || "erro desconhecido");
-    if (ok) setLastSyncAt(Date.now());
     setSyncing(false);
   }, []);
 
@@ -267,26 +265,14 @@ export default function HomeScreen() {
       />
       <ChipsRow tags={tags} active={activeTag} onSelect={setActiveTag} />
 
-      {(syncing || syncError || lastSyncAt) && (
+      {(syncing || syncError) && (
         <Pressable
           onPress={() => void runSync()}
           disabled={syncing}
           style={({ pressed }) => [styles.syncLine, pressed && { opacity: 0.7 }]}
         >
-          <Text
-            style={
-              syncing
-                ? styles.syncMuted
-                : syncError
-                  ? styles.syncError
-                  : styles.syncMuted
-            }
-          >
-            {syncing
-              ? "Sincronizando…"
-              : syncError
-                ? `Sync falhou: ${syncError} — toque pra tentar de novo`
-                : `Sincronizado ${new Date(lastSyncAt || 0).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`}
+          <Text style={syncing ? styles.syncMuted : styles.syncError}>
+            {syncing ? "Sincronizando…" : `Sync falhou: ${syncError} — toque pra tentar de novo`}
           </Text>
         </Pressable>
       )}
@@ -295,9 +281,6 @@ export default function HomeScreen() {
         data={notes}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
-        ListHeaderComponent={
-          <Text style={styles.section}>{activeTag ? "Bloco" : "Recentes"}</Text>
-        }
         ListEmptyComponent={
           <View style={styles.empty}>
             <Text style={styles.emptyIcon}>🗒</Text>
@@ -401,15 +384,6 @@ const styles = StyleSheet.create({
   },
   muted: {
     color: "#71717a",
-  },
-  section: {
-    color: "#71717a",
-    fontSize: 11.5,
-    textTransform: "uppercase",
-    letterSpacing: 1,
-    paddingHorizontal: 4,
-    paddingBottom: 6,
-    paddingTop: 8,
   },
   list: {
     paddingHorizontal: 14,

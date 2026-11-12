@@ -36,6 +36,7 @@ export default function NoteScreen() {
   const [color, setColor] = useState("default");
   const [status, setStatus] = useState<"saved" | "saving" | "unsaved">("saved");
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [showColors, setShowColors] = useState(false);
   const [selOverride, setSelOverride] = useState<{ start: number; end: number } | undefined>();
 
   // lista numerada automática: texto anterior + flag do Enter
@@ -235,9 +236,7 @@ export default function NoteScreen() {
         <Text style={styles.status}>
           {status === "saved" ? "Salvo" : status === "saving" ? "Salvando…" : "…"}
         </Text>
-        <Pressable onPress={() => setSheetOpen(true)} hitSlop={10}>
-          <Text style={styles.more}>⋯</Text>
-        </Pressable>
+        <View style={{ width: 30 }} />
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
@@ -249,20 +248,6 @@ export default function NoteScreen() {
           placeholderTextColor="#52525b"
           returnKeyType="done"
         />
-
-        <View style={styles.swatches}>
-          {NOTE_COLOR_IDS.map((id) => (
-            <Pressable
-              key={id}
-              onPress={() => pickColor(id)}
-              style={[
-                styles.swatch,
-                { backgroundColor: NOTE_COLOR_SWATCH[id] },
-                color === id && styles.swatchActive,
-              ]}
-            />
-          ))}
-        </View>
 
         <TextInput
           style={styles.bodyInput}
@@ -279,6 +264,42 @@ export default function NoteScreen() {
           textAlignVertical="top"
         />
       </ScrollView>
+
+      {/* Barra inferior estilo Keep: 🎨 abre a paleta de cores da nota */}
+      <View style={[styles.toolbar, { paddingBottom: insets.bottom + 8 }]}>
+        {showColors && (
+          <View style={styles.swatches}>
+            {NOTE_COLOR_IDS.map((id) => (
+              <Pressable
+                key={id}
+                onPress={() => pickColor(id)}
+                style={[
+                  styles.swatch,
+                  { backgroundColor: NOTE_COLOR_SWATCH[id] },
+                  color === id && styles.swatchActive,
+                ]}
+              />
+            ))}
+          </View>
+        )}
+        <View style={styles.toolbarRow}>
+          <Pressable
+            onPress={() => setShowColors((v) => !v)}
+            hitSlop={6}
+            style={({ pressed }) => [styles.toolBtn, pressed && { opacity: 0.8 }]}
+          >
+            <Text style={styles.toolIcon}>🎨</Text>
+            <View style={[styles.toolDot, { backgroundColor: NOTE_COLOR_SWATCH[color] }]} />
+          </Pressable>
+          <Pressable
+            onPress={() => setSheetOpen(true)}
+            hitSlop={6}
+            style={({ pressed }) => [styles.toolBtn, pressed && { opacity: 0.8 }]}
+          >
+            <Text style={styles.toolIcon}>⋯</Text>
+          </Pressable>
+        </View>
+      </View>
 
       <ActionSheet visible={sheetOpen} items={sheetItems} onClose={() => setSheetOpen(false)} />
     </View>
@@ -341,6 +362,42 @@ const styles = StyleSheet.create({
   swatchActive: {
     borderWidth: 2,
     borderColor: "#fbbf24",
+  },
+  toolbar: {
+    backgroundColor: "#18181b",
+    borderTopWidth: 1,
+    borderTopColor: "#26262a",
+    paddingTop: 8,
+    paddingHorizontal: 14,
+  },
+  toolbarRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  toolBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#1c1c1f",
+    borderWidth: 1,
+    borderColor: "#2c2c31",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  toolIcon: {
+    fontSize: 17,
+    color: "#d4d4d8",
+  },
+  toolDot: {
+    position: "absolute",
+    right: 6,
+    bottom: 6,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    borderWidth: 1,
+    borderColor: "#101012",
   },
   bodyInput: {
     color: "#e4e4e7",
