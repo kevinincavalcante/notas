@@ -459,6 +459,8 @@ function NoteItem({
     a.mime_type.startsWith("image/")
   );
 
+  const isCustomColor = Boolean(note.color && note.color !== "default");
+
   return (
     <li>
       <button
@@ -468,7 +470,13 @@ function NoteItem({
         className={`
           w-full text-left px-3 py-2.5 rounded-lg transition-all flex flex-col gap-0.5
           ${
-            isSelected
+            isCustomColor
+              ? `note-color-${note.color} border shadow-2xs ${
+                  isSelected
+                    ? "ring-2 ring-amber-500/80 dark:ring-amber-400 border-amber-500 font-medium"
+                    : "hover:brightness-95 dark:hover:brightness-110"
+                }`
+              : isSelected
               ? "border-l-2 border-amber-500 dark:border-amber-400 bg-white dark:bg-slate-800/80 text-slate-900 dark:text-white pl-2.5 shadow-xs"
               : "border-l-2 border-transparent text-slate-700 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-800/40 hover:text-slate-900 dark:hover:text-white"
           }
@@ -481,24 +489,46 @@ function NoteItem({
             )}
             <span
               className={`text-sm truncate leading-snug ${
-                isSelected ? "font-semibold text-slate-900 dark:text-white" : "font-medium"
+                isSelected
+                  ? "font-semibold text-slate-900 dark:text-white"
+                  : isCustomColor
+                  ? "font-medium text-slate-900 dark:text-white"
+                  : "font-medium"
               }`}
             >
               {note.title.trim() || "Sem título"}
             </span>
           </div>
 
-          <span className="text-[10px] text-slate-400 dark:text-slate-500 shrink-0 font-mono">
+          <span
+            className={`text-[10px] shrink-0 font-mono ${
+              isCustomColor
+                ? "text-slate-600 dark:text-slate-300"
+                : "text-slate-400 dark:text-slate-500"
+            }`}
+          >
             {formatRelativeDate(note.updated_at || note.created_at)}
           </span>
         </div>
 
-        <div className="flex items-center justify-between gap-1 text-[11px] text-slate-500 dark:text-slate-400 w-full">
+        <div
+          className={`flex items-center justify-between gap-1 text-[11px] w-full ${
+            isCustomColor
+              ? "text-slate-700 dark:text-slate-300"
+              : "text-slate-500 dark:text-slate-400"
+          }`}
+        >
           <p className="truncate flex-1 min-w-0">
             {preview || <span className="italic">Nota vazia</span>}
           </p>
 
-          <div className="flex items-center gap-1 shrink-0 text-slate-400 dark:text-slate-500">
+          <div
+            className={`flex items-center gap-1 shrink-0 ${
+              isCustomColor
+                ? "text-slate-600 dark:text-slate-300"
+                : "text-slate-400 dark:text-slate-500"
+            }`}
+          >
             {hasImage && <ImageIcon className="w-3 h-3" />}
             {hasAudio && <Mic className="w-3 h-3" />}
           </div>

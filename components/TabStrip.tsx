@@ -9,7 +9,7 @@ export interface SyncIndicator {
 }
 
 interface TabStripProps {
-  tabs: { id: string; title: string }[];
+  tabs: { id: string; title: string; color?: string }[];
   activeId: string | null;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
@@ -58,6 +58,11 @@ export default function TabStrip({
                 : "text-slate-500 dark:text-slate-400 hover:bg-black/5 dark:hover:bg-white/5 border-transparent"
             }`}
           >
+            {tab.color && tab.color !== "default" && (
+              <span
+                className={`w-2 h-2 rounded-full shrink-0 border border-black/10 dark:border-white/20 note-color-${tab.color}`}
+              />
+            )}
             <span className="truncate flex-1 text-left select-none">
               {tab.title || "Sem título"}
             </span>

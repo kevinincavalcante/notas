@@ -29,6 +29,7 @@ export default function DashboardPage() {
   }, [notes]);
 
   const selectedNoteId = activeTabId;
+  const [focusBodyNoteId, setFocusBodyNoteId] = useState<string | null>(null);
 
   /** Abre uma nota em nova aba (não fecha a atual) e ativa ela. */
   function openTabNew(noteId: string) {
@@ -171,6 +172,18 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Atalho global Ctrl+N / Cmd+N (funciona no browser e no desktop)
+  useEffect(() => {
+    function handleGlobalKeyDown(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        tabHandlersRef.current.new();
+      }
+    }
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, []);
+
   const selectedNote = useMemo(() => {
     if (!selectedNoteId) return null;
     return notes.find((n) => n.id === selectedNoteId) || null;
@@ -178,10 +191,14 @@ export default function DashboardPage() {
 
   const tabsData = useMemo(
     () =>
-      openTabs.map((id) => ({
-        id,
-        title: notes.find((n) => n.id === id)?.title || "",
-      })),
+      openTabs.map((id) => {
+        const n = notes.find((item) => item.id === id);
+        return {
+          id,
+          title: n?.title || "",
+          color: n?.color,
+        };
+      }),
     [openTabs, notes]
   );
 
@@ -224,6 +241,7 @@ export default function DashboardPage() {
           tags: [],
         };
         setNotes((prev) => [newNote, ...prev]);
+        setFocusBodyNoteId(newNote.id);
         // Aba nova: a atual continua aberta (Ctrl+N no Electron usa isto)
         openTabNew(newNote.id);
         setIsSidebarOpen(false);
@@ -447,6 +465,10 @@ export default function DashboardPage() {
                   >
                     <NoteEditor
                       note={note}
+                      autoFocusBody={focusBodyNoteId === tabId}
+                      onFocusedBody={() => {
+                        if (focusBodyNoteId === tabId) setFocusBodyNoteId(null);
+                      }}
                       onUpdate={(fields) => handleUpdateNote(fields, tabId)}
                       onDelete={() => handleDeleteNote(tabId)}
                       onTogglePin={() => handleTogglePin(tabId)}

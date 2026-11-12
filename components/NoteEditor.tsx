@@ -44,6 +44,8 @@ import { useUI } from "./UIProvider";
 
 interface NoteEditorProps {
   note: Note;
+  autoFocusBody?: boolean;
+  onFocusedBody?: () => void;
   onUpdate: (updatedNote: Partial<Note> & { skipPatch?: boolean }) => Promise<void>;
   onDelete: () => Promise<void>;
   onToggleArchive: () => Promise<void>;
@@ -57,6 +59,8 @@ interface NoteEditorProps {
 
 export default function NoteEditor({
   note,
+  autoFocusBody,
+  onFocusedBody,
   onUpdate,
   onDelete,
   onToggleArchive,
@@ -201,6 +205,21 @@ export default function NoteEditor({
       setIsArchived(note.is_archived);
     }
   }, [note, onUpdate]);
+
+  // Foco automatico no corpo da nota ao criar nova nota (Ctrl+N ou botao "Nova Nota")
+  useEffect(() => {
+    if (autoFocusBody) {
+      const timer = setTimeout(() => {
+        if (bodyTextareaRef.current) {
+          bodyTextareaRef.current.focus();
+          const len = bodyTextareaRef.current.value.length;
+          bodyTextareaRef.current.setSelectionRange(len, len);
+          onFocusedBody?.();
+        }
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [autoFocusBody, onFocusedBody]);
 
   // Debounced auto-save quando title ou body mudam
   const queueAutoSave = useCallback(() => {
@@ -712,7 +731,7 @@ export default function NoteEditor({
 
   return (
     <div
-      className={`flex-1 h-full flex flex-col overflow-hidden note-color-${color}`}
+      className="flex-1 h-full flex flex-col overflow-hidden bg-slate-50 dark:bg-slate-900"
       onPaste={handlePaste}
     >
       {/* Barra Superior Inline Estilo Obsidian */}
