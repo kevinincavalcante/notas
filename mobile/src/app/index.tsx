@@ -246,6 +246,7 @@ export default function HomeScreen() {
 
       const { client } = await getDb();
       const id = await createNote(client);
+      let body = "";
 
       for (const asset of result.assets) {
         let uri = asset.uri;
@@ -267,17 +268,19 @@ export default function HomeScreen() {
         }
         const att = await uploadAttachment({ uri, fileName, mimeType, noteId: id });
         if (att) {
-          const imgMarkdown = `\n\n![${att.file_name}](/api/attachments/${att.id})\n\n`;
-          await updateNote(client, id, { body: imgMarkdown.trim() });
+          body = `${body ? body.trimEnd() + "\n\n" : ""}![${att.file_name}](/api/attachments/${att.id})\n\n`;
         }
       }
 
+      if (body.trim()) {
+        await updateNote(client, id, { body });
+      }
       scheduleSync();
       void reload();
       router.push(`/note/${id}`);
     } catch (e) {
       console.warn("Falha ao criar nota com foto:", e);
-      Alert.alert("Erro", "Nao foi possivel criar nota com imagem.");
+      Alert.alert("Erro", e instanceof Error ? e.message : "Não foi possível criar nota com imagem.");
     }
   }
 
@@ -320,7 +323,10 @@ export default function HomeScreen() {
       router.push(`/note/${id}`);
     } catch (e) {
       console.warn("Falha ao receber compartilhamento:", e);
-      Alert.alert("Compartilhar", "Não foi possível criar a nota a partir do compartilhamento.");
+      Alert.alert(
+        "Compartilhar",
+        e instanceof Error ? e.message : "Não foi possível criar a nota a partir do compartilhamento."
+      );
     }
   }
 

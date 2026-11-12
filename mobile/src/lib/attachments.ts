@@ -19,6 +19,23 @@ export interface UploadInput {
 
 /** Sobe o arquivo pra API real e espelha o registro no banco local. */
 export async function uploadAttachment(input: UploadInput): Promise<AttachmentRow | null> {
+  try {
+    return await uploadAttachmentOnce(input);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // A nota pode ter sido criada só no banco local (home/compartilhar) e o
+    // sync ainda não a empurrou pro servidor → 404 "Nota não encontrada".
+    // Força um push de sync e tenta mais uma vez.
+    if (msg.includes("não encontrada") || msg.includes("(404)")) {
+      const api = await getSyncApi();
+      if (api) await syncQuiet(api);
+      return await uploadAttachmentOnce(input);
+    }
+    throw e;
+  }
+}
+
+async function uploadAttachmentOnce(input: UploadInput): Promise<AttachmentRow | null> {
   const api = await getSyncApi();
   if (!api) throw new Error("Sem sessão — faça login novamente");
 
