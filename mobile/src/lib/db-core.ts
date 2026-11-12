@@ -23,6 +23,17 @@ export interface TagRow {
   count: number;
 }
 
+export interface AttachmentRow {
+  id: string;
+  note_id: string;
+  storage_key: string;
+  file_name: string;
+  mime_type: string;
+  file_size: number;
+  duration_seconds: number | null;
+  created_at: number;
+}
+
 /** Igual ao logChange de lib/sync-log.ts, sem importar o turso do servidor. */
 async function logChange(
   client: Client,

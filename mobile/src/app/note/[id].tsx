@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import ActionSheet, { type ActionItem } from "../../components/ActionSheet";
+import AttachmentStrip from "../../components/AttachmentStrip";
 import { autoList } from "../../lib/auto-list";
 import { bodyToHtml } from "../../lib/markdown-html";
 import {
@@ -19,6 +20,14 @@ import {
 import { NOTE_COLOR_IDS, NOTE_COLOR_SWATCH } from "../../lib/colors";
 import { notifyLocalChange, scheduleQuietSync, type SyncApiConfig } from "../../lib/sync";
 import { getSyncApi } from "../../lib/api";
+import {
+  uploadAttachment,
+  type UploadInput,
+} from "../../lib/attachments";
+import * as ImagePicker from "expo-image-picker";
+import * as ImageManipulator from "expo-image-manipulator";
+import { useAudioRecorder, RecordingPresets, requestRecordingPermissionsAsync, setAudioModeAsync } from "expo-audio";
+import { ActivityIndicator } from "react-native";
 
 /**
  * Editor da nota: título + corpo markdown com autosave com debounce
@@ -47,6 +56,12 @@ export default function NoteScreen() {
   // lista numerada automática: texto anterior + flag do Enter
   const prevBodyRef = useRef("");
   const enterRef = useRef(false);
+
+  // anexos: gravação de áudio
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const [recording, setRecording] = useState(false);
+  const [busyAtt, setBusyAtt] = useState(false);
+  const recordStartRef = useRef(0);
 
   const savedRef = useRef<NoteRow | null>(null); // snapshot do que já foi gravado
   const bodyRef = useRef<TextInputInstance | null>(null);
@@ -247,6 +262,84 @@ export default function NoteScreen() {
     });
   }
 
+  /* ---- Anexos: câmera, galeria e áudio ---- */
+
+  async function runUpload(input: UploadInput) {
+    if (busyAtt) return;
+    setBusyAtt(true);
+    try {
+      await uploadAttachment(input);
+    } catch (e) {
+      console.warn("Falha no upload:", e);
+      void 0;
+    } finally {
+      setBusyAtt(false);
+    }
+  }
+
+  async function pickImage(useCamera: boolean) {
+    if (!savedRef.current) return;
+    const result = useCamera
+      ? await ImagePicker.launchCameraAsync({ quality: 0.9 })
+      : await ImagePicker.launchImageLibraryAsync({ quality: 0.9, selectionLimit: 5 });
+    if (result.canceled || result.assets.length === 0) return;
+
+    for (const asset of result.assets) {
+      // Compressão no cliente (1600px/webp) — sobe pequeno, sharp afina no servidor
+      let uri = asset.uri;
+      let fileName = asset.fileName || `foto-${Date.now()}.jpg`;
+      let mimeType = asset.mimeType || "image/jpeg";
+      if (mimeType.startsWith("image/")) {
+        try {
+          const out = await ImageManipulator.manipulateAsync(
+            asset.uri,
+            [{ resize: { width: 1600 } }],
+            { compress: 0.8, format: ImageManipulator.SaveFormat.WEBP }
+          );
+          uri = out.uri;
+          fileName = fileName.replace(/\.[^.]+$/, "") + ".webp";
+          mimeType = "image/webp";
+        } catch (e) {
+          console.warn("Compressão falhou, enviando original:", e);
+        }
+      }
+      await runUpload({ uri, fileName, mimeType, noteId: savedRef.current!.id });
+    }
+  }
+
+  async function toggleRecording() {
+    if (!savedRef.current) return;
+    if (recording) {
+      setRecording(false);
+      try {
+        await recorder.stop();
+        const uri = recorder.uri;
+        if (uri) {
+          await runUpload({
+            uri,
+            fileName: `audio-${Date.now()}.m4a`,
+            mimeType: "audio/mp4",
+            noteId: savedRef.current.id,
+            durationSeconds: (Date.now() - recordStartRef.current) / 1000,
+          });
+        }
+      } catch (e) {
+        console.warn("Falha ao salvar gravação:", e);
+      }
+      return;
+    }
+    try {
+      const perm = await requestRecordingPermissionsAsync();
+      if (!perm.granted) return;
+      await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
+      await recorder.record();
+      recordStartRef.current = Date.now();
+      setRecording(true);
+    } catch (e) {
+      console.warn("Falha ao gravar:", e);
+    }
+  }
+
   if (missing) {
     return (
       <View style={[styles.root, styles.center]}>
@@ -324,6 +417,7 @@ export default function NoteScreen() {
               return true;
             }}
           />
+          <AttachmentStrip noteId={noteId ?? ""} canEdit />
         </View>
       ) : (
         /* ---- MODO EDIÇÃO: o editor de sempre ---- */
@@ -355,7 +449,9 @@ export default function NoteScreen() {
         />
       </ScrollView>
 
-      {/* Barra inferior estilo Keep: 🎨 abre a paleta de cores da nota */}
+      <AttachmentStrip noteId={noteId ?? ""} canEdit />
+
+      {/* Barra inferior estilo Keep: mídia + 🎨 paleta + ⋯ menu */}
       <View style={[styles.toolbar, { paddingBottom: insets.bottom + 8 }]}>
         {showColors && (
           <View style={styles.swatches}>
@@ -373,14 +469,33 @@ export default function NoteScreen() {
           </View>
         )}
         <View style={styles.toolbarRow}>
-          <Pressable
-            onPress={() => setShowColors((v) => !v)}
-            hitSlop={6}
-            style={({ pressed }) => [styles.toolBtn, pressed && { opacity: 0.8 }]}
-          >
-            <Text style={styles.toolIcon}>🎨</Text>
-            <View style={[styles.toolDot, { backgroundColor: NOTE_COLOR_SWATCH[color] }]} />
-          </Pressable>
+          <View style={styles.toolGroup}>
+            {busyAtt ? (
+              <View style={styles.toolBtn}>
+                <ActivityIndicator size="small" color="#fbbf24" />
+              </View>
+            ) : (
+              <>
+                <Pressable onPress={() => void pickImage(true)} hitSlop={6} style={({ pressed }) => [styles.toolBtn, pressed && { opacity: 0.8 }]}>
+                  <Text style={styles.toolIcon}>📷</Text>
+                </Pressable>
+                <Pressable onPress={() => void pickImage(false)} hitSlop={6} style={({ pressed }) => [styles.toolBtn, pressed && { opacity: 0.8 }]}>
+                  <Text style={styles.toolIcon}>🖼️</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => void toggleRecording()}
+                  hitSlop={6}
+                  style={({ pressed }) => [styles.toolBtn, recording && styles.recordingBtn, pressed && { opacity: 0.8 }]}
+                >
+                  <Text style={styles.toolIcon}>{recording ? "⏹" : "🎙"}</Text>
+                </Pressable>
+                <Pressable onPress={() => setShowColors((v) => !v)} hitSlop={6} style={({ pressed }) => [styles.toolBtn, pressed && { opacity: 0.8 }]}>
+                  <Text style={styles.toolIcon}>🎨</Text>
+                  <View style={[styles.toolDot, { backgroundColor: NOTE_COLOR_SWATCH[color] }]} />
+                </Pressable>
+              </>
+            )}
+          </View>
           <Pressable
             onPress={() => setSheetOpen(true)}
             hitSlop={6}
@@ -488,6 +603,15 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+  },
+  toolGroup: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  recordingBtn: {
+    backgroundColor: "#450a0a",
+    borderColor: "#ef4444",
   },
   toolBtn: {
     width: 44,
