@@ -18,7 +18,16 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "intentFilters": [
+        { "action": "SEND", "category": ["DEFAULT"], "data": { "mimeType": "text/plain" } },
+        { "action": "SEND", "category": ["DEFAULT"], "data": { "mimeType": "image/*" } },
+        { "action": "SEND", "category": ["DEFAULT"], "data": { "mimeType": "audio/*" } },
+        { "action": "SEND", "category": ["DEFAULT"], "data": { "mimeType": "video/*" } },
+        { "action": "SEND_MULTIPLE", "category": ["DEFAULT"], "data": { "mimeType": "image/*" } },
+        { "action": "SEND_MULTIPLE", "category": ["DEFAULT"], "data": { "mimeType": "audio/*" } },
+        { "action": "SEND_MULTIPLE", "category": ["DEFAULT"], "data": { "mimeType": "video/*" } }
+      ]
     },
     "web": {
       "favicon": "./assets/images/favicon.png"

@@ -21,6 +21,7 @@ import ActionSheet, { type ActionItem } from "../components/ActionSheet";
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
 import { uploadAttachment } from "../lib/attachments";
+import ShareReceiver, { type SharedPayload } from "../../modules/share-receiver";
 import {
   createNote,
   updateNote,
@@ -280,6 +281,61 @@ export default function HomeScreen() {
     }
   }
 
+  /** Itens compartilhados de outros apps ("Compartilhar → Notas"). */
+  async function handleSharedItems(payload: SharedPayload) {
+    try {
+      const { client } = await getDb();
+      const id = await createNote(client);
+      let body = payload.text ?? "";
+
+      for (const file of payload.files) {
+        let uri = file.uri;
+        let fileName = file.name || `anexo-${Date.now()}`;
+        let mimeType = file.mime || "application/octet-stream";
+        if (mimeType.startsWith("image/")) {
+          try {
+            const out = await ImageManipulator.manipulateAsync(
+              uri,
+              [{ resize: { width: 1600 } }],
+              { compress: 0.8, format: ImageManipulator.SaveFormat.WEBP }
+            );
+            uri = out.uri;
+            fileName = fileName.replace(/\.[^.]+$/, "") + ".webp";
+            mimeType = "image/webp";
+          } catch (e) {
+            console.warn("Compressao falhou, enviando original:", e);
+          }
+        }
+        const att = await uploadAttachment({ uri, fileName, mimeType, noteId: id });
+        if (att) {
+          body = `${body ? body.trimEnd() + "\n\n" : ""}![${att.file_name}](/api/attachments/${att.id})\n\n`;
+        }
+      }
+
+      if (body.trim()) {
+        await updateNote(client, id, { body });
+      }
+      scheduleSync();
+      void reload();
+      router.push(`/note/${id}`);
+    } catch (e) {
+      console.warn("Falha ao receber compartilhamento:", e);
+      Alert.alert("Compartilhar", "Não foi possível criar a nota a partir do compartilhamento.");
+    }
+  }
+
+  // Share sheet: cold start (getShared) e app já aberto (listener)
+  useEffect(() => {
+    void ShareReceiver.getShared().then((payload) => {
+      if (payload) void handleSharedItems(payload);
+    });
+    const sub = ShareReceiver.addListener("onShareReceived", (payload) => {
+      void handleSharedItems(payload);
+    });
+    return () => sub.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   if (!booted) {
     return (
       <View style={[styles.root, styles.center]}>
@@ -410,16 +466,18 @@ export default function HomeScreen() {
         )}
       />
 
-      {/* FAB único estilo Joplin: + abre os atalhos de criação */}
-      <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-        <Pressable
-          style={({ pressed }) => [styles.fab, pressed && { transform: [{ scale: 0.95 }] }]}
-          onPress={() => setCreateSheetOpen(true)}
-          accessibilityLabel="Criar nova nota"
-        >
-          <Text style={styles.fabText}>＋</Text>
-        </Pressable>
-      </View>
+      {/* FAB flutuante estilo Joplin: + abre os atalhos de criação */}
+      <Pressable
+        style={({ pressed }) => [
+          styles.fab,
+          { position: "absolute", right: 20, bottom: 24 + insets.bottom },
+          pressed && { transform: [{ scale: 0.95 }] },
+        ]}
+        onPress={() => setCreateSheetOpen(true)}
+        accessibilityLabel="Criar nova nota"
+      >
+        <Text style={styles.fabText}>＋</Text>
+      </Pressable>
 
       <ActionSheet visible={Boolean(sheetNote)} items={sheetItems} onClose={() => setSheetNote(null)} />
       <ActionSheet
@@ -517,20 +575,6 @@ const styles = StyleSheet.create({
     color: "#71717a",
     textAlign: "center",
     paddingHorizontal: 40,
-  },
-  bottomBar: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: "#18181b",
-    borderTopWidth: 1,
-    borderTopColor: "#27272a",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "flex-end",
-    paddingTop: 10,
-    paddingHorizontal: 18,
   },
   fab: {
     width: 52,

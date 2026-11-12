@@ -1,0 +1,6 @@
+{
+  "name": "share-receiver",
+  "version": "1.0.0",
+  "description": "Módulo local: recebe compartilhamentos de outros apps no Android",
+  "main": "index.ts"
+}
