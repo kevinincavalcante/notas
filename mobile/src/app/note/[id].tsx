@@ -1,4 +1,4 @@
-import { Alert, Image, KeyboardAvoidingView, Pressable, ScrollView, StyleSheet, Text, TextInput, View, BackHandler, type TextInputInstance } from "react-native";
+import { Alert, AppState, Image, KeyboardAvoidingView, Pressable, ScrollView, StyleSheet, Text, TextInput, View, BackHandler, type TextInputInstance } from "react-native";
 import { WebView } from "react-native-webview";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -103,8 +103,19 @@ export default function NoteScreen() {
   const [selOverride, setSelOverride] = useState<{ start: number; end: number } | undefined>();
   const [attachments, setAttachments] = useState<AttachmentRow[]>([]);
 
+  const attsKeyRef = useRef("");
   const loadAtts = useCallback(() => {
-    if (noteId) void listAttachments(noteId).then(setAttachments);
+    if (!noteId) return;
+    void listAttachments(noteId).then((atts) => {
+      // Sem re-render quando nada mudou: um setAttachments novo a cada ciclo
+      // de sync re-renderizava o editor inteiro com o teclado aberto
+      const key = atts
+        .map((a) => `${a.id}:${a.storage_key}:${a.file_size}`)
+        .join("|");
+      if (key === attsKeyRef.current) return;
+      attsKeyRef.current = key;
+      setAttachments(atts);
+    });
   }, [noteId]);
 
   useEffect(() => {
@@ -226,6 +237,15 @@ export default function NoteScreen() {
     }
   }, []);
 
+  // Rede de segurança: app indo pro background (ou usuário trocando de app)
+  // com texto não salvo → grava antes de sumir (nada se perde num crash/fetch)
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (s) => {
+      if (s !== "active") void flushSave();
+    });
+    return () => sub.remove();
+  }, [flushSave]);
+
   // Auto-inicia gravacao se foi aberta pelo atalho de audio
   const autoAudioStartedRef = useRef(false);
   useEffect(() => {
@@ -298,8 +318,10 @@ export default function NoteScreen() {
       latestRef.current.body = value;
     }
     setStatus("unsaved");
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => void flushSave(), 700);
+    // Salvamento agora acontece só ao SAIR da nota (voltar, alternar pra
+    // leitura, app em background). Autosave a cada pausa de digitação
+    // disparava SQLite + sync + re-renders que engasgavam o editor com
+    // texto grande e criavam a disputa "salvo/salvando" a cada frase.
   }
 
   // lista numerada automática: intercepta a digitação e aplica as regras
@@ -563,9 +585,9 @@ export default function NoteScreen() {
           <Text style={styles.back}>‹</Text>
         </Pressable>
         <View style={styles.headerRight}>
-          {mode === "edit" && (
+          {mode === "edit" && status !== "unsaved" && (
             <Text style={styles.status}>
-              {status === "saved" ? "Salvo" : status === "saving" ? "Salvando…" : "…"}
+              {status === "saved" ? "Salvo" : status === "saving" ? "Salvando…" : ""}
             </Text>
           )}
           {/* ✏️ modo Joplin: alterna leitura ↔ edição */}
