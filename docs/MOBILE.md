@@ -19,7 +19,8 @@ mobile/ = réplica local (expo-sqlite)
 
 - **Por que HTTP e não Turso direto**: o APK não pode carregar credenciais do
   Turso (qualquer um extrai do binário). O celular fala com a API hospedada
-  (Vercel: `api.exemplo.invalid`) com o mesmo JWT da app web.
+  (endereço digitado no login — não vem embutido no código) com o mesmo JWT
+  da app web.
 - **Bearer**: o `proxy.ts` e `lib/auth.ts` aceitam `Authorization: Bearer` além
   do cookie (o login devolve `token` no corpo do JSON).
 - **Código compartilhado**: `lib/sync-core.ts` (miolo puro do cliente de sync)

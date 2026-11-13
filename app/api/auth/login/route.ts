@@ -22,15 +22,33 @@ export async function POST(request: Request) {
       );
     }
 
-    const { username, password } = await request.json();
+    const { username, password, apiUrl: apiUrlFromBody } = await request.json();
 
     // Desktop thin-client: as credenciais valem só na API remota — repassa o
     // login pra lá e guarda o JWT no arquivo de sessão que o sidecar lê por
     // requisição (anexos e sync). A página de login é a mesma do web.
     if (isDesktopLocalMode()) {
-      const apiUrl = getDesktopApiUrl();
+      // URL informada no campo do login tem prioridade; sem ela, usa a que
+      // já estiver no config. Valida protocolo pra não virar fetch relativo.
+      let apiUrl = (apiUrlFromBody || "").toString().trim().replace(/\/+$/, "");
+      if (apiUrl) {
+        try {
+          const parsed = new URL(apiUrl);
+          if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error();
+        } catch {
+          return NextResponse.json(
+            { error: "URL da API inválida — use http:// ou https://" },
+            { status: 400 }
+          );
+        }
+      } else {
+        apiUrl = getDesktopApiUrl();
+      }
       if (!apiUrl) {
-        return NextResponse.json({ error: "API remota não configurada" }, { status: 500 });
+        return NextResponse.json(
+          { error: "Informe a URL da API no login" },
+          { status: 400 }
+        );
       }
       const upstream = await fetch(`${apiUrl}/api/auth/login`, {
         method: "POST",
@@ -49,6 +67,9 @@ export async function POST(request: Request) {
         );
       }
       const sessionFile = process.env.NOTAS_SESSION_FILE;
+      // Atualiza o env do processo vivo: sidecar e main compartilham o mesmo
+      // process.env — sync e anexos passam a usar a URL nova sem restart
+      process.env.NOTAS_API_URL = apiUrl;
       if (sessionFile) {
         await writeFile(sessionFile, data.token, "utf8");
         // Atualiza o config do Electron (mesmo formato de electron/config.ts):

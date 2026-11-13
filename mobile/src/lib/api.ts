@@ -9,8 +9,8 @@ const TOKEN_KEY = "notas_auth_token";
 const USER_KEY = "notas_api_url";
 const USER_NAME_KEY = "notas_user_name";
 
-/** Em dev dá pra apontar pro PC na mesma rede (http://192.168.x.x:3000). */
-export const DEFAULT_API_URL = "https://api.exemplo.invalid";
+/** Sem default embutido: a URL da API é digitada no login e fica no SecureStore. */
+export const DEFAULT_API_URL = "";
 
 export async function getApiUrl(): Promise<string> {
   return (await SecureStore.getItemAsync(USER_KEY)) || DEFAULT_API_URL;
@@ -40,6 +40,7 @@ export interface LoginResult {
 
 export async function login(username: string, password: string): Promise<LoginResult> {
   const baseUrl = await getApiUrl();
+  if (!baseUrl) return { ok: false, error: "URL da API não configurada." };
   let res: Response;
   try {
     res = await fetch(`${baseUrl}/api/auth/login`, {

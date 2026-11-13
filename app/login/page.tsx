@@ -1,15 +1,23 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Lock, User, ArrowRight, StickyNote } from "lucide-react";
+import { Lock, User, ArrowRight, StickyNote, Globe } from "lucide-react";
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [apiUrl, setApiUrl] = useState("");
+  const [isDesktop, setIsDesktop] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+
+  // No Electron (thin-client) a API não vem embutida: o usuário informa o
+  // endereço uma vez — ele é validado no login e salvo no notas-config.json
+  useEffect(() => {
+    setIsDesktop(/Electron/.test(navigator.userAgent));
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -20,7 +28,11 @@ export default function LoginPage() {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({
+          username,
+          password,
+          ...(isDesktop && apiUrl.trim() ? { apiUrl: apiUrl.trim() } : {}),
+        }),
       });
 
       const data = await res.json();
@@ -61,6 +73,29 @@ export default function LoginPage() {
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
+        {isDesktop && (
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase tracking-wider mb-1.5">
+              URL da API
+            </label>
+            <div className="relative">
+              <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center text-slate-400">
+                <Globe className="w-5 h-5" />
+              </span>
+              <input
+                type="text"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                value={apiUrl}
+                onChange={(e) => setApiUrl(e.target.value)}
+                placeholder="https://minha-api.vercel.app"
+                className="w-full pl-11 pr-4 py-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400 text-sm"
+              />
+            </div>
+          </div>
+        )}
+
           <div>
             <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase tracking-wider mb-1.5">
               Usuário

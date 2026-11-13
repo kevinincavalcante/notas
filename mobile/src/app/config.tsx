@@ -2,7 +2,7 @@ import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useEffect, useState } from "react";
-import { DEFAULT_API_URL, getApiUrl, getStoredToken, getStoredUser, logout, setApiUrl } from "../lib/api";
+import { getApiUrl, getStoredToken, getStoredUser, logout, setApiUrl } from "../lib/api";
 import { getLastSync, syncQuiet, type SyncApiConfig } from "../lib/sync";
 
 /** Config: conta, endereço da API, sync manual e sair. */
@@ -11,7 +11,7 @@ export default function ConfigScreen() {
   const insets = useSafeAreaInsets();
   const [user, setUser] = useState<string | null>(null);
   const [hasToken, setHasToken] = useState(false);
-  const [url, setUrl] = useState(DEFAULT_API_URL);
+  const [url, setUrl] = useState("");
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -78,7 +78,7 @@ export default function ConfigScreen() {
           onChangeText={setUrl}
           autoCapitalize="none"
           autoCorrect={false}
-          placeholder={DEFAULT_API_URL}
+          placeholder="https://minha-api.vercel.app"
           placeholderTextColor="#52525b"
         />
         <Pressable style={styles.smallButton} onPress={() => void handleSaveUrl()}>

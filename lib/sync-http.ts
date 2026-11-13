@@ -10,7 +10,7 @@ import type { SyncPush } from "@/lib/sync-types";
  */
 
 export interface SyncApiConfig {
-  /** Base da API (ex: https://api.exemplo.invalid). */
+  /** Base da API (ex: https://minha-api.vercel.app). */
   baseUrl: string;
   /** JWT do login. */
   token: string;

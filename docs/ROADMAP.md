@@ -67,9 +67,10 @@ quando alterado**.
 - **Expo/React Native**: UI nativa nova (o UI React DOM não reaproveita), motor
   de sync e lógica de domínio reutilizados (JS puro + `expo-sqlite`).
 - **Capacitor descartado** (decisão do dono, junto com o design do app).
-- **Hospedagem da API**: Vercel (`api.exemplo.invalid`) — o celular
-  sincroniza via `POST /api/sync` + `Authorization: Bearer` (APK não carrega
-  credenciais do Turso); token do login vai no SecureStore.
+- **Hospedagem da API**: Vercel (endereço configurado no login, sem default
+  no código) — o celular sincroniza via `POST /api/sync` +
+  `Authorization: Bearer` (APK não carrega credenciais do Turso); token do
+  login vai no SecureStore.
 - Build focado em `arm64-v8a` (celular do dono).
 - Designs finais da UI ainda a definir pelo dono.
 

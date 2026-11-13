@@ -18,7 +18,7 @@ export interface DesktopConfig {
   localSecret?: string;
 }
 
-export const DEFAULT_API_URL = "https://api.exemplo.invalid";
+export const DEFAULT_API_URL = "";
 
 const configPath = join(app.getPath("userData"), "notas-config.json");
 

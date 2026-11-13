@@ -36,7 +36,6 @@ import {
   type TagRow,
 } from "../lib/db";
 import {
-  DEFAULT_API_URL,
   getApiUrl,
   getStoredToken,
   getStoredUser,
@@ -62,7 +61,6 @@ export default function HomeScreen() {
   // login (só quando sem token)
   const [userInput, setUserInput] = useState("");
   const [passInput, setPassInput] = useState("");
-  const [showUrlField, setShowUrlField] = useState(false);
   const [urlInput, setUrlInput] = useState("");
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loggingIn, setLoggingIn] = useState(false);
@@ -122,7 +120,7 @@ export default function HomeScreen() {
       const [t, u, url] = await Promise.all([getStoredToken(), getStoredUser(), getApiUrl()]);
       setToken(t);
       setUser(u);
-      setUrlInput(url === DEFAULT_API_URL ? "" : url);
+      setUrlInput(url);
       setBooted(true);
       if (t) {
         apiRef.current = { baseUrl: url, token: t };
@@ -158,9 +156,13 @@ export default function HomeScreen() {
     setLoginError(null);
     setLoggingIn(true);
     try {
-      if (showUrlField && urlInput.trim()) {
-        await setApiUrl(urlInput);
+      const targetUrl = urlInput.trim();
+      if (!targetUrl) {
+        setLoggingIn(false);
+        setLoginError("Informe a URL da API.");
+        return;
       }
+      await setApiUrl(targetUrl);
       const result = await login(userInput, passInput);
       if (result.ok) {
         const [t, u, url] = await Promise.all([getStoredToken(), getStoredUser(), getApiUrl()]);
@@ -482,7 +484,7 @@ export default function HomeScreen() {
     return (
       <View style={[styles.root, styles.center, styles.login]}>
         <Text style={styles.title}>Notas</Text>
-        <Text style={styles.subtitle}>{DEFAULT_API_URL}</Text>
+        <Text style={styles.subtitle}>sincroniza com sua API pessoal</Text>
 
         <TextInput
           style={styles.input}
@@ -504,21 +506,17 @@ export default function HomeScreen() {
           onSubmitEditing={() => void handleLogin()}
         />
 
-        <Pressable onPress={() => setShowUrlField((v) => !v)} hitSlop={8} disabled={loggingIn}>
-          <Text style={styles.link}>{showUrlField ? "usar API padrão" : "usar outra API"}</Text>
-        </Pressable>
-        {showUrlField && (
-          <TextInput
-            style={styles.input}
-            placeholder={`URL da API (padrão: ${DEFAULT_API_URL})`}
-            placeholderTextColor="#71717a"
-            autoCapitalize="none"
-            autoCorrect={false}
-            value={urlInput}
-            onChangeText={setUrlInput}
-            editable={!loggingIn}
-          />
-        )}
+        <TextInput
+          style={styles.input}
+          placeholder="URL da API (ex.: https://minha-api.vercel.app)"
+          placeholderTextColor="#71717a"
+          autoCapitalize="none"
+          autoCorrect={false}
+          value={urlInput}
+          onChangeText={setUrlInput}
+          editable={!loggingIn}
+          onSubmitEditing={() => void handleLogin()}
+        />
 
         <Pressable
           style={[styles.button, loggingIn && { opacity: 0.7 }]}
