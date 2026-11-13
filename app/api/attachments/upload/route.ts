@@ -5,6 +5,8 @@ import { autoTagForFile } from "@/lib/auto-tags";
 import { attachAutoTag } from "@/lib/tags";
 import { logChange } from "@/lib/sync-log";
 import { isDesktopLocalMode, isR2Configured, getDesktopApiUrl, getDesktopSessionToken } from "@/lib/desktop-session";
+import { syncOnceWith } from "@/lib/sync-core";
+import { makeHttpSyncRun } from "@/lib/sync-http";
 import sharp from "sharp";
 import crypto from "crypto";
 
@@ -145,7 +147,12 @@ async function proxyUploadToApi(request: Request) {
     );
   }
 
-  const noteId = await formDataNoteId(request);
+  // Lê o corpo UMA VEZ: formData() consome o stream — o noteId vem de uma
+  // reconstrução do request com o buffer em mãos
+  const bodyBuffer = Buffer.from(await request.arrayBuffer());
+  const contentType = request.headers.get("content-type") || "application/octet-stream";
+
+  const noteId = await noteIdFromBody(bodyBuffer, contentType);
   if (!noteId) {
     return NextResponse.json({ error: "Arquivo ou noteId não fornecido" }, { status: 400 });
   }
@@ -158,27 +165,44 @@ async function proxyUploadToApi(request: Request) {
     return NextResponse.json({ error: "Nota não encontrada" }, { status: 404 });
   }
 
-  const upstream = await fetch(`${apiUrl}/api/attachments/upload`, {
-    method: "POST",
-    headers: {
-      "Content-Type": request.headers.get("content-type") || "application/octet-stream",
-      Authorization: `Bearer ${token}`,
-    },
-    body: await request.arrayBuffer(),
-  });
-
-  const data = (await upstream.json().catch(() => ({}))) as {
-    error?: string;
-    attachment?: {
-      id: string;
-      storage_key: string;
-      file_name: string;
-      mime_type: string;
-      file_size: number;
-      duration_seconds: number | null;
-      created_at: number;
+  const uploadOnce = async () => {
+    const upstream = await fetch(`${apiUrl}/api/attachments/upload`, {
+      method: "POST",
+      headers: {
+        "Content-Type": contentType,
+        Authorization: `Bearer ${token}`,
+      },
+      body: new Uint8Array(bodyBuffer),
+    });
+    const data = (await upstream.json().catch(() => ({}))) as {
+      error?: string;
+      attachment?: {
+        id: string;
+        storage_key: string;
+        file_name: string;
+        mime_type: string;
+        file_size: number;
+        duration_seconds: number | null;
+        created_at: number;
+      };
     };
+    return { upstream, data };
   };
+
+  let { upstream, data } = await uploadOnce();
+
+  // Nota criada na UI pode ainda não ter sido empurrada pro remoto (o push
+  // roda a cada 30s) → o servidor não a conhece e responde 404 "Nota não
+  // encontrada". Força um push de sync e tenta mais uma vez — mesmo fix do
+  // mobile (db58bbd)
+  if (upstream.status === 404 && String(data.error || "").includes("não encontrada")) {
+    try {
+      await syncOnceWith(db, makeHttpSyncRun({ baseUrl: apiUrl, token }));
+    } catch (syncErr) {
+      console.warn("Falha ao forçar push antes do retry de upload:", syncErr);
+    }
+    ({ upstream, data } = await uploadOnce());
+  }
 
   if (!upstream.ok || !data.attachment) {
     return NextResponse.json(
@@ -215,10 +239,15 @@ async function proxyUploadToApi(request: Request) {
   return NextResponse.json({ success: true, attachment: { ...att, note_id: noteId } });
 }
 
-async function formDataNoteId(request: Request): Promise<string | null> {
+async function noteIdFromBody(buffer: Buffer, contentType: string): Promise<string | null> {
   try {
-    const form = await request.formData();
-    return ((form.get("noteId") || form.get("note_id")) as string | null) || null;
+    const form = new Request("http://local/upload", {
+      method: "POST",
+      headers: { "content-type": contentType },
+      body: new Uint8Array(buffer),
+    });
+    const data = await form.formData();
+    return ((data.get("noteId") || data.get("note_id")) as string | null) || null;
   } catch {
     return null;
   }
