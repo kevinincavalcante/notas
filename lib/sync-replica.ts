@@ -59,14 +59,23 @@ export function startSyncLoop(
     if (stopped) return;
     try {
       const r = await syncOnceWith(local, run);
-      failures = 0;
-      options.onSync?.(r);
-      options.onStatus?.({
-        ok: true,
-        at: Date.now(),
-        changed:
-          (r.pulledNotes || 0) + (r.pulledVersions || 0) + r.appliedTombstones + r.conflicts.length > 0,
-      });
+      // syncOnceWith NÃO lança em falha de run: devolve ok:false — se
+      // tratássemos como sucesso, o laço falhava em silêncio pra sempre
+      // (sem log, sem erro no indicador, sem backoff)
+      if (r.ok === false) {
+        failures++;
+        console.warn("[SYNC] falhou:", r.error);
+        options.onStatus?.({ ok: false, at: Date.now(), error: r.error || "erro" });
+      } else {
+        failures = 0;
+        options.onSync?.(r);
+        options.onStatus?.({
+          ok: true,
+          at: Date.now(),
+          changed:
+            (r.pulledNotes || 0) + (r.pulledVersions || 0) + r.appliedTombstones + r.conflicts.length > 0,
+        });
+      }
     } catch (err) {
       failures++;
       console.warn("[SYNC] falhou:", err);

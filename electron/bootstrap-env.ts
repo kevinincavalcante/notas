@@ -1,7 +1,7 @@
 import { app } from "electron";
 import { join } from "path";
 import { randomBytes } from "crypto";
-import { writeFileSync } from "fs";import { loadConfig, saveConfig } from "./config";
+import { writeFileSync } from "fs";import { loadConfig, saveConfig, getSessionToken } from "./config";
 
 /**
  * ESCREVE userData/notas-local.env ANTES de qualquer import de lib —

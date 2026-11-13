@@ -12,6 +12,7 @@ import { syncOnceWith } from "../lib/sync-core";
 import { makeHttpSyncRun } from "../lib/sync-http";
 import type { SyncPush } from "../lib/sync-types";
 import { getDesktopSessionToken } from "../lib/desktop-session";
+import { loadConfig } from "./config";
 import { envSource, localDbPath, isDev } from "./env";
 
 /** Janela ativa — o sync envia o status pra ela via IPC. */
@@ -187,6 +188,12 @@ app.whenReady().then(async () => {
     ipcMain.handle("sync-now", async () => {
       try {
         const r = await syncOnceWith(localClient, syncRun);
+        if (r.ok === false) {
+          // syncOnceWith devolve ok:false em vez de lançar: repassa o erro
+          const s = { ok: false, at: Date.now(), error: r.error || "erro" };
+          mainWindow?.webContents.send("sync-status", s);
+          return s;
+        }
         const s = {
           ok: true,
           at: Date.now(),
