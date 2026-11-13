@@ -1,8 +1,7 @@
 import { app } from "electron";
 import { join } from "path";
 import { randomBytes } from "crypto";
-import { writeFileSync } from "fs";
-import { loadConfig, saveConfig, getSessionToken } from "./config";
+import { writeFileSync } from "fs";import { loadConfig, saveConfig } from "./config";
 
 /**
  * ESCREVE userData/notas-local.env ANTES de qualquer import de lib —
@@ -29,6 +28,19 @@ writeFileSync(
 
 if (!cfg.localSecret) saveConfig({ localSecret: secret });
 
-// Token da sessão atual, se houver (o sidecar lê por requisição)
-const token = getSessionToken();
-writeFileSync(sessionFile, token || "");
+/**
+ * Grava o token da sessão atual no arquivo que o sidecar lê por requisição.
+ *
+ * NÃO pode rodar no load do módulo: safeStorage (cofre do SO) só funciona
+ * depois de app.whenReady() — antes disso a descriptografia falha e o
+ * arquivo era gravado vazio, matando TODO anexo (imagem/áudio) no thin-client
+ * com 401, enquanto o sync (que lê o config direto) seguia funcionando.
+ * Chamar depois do whenReady (main.ts, antes de subir o sidecar) e no login.
+ */
+export function writeSessionFile(): void {
+  try {
+    writeFileSync(sessionFile, getSessionToken() || "");
+  } catch (err) {
+    console.warn("[Notas] falha ao gravar arquivo de sessão:", err);
+  }
+}

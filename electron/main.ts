@@ -1,131 +1,25 @@
 import { app, BrowserWindow, ipcMain, shell, Menu } from "electron";
 import http from "http";
 import { join } from "path";
-import { writeFileSync } from "fs";
 import { createClient } from "@libsql/client";
 import "./bootstrap-env"; // PRIMEIRO: escreve notas-local.env (thin-client, sem Turso/R2)
+import { writeSessionFile } from "./bootstrap-env";
+
 import "./env"; // depois carrega tudo (ordem é contrato: libs abrem client no load)
 import { ensureSchema } from "../lib/db-schema";
 import { startSyncLoop } from "../lib/sync-replica";
 import { syncOnceWith } from "../lib/sync-core";
 import { makeHttpSyncRun } from "../lib/sync-http";
 import type { SyncPush } from "../lib/sync-types";
-import {
-  loadConfig,
-  saveConfig,
-  getSessionToken,
-  encryptToken,
-  DEFAULT_API_URL,
-} from "./config";
+import { getDesktopSessionToken } from "../lib/desktop-session";
 import { envSource, localDbPath, isDev } from "./env";
 
 /** Janela ativa — o sync envia o status pra ela via IPC. */
 let mainWindow: BrowserWindow | null = null;
 
-/* ---- Login (estilo celular): janela própria, sem arquivo de env ---- */
-
-let loginWindow: BrowserWindow | null = null;
-let loginPromise: Promise<boolean> | null = null;
-let loginResolver: ((value: boolean) => void) | null = null;
-
-function openLoginWindow(): Promise<boolean> {
-  if (loginPromise) return loginPromise;
-  loginPromise = new Promise<boolean>((resolve) => {
-    loginResolver = resolve;
-    const cfg = loadConfig();
-    const win = new BrowserWindow({
-      width: 430,
-      height: 500,
-      title: "Entrar no Notas",
-      autoHideMenuBar: true,
-      backgroundColor: "#0f172a",
-      resizable: false,
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        preload: join(__dirname, "login-preload.cjs"),
-      },
-    });
-    loginWindow = win;
-    const html = loginHtml(cfg.username || "", cfg.apiUrl || DEFAULT_API_URL);
-    win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-    win.on("closed", () => {
-      loginWindow = null;
-      if (loginResolver) {
-        loginResolver(false);
-        loginResolver = null;
-      }
-      loginPromise = null;
-    });
-  });
-  return loginPromise;
-}
-
-function loginHtml(username: string, apiUrl: string): string {
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    body { background: #0f172a; color: #f8fafc; margin: 0; padding: 32px 28px; }
-    h1 { font-size: 24px; margin: 0 0 6px; font-weight: 700; color: #f8fafc; }
-    p { color: #94a3b8; font-size: 13px; margin: 0 0 24px; }
-    label { display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 6px; }
-    input { width: 100%; padding: 10px 12px; background: #1e293b; border: 1px solid #334155; border-radius: 8px; color: #f8fafc; font-size: 14px; margin-bottom: 16px; outline: none; }
-    input:focus { border-color: #3b82f6; }
-    button { width: 100%; padding: 11px; background: #3b82f6; color: #fff; border: 0; border-radius: 8px; font-weight: 600; font-size: 14px; cursor: pointer; margin-top: 8px; }
-    button:hover { background: #2563eb; }
-    .err { color: #ef4444; font-size: 12px; margin-top: 12px; min-height: 16px; text-align: center; }
-  </style></head><body>
-  <form id="f">
-    <h1>Notas</h1><p>Sua conta na nuvem — o app guarda o acesso no cofre do sistema</p>
-    <label>Usuário</label><input id="u" value="${username}" autocapitalize="none">
-    <label>Senha</label><input id="p" type="password">
-    <label>Endereço da API</label><input id="a" value="${apiUrl}" autocapitalize="none">
-    <button type="submit">Entrar</button>
-    <div class="err" id="err"></div>
-  </form>
-  <script>
-    document.getElementById('f').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const err = document.getElementById('err'); err.textContent = 'Entrando…';
-      const r = await window.notasLogin.submit({
-        apiUrl: document.getElementById('a').value,
-        username: document.getElementById('u').value,
-        password: document.getElementById('p').value,
-      });
-      if (!r || !r.ok) { err.textContent = (r && r.error) || 'Login falhou'; }
-    });
-  </script></body></html>`;
-}
-
-ipcMain.handle("login-submit", async (_e, data: { apiUrl?: string; username?: string; password?: string }) => {
-  const baseUrl = (data.apiUrl || DEFAULT_API_URL).trim().replace(/\/+$/, "");
-  try {
-    const res = await fetch(`${baseUrl}/api/auth/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: data.username || "", password: data.password || "" }),
-    });
-    const json = (await res.json().catch(() => ({}))) as { token?: string; error?: string };
-    if (!res.ok || !json.token) {
-      return { ok: false, error: json.error || "Login falhou" };
-    }
-    const enc = encryptToken(json.token);
-    saveConfig({
-      apiUrl: baseUrl,
-      username: data.username,
-      token: enc.token,
-      encrypted: enc.encrypted,
-    });
-    writeFileSync(join(app.getPath("userData"), "notas-session.token"), json.token);
-    if (loginResolver) {
-      loginResolver(true);
-      loginResolver = null;
-    }
-    loginWindow?.close();
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Falha de conexão com a API" };
-  }
-});
+/* ---- Login: a MESMA página do web, servida pelo sidecar local.
+   O /api/auth/login local repassa as credenciais pra API remota e grava o
+   JWT no arquivo de sessão — nada de janela própria de login. ---- */
 
 /**
  * Processo main do Notas (Electron):
@@ -250,28 +144,29 @@ app.whenReady().then(async () => {
     const localClient = createClient({ url: `file:${localDbPath}` });
     await ensureSchema(localClient);
 
-    // 2. Login estilo celular: sem sessão salva → janela de login
-    let session = getSessionToken();
-    if (!session) {
-      const ok = await openLoginWindow();
-      if (!ok) {
-        console.log("[Notas] login cancelado — encerrando");
-        app.quit();
-        return;
-      }
-      session = getSessionToken();
-    }
-    console.log(`[Notas] sessão de ${loadConfig().username ?? "?"} em ${loadConfig().apiUrl}`);
+    // Token da sessão pro sidecar — SÓ depois do whenReady: safeStorage não
+    // funciona no load do módulo, e o arquivo nasce vazio se gravar antes
+    writeSessionFile();
 
-    // 3. Sync via API (mesmo protocolo do celular) — token lido a cada
-    // ciclo (re-login emite token novo sem reiniciar o app)
-    const syncRun = (cursor: number, push: SyncPush) => {
-      const token = getSessionToken();
-      const apiUrl = loadConfig().apiUrl;
+    // 2. Sidecar primeiro: o login do desktop é a própria página /login do
+    // app local (que repassa pra API remota) — precisa dela no ar pra janela
+    const port = await startNextServer();
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    // 3. Sync via API (mesmo protocolo do celular) — token lido do ARQUIVO de
+    // sessão a cada ciclo: fonte única e fresca (login/saída da UI refletem
+    // na hora; arquivo vazio = sem sessão, é o que o logout faz)
+    const syncRun = async (cursor: number, push: SyncPush) => {
+      const token = await getDesktopSessionToken();
       if (!token) return Promise.reject(new Error("Sem sessão — faça login novamente"));
       return makeHttpSyncRun(
-        { baseUrl: apiUrl, token },
-        { onUnauthorized: () => void openLoginWindow() }
+        { baseUrl: loadConfig().apiUrl, token },
+        {
+          onUnauthorized: () => {
+            console.log("[Notas] 401 do remoto — mandando pra página de login");
+            mainWindow?.loadURL(`${baseUrl}/login`);
+          },
+        }
       )(cursor, push);
     };
 
@@ -286,6 +181,7 @@ app.whenReady().then(async () => {
       },
       onStatus: (s) => mainWindow?.webContents.send("sync-status", s),
     });
+    console.log("[SYNC] laço iniciado (30s + backoff, via API)");
 
     // Botão "sync agora" da UI: um ciclo imediato, sem esperar o laço
     ipcMain.handle("sync-now", async () => {
@@ -305,11 +201,10 @@ app.whenReady().then(async () => {
         return s;
       }
     });
-    console.log("[SYNC] laço iniciado (30s + backoff, via API)");
 
-    // 4. Sidecar Next + janela
-    const port = await startNextServer();
-    await createWindow(`http://127.0.0.1:${port}`);
+    // 4. Janela: sem sessão salva → abre direto na página de login
+    const session = await getDesktopSessionToken();
+    await createWindow(session ? baseUrl : `${baseUrl}/login`);
   } catch (err) {
     console.error("[Notas] falha ao iniciar:", err);
     app.quit();

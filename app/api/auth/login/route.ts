@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
+import { writeFile, readFile } from "fs/promises";
+import { dirname, join } from "path";
 import { createToken, AUTH_COOKIE_NAME } from "@/lib/auth";
 import { rateLimit, getClientIp } from "@/lib/rate-limit";
+import { isDesktopLocalMode, getDesktopApiUrl } from "@/lib/desktop-session";
 
 // 5 tentativas por IP a cada 15 minutos
 const LOGIN_RATE_LIMIT = 5;
@@ -20,6 +23,67 @@ export async function POST(request: Request) {
     }
 
     const { username, password } = await request.json();
+
+    // Desktop thin-client: as credenciais valem só na API remota — repassa o
+    // login pra lá e guarda o JWT no arquivo de sessão que o sidecar lê por
+    // requisição (anexos e sync). A página de login é a mesma do web.
+    if (isDesktopLocalMode()) {
+      const apiUrl = getDesktopApiUrl();
+      if (!apiUrl) {
+        return NextResponse.json({ error: "API remota não configurada" }, { status: 500 });
+      }
+      const upstream = await fetch(`${apiUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = (await upstream.json().catch(() => ({}))) as {
+        token?: string;
+        error?: string;
+        user?: { username: string };
+      };
+      if (!upstream.ok || !data.token) {
+        return NextResponse.json(
+          { error: data.error || "Login falhou" },
+          { status: upstream.status === 200 ? 500 : upstream.status }
+        );
+      }
+      const sessionFile = process.env.NOTAS_SESSION_FILE;
+      if (sessionFile) {
+        await writeFile(sessionFile, data.token, "utf8");
+        // Atualiza o config do Electron (mesmo formato de electron/config.ts):
+        // apiUrl/username/token atualizados pro próximo boot — o main
+        // re-cifra com safeStorage quando reescrever
+        try {
+          const configPath = join(dirname(sessionFile), "notas-config.json");
+          let cfg: Record<string, unknown> = {};
+          try {
+            cfg = JSON.parse(await readFile(configPath, "utf8"));
+          } catch {
+            // config inexistente/corrompido: nasce novo
+          }
+          cfg.apiUrl = apiUrl;
+          cfg.username = username;
+          cfg.token = data.token;
+          cfg.encrypted = false;
+          await writeFile(configPath, JSON.stringify(cfg, null, 2), "utf8");
+        } catch {
+          // falha ao atualizar config não impede o login: o arquivo de
+          // sessão já vale pra esta execução
+        }
+      }
+      const response = NextResponse.json({ success: true, user: data.user ?? { username } });
+      response.cookies.set({
+        name: AUTH_COOKIE_NAME,
+        value: data.token,
+        httpOnly: true,
+        secure: false, // sidecar local é http em 127.0.0.1
+        sameSite: "strict",
+        path: "/",
+        maxAge: 30 * 24 * 60 * 60,
+      });
+      return response;
+    }
 
     const expectedUser = (process.env.APP_USER || "admin").trim();
     // Limpa aspas e também desfaz escapes de barra invertida em '$' se tiver vindo de cópia do .env.local
