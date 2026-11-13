@@ -1,4 +1,4 @@
-import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View, BackHandler, type TextInputInstance } from "react-native";
+import { Alert, Image, KeyboardAvoidingView, Pressable, ScrollView, StyleSheet, Text, TextInput, View, BackHandler, type TextInputInstance } from "react-native";
 import { WebView } from "react-native-webview";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -582,6 +582,10 @@ export default function NoteScreen() {
         </View>
       </View>
 
+      {/* Teclado no edge-to-edge (Android 15+/SDK 58): adjustResize não redimensiona
+          mais a janela sozinho — o KAV empurra o conteúdo (e a barra do Keep) pra
+          cima do teclado, e o ScrollView encolhe em vez de cobrir o texto. */}
+      <KeyboardAvoidingView behavior="padding" style={styles.kavAvoid}>
       {mode === "read" ? (
         /* ---- MODO LEITURA: preview markdown selecionável (estilo desktop) ----
            WebView rola POR DENTRO — dentro de ScrollView ela colapsa a zero */
@@ -751,6 +755,7 @@ export default function NoteScreen() {
       </View>
         </>
       )}
+      </KeyboardAvoidingView>
 
       <ActionSheet visible={sheetOpen} items={sheetItems} onClose={() => setSheetOpen(false)} />
       <VersionHistorySheet
@@ -767,6 +772,9 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: "#101012",
+  },
+  kavAvoid: {
+    flex: 1,
   },
   center: {
     justifyContent: "center",
