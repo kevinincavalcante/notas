@@ -5,6 +5,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import ActionSheet, { type ActionItem } from "../../components/ActionSheet";
 import { AudioBar, FileChip } from "../../components/AttachmentStrip";
+import VersionHistorySheet from "../../components/VersionHistorySheet";
 import { autoList } from "../../lib/auto-list";
 import { bodyToHtml } from "../../lib/markdown-html";
 import {
@@ -97,6 +98,7 @@ export default function NoteScreen() {
   const [color, setColor] = useState("default");
   const [status, setStatus] = useState<"saved" | "saving" | "unsaved">("saved");
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [showColors, setShowColors] = useState(false);
   const [selOverride, setSelOverride] = useState<{ start: number; end: number } | undefined>();
   const [attachments, setAttachments] = useState<AttachmentRow[]>([]);
@@ -322,6 +324,13 @@ export default function NoteScreen() {
           },
         },
         {
+          label: "Histórico de versões",
+          onPress: () => {
+            setSheetOpen(false);
+            setHistoryOpen(true);
+          },
+        },
+        {
           label: "Excluir",
           destructive: true,
           onPress: () => {
@@ -343,6 +352,25 @@ export default function NoteScreen() {
         scheduleQuietSync(cfg);
       }
     });
+  }
+
+  /** Recarrega a nota do banco local (após restaurar versão remota). */
+  async function reloadNote() {
+    const saved = savedRef.current;
+    if (!saved) return;
+    const { client } = await getDb();
+    const fresh = await getNote(client, saved.id);
+    if (!fresh) return;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    savedRef.current = fresh;
+    latestRef.current = { title: fresh.title, body: fresh.body, color: fresh.color };
+    prevBodyRef.current = fresh.body;
+    setTitle(fresh.title);
+    setBody(fresh.body);
+    setColor(fresh.color);
+    setStatus("saved");
+    setMode("read");
+    loadAtts();
   }
 
   /* ---- Anexos: câmera, galeria e áudio ---- */
@@ -679,6 +707,12 @@ export default function NoteScreen() {
       )}
 
       <ActionSheet visible={sheetOpen} items={sheetItems} onClose={() => setSheetOpen(false)} />
+      <VersionHistorySheet
+        visible={historyOpen}
+        noteId={noteId ?? ""}
+        onClose={() => setHistoryOpen(false)}
+        onRestored={() => void reloadNote()}
+      />
     </View>
   );
 }
