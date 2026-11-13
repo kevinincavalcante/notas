@@ -91,7 +91,7 @@ async function applyPush(client: Client, push: SyncPush): Promise<string[]> {
     const isArchived = note.is_archived ? 1 : 0;
 
     const localRes = await client.execute({
-      sql: `SELECT updated_at FROM notes WHERE id = ?`,
+      sql: `SELECT updated_at, title, body FROM notes WHERE id = ?`,
       args: [note.id],
     });
 
@@ -119,6 +119,37 @@ async function applyPush(client: Client, push: SyncPush): Promise<string[]> {
 
     const localUpdatedAt = Number(localRes.rows[0].updated_at);
     if ((note.updated_at || 0) > localUpdatedAt) {
+      // Versão do estado anterior — mesma regra da rota web (PUT /api/notes/[id]):
+      // snapshot do que estava no remoto antes do update da réplica, só quando
+      // o conteúdo mudou, sem duplicar a última versão. Sem isso, edições
+      // feitas no mobile/desktop não geram histórico (a rota web não é usada).
+      const prev = localRes.rows[0];
+      const prevTitle = ((prev.title as string) || "").trim();
+      const prevBody = ((prev.body as string) || "").trim();
+      const newTitle = (note.title ?? "").trim();
+      const newBody = (note.body ?? "").trim();
+      if ((prevTitle || prevBody) && (prevTitle !== newTitle || prevBody !== newBody)) {
+        const lastRes = await client.execute({
+          sql: `SELECT title, body FROM note_versions WHERE note_id = ? ORDER BY created_at DESC LIMIT 1`,
+          args: [note.id],
+        });
+        let isDuplicate = false;
+        if (lastRes.rows.length > 0) {
+          const lastV = lastRes.rows[0];
+          isDuplicate =
+            ((lastV.title as string) || "").trim() === prevTitle &&
+            ((lastV.body as string) || "").trim() === prevBody;
+        }
+        if (!isDuplicate) {
+          await client.execute({
+            sql: `
+              INSERT INTO note_versions (id, note_id, title, body, created_at)
+              VALUES (?, ?, ?, ?, ?)
+            `,
+            args: [crypto.randomUUID(), note.id, prevTitle, prevBody, localUpdatedAt],
+          });
+        }
+      }
       await client.execute({
         sql: `
           UPDATE notes

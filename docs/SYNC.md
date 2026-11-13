@@ -59,6 +59,12 @@ morrem junto com a nota. Então não precisam de LWW, tombstone nem log:
   existe do lado que recebe (`WHERE EXISTS` no push, filtro no pull).
 - Ao aplicar tombstone, a réplica apaga as `note_versions` da nota à mão
   (o cascade pode estar desligado no SQLite local).
+- **Quem cria versão nova é o remoto, no `applyPush`**: edição vinda de uma
+  réplica (mobile/desktop) faz o snapshot do estado anterior do remoto antes
+  do `UPDATE` — mesmas regras da rota web `PUT /api/notes/[id]` (só se o
+  conteúdo mudou, sem duplicar a última versão, `created_at` = `updated_at`
+  do estado anterior). A réplica recebe a versão de volta pelo pull da
+  watermark, então o histórico do celular/desktop se enche sozinho.
 
 ## Tags e vínculos: estado derivado (não sincronizado)
 
