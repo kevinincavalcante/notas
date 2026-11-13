@@ -29,3 +29,6 @@ dist/
 dist-electron/
 release/
 .commandcode/
+
+# Screenshots locais do OpenChamber
+.openchamber/
