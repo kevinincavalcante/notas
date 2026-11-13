@@ -642,7 +642,7 @@ export default function NoteScreen() {
             if (e.nativeEvent.key === "Enter") enterRef.current = true;
           }}
           selection={selOverride}
-          placeholder="Escreva aqui… (markdown; digite um nº + 2 espaços pra lista)"
+          placeholder="Digite…"
           placeholderTextColor="#52525b"
           multiline
           textAlignVertical="top"
