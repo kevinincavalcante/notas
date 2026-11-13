@@ -14,6 +14,7 @@ export interface SharedFile {
 
 export interface SharedPayload {
   text: string | null;
+  subject?: string | null;
   files: SharedFile[];
 }
 

@@ -23,6 +23,7 @@ export async function POST(request: Request) {
     const durationStr = (formData.get("duration") || formData.get("duration_seconds")) as string | null;
     const duration = durationStr ? parseFloat(durationStr) : null;
     const customFileName = (formData.get("fileName") || formData.get("file_name")) as string | null;
+    const customId = (formData.get("id") || formData.get("attachmentId")) as string | null;
 
     if (!file || !noteId) {
       return NextResponse.json(
@@ -69,14 +70,20 @@ export async function POST(request: Request) {
       finalMimeType
     );
 
-    const attachmentId = crypto.randomUUID();
+    const attachmentId = customId?.trim() ? customId.trim() : crypto.randomUUID();
     const now = Date.now();
 
-    // Salva o registro do anexo no Turso
+    // Salva o registro do anexo no Turso (idempotente para sincronização / fila offline)
     await db.execute({
       sql: `
         INSERT INTO attachments (id, note_id, storage_key, file_name, mime_type, file_size, duration_seconds, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          storage_key = excluded.storage_key,
+          file_name = excluded.file_name,
+          mime_type = excluded.mime_type,
+          file_size = excluded.file_size,
+          duration_seconds = COALESCE(excluded.duration_seconds, attachments.duration_seconds)
       `,
       args: [
         attachmentId,
@@ -185,6 +192,12 @@ async function proxyUploadToApi(request: Request) {
     sql: `
       INSERT INTO attachments (id, note_id, storage_key, file_name, mime_type, file_size, duration_seconds, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        storage_key = excluded.storage_key,
+        file_name = excluded.file_name,
+        mime_type = excluded.mime_type,
+        file_size = excluded.file_size,
+        duration_seconds = COALESCE(excluded.duration_seconds, attachments.duration_seconds)
     `,
     args: [
       att.id,

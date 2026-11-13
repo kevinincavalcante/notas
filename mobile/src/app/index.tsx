@@ -340,6 +340,26 @@ export default function HomeScreen() {
     return m ? m[0] : null;
   }
 
+  /** Extrai URL e possível título vindo do texto compartilhado ou do subject do Intent */
+  function parseSharedLink(text: string | null, subject?: string | null): { url: string | null; title: string | null } {
+    const url = extractFirstUrl(text);
+    if (!url) return { url: null, title: subject?.trim() || null };
+
+    let title = subject?.trim() || null;
+    if (!title && text) {
+      const idx = text.indexOf(url);
+      const beforeUrl = text.substring(0, idx).trim();
+      const cleaned = beforeUrl
+        .replace(/^(assista a|confira|olhe|veja|assista|check out)\s*[:"-]?\s*/i, "")
+        .replace(/["“”]/g, "")
+        .trim();
+      if (cleaned.length > 2) {
+        title = cleaned;
+      }
+    }
+    return { url, title };
+  }
+
   /** Nome da página via /api/metadata (og:title; YouTube via oEmbed). */
   async function fetchPageTitle(url: string): Promise<string | null> {
     try {
@@ -362,15 +382,42 @@ export default function HomeScreen() {
   async function handleSharedItems(payload: SharedPayload) {
     try {
       const { client } = await getDb();
+      const { url: sharedUrl, title: extractedTitle } = parseSharedLink(payload.text, payload.subject);
+
+      // 1. Compartilhamento de link/URL (YouTube, sites, etc.)
+      if (sharedUrl) {
+        const initialTitle = extractedTitle || "";
+        // Cria a nota com a URL limpa no corpo. Favicons/thumbnails do ClipData são descartados.
+        const id = await createNote(client, {
+          title: initialTitle || undefined,
+          body: sharedUrl,
+        });
+
+        notifyLocalChange();
+        scheduleSync();
+        void reload();
+
+        // Abre direto na tela da nota em MODO EDIÇÃO
+        router.push(`/note/${id}?mode=edit`);
+
+        // Se ainda não tinha título explícito, busca o título em segundo plano e atualiza
+        if (!initialTitle) {
+          void fetchPageTitle(sharedUrl).then(async (fetchedTitle) => {
+            if (fetchedTitle) {
+              const { client: c } = await getDb();
+              await updateNote(c, id, { title: fetchedTitle });
+              notifyLocalChange();
+              scheduleSync();
+              void reload();
+            }
+          });
+        }
+        return;
+      }
+
+      // 2. Compartilhamento de outros arquivos/imagens/texto puro (sem URL)
       const id = await createNote(client);
       let body = payload.text ?? "";
-
-      // Link compartilhado: título da nota = nome da página (og:title)
-      const sharedUrl = extractFirstUrl(payload.text);
-      if (sharedUrl && payload.files.length === 0) {
-        const title = await fetchPageTitle(sharedUrl);
-        if (title) await updateNote(client, id, { title });
-      }
 
       for (const file of payload.files) {
         let uri = file.uri;
@@ -401,7 +448,7 @@ export default function HomeScreen() {
       }
       scheduleSync();
       void reload();
-      router.push(`/note/${id}`);
+      router.push(`/note/${id}?mode=edit`);
     } catch (e) {
       console.warn("Falha ao receber compartilhamento:", e);
       Alert.alert(

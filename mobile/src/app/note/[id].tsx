@@ -111,7 +111,24 @@ export default function NoteScreen() {
     loadAtts();
   }, [loadAtts]);
 
-  useEffect(() => onSynced(loadAtts), [loadAtts]);
+  useEffect(() => {
+    return onSynced(async () => {
+      loadAtts();
+      if (noteId) {
+        try {
+          const { client } = await getDb();
+          const fresh = await getNote(client, noteId);
+          if (fresh && fresh.title && !latestRef.current.title) {
+            setTitle(fresh.title);
+            latestRef.current.title = fresh.title;
+            if (savedRef.current) savedRef.current.title = fresh.title;
+          }
+        } catch {
+          // ignore
+        }
+      }
+    });
+  }, [loadAtts, noteId]);
 
   const imageAttachments = attachments.filter((a) => a.mime_type.startsWith("image/"));
   const audioAttachments = attachments.filter((a) => a.mime_type.startsWith("audio/"));
@@ -228,15 +245,18 @@ export default function NoteScreen() {
     })();
   }, [noteId]);
 
-  // Volta pro modo leitura quando entra em edição (gesto de voltar do Android)
+  // Gesto ou botão de voltar do Android: salva imediatamente e sai da tela
   useEffect(() => {
-    if (mode !== "edit") return;
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
-      switchToRead();
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      void flushSave().finally(() => router.back());
       return true;
     });
     return () => sub.remove();
-  }, [mode]);
+  }, [flushSave, router]);
 
   const switchToRead = useCallback(() => {
     void flushSave();

@@ -15,7 +15,7 @@ import java.io.FileOutputStream
  * Recebe compartilhamentos de outros apps ("Compartilhar → Notas").
  *
  * - ACTION_SEND / ACTION_SEND_MULTIPLE chegam no MainActivity (intent filters
- *   no AndroidManifest). Aqui extraímos EXTRA_TEXT e EXTRA_STREAM/ClipData,
+ *   no AndroidManifest). Aqui extraímos EXTRA_TEXT, EXTRA_SUBJECT e EXTRA_STREAM/ClipData,
  *   copiamos os arquivos de content:// pro cache do app e devolvemos ao JS.
  * - Cold start: JS chama getShared() no mount.
  * - App já aberto (launchMode singleTask): OnNewIntent emite o evento
@@ -45,7 +45,7 @@ class ShareReceiverModule : Module() {
     }
   }
 
-  /** Extrai texto e arquivos do intent de compartilhamento (ou null se não for um). */
+  /** Extrai texto, título/assunto e arquivos do intent de compartilhamento (ou null se não for um). */
   private fun extract(intent: Intent?): Map<String, Any?>? {
     if (intent == null) return null
     val action = intent.action
@@ -55,6 +55,7 @@ class ShareReceiverModule : Module() {
     val type = intent.type ?: ""
 
     val text = intent.getStringExtra(Intent.EXTRA_TEXT)
+    val subject = intent.getStringExtra(Intent.EXTRA_SUBJECT)
 
     val uris = mutableListOf<Uri>()
     if (action == Intent.ACTION_SEND_MULTIPLE) {
@@ -95,8 +96,12 @@ class ShareReceiverModule : Module() {
       }
     }
 
-    if (text.isNullOrBlank() && files.isEmpty()) return null
-    return mapOf("text" to text, "files" to files)
+    if (text.isNullOrBlank() && files.isEmpty() && subject.isNullOrBlank()) return null
+    return mapOf(
+      "text" to text,
+      "subject" to subject,
+      "files" to files
+    )
   }
 
   /** Nome de exibição de um content:// via ContentResolver (OpenableColumns). */
@@ -118,6 +123,7 @@ class ShareReceiverModule : Module() {
   private fun clearExtras(intent: Intent) {
     try {
       intent.removeExtra(Intent.EXTRA_TEXT)
+      intent.removeExtra(Intent.EXTRA_SUBJECT)
       intent.removeExtra(Intent.EXTRA_STREAM)
       intent.clipData = null
     } catch (e: Exception) {
