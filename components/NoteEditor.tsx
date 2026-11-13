@@ -965,7 +965,7 @@ export default function NoteEditor({
                 onChange={handleBodyChange}
                 onKeyDown={handleTextareaKeyDown}
                 onBlur={flushSave}
-                placeholder="Escreva algo... (Cole imagens com Ctrl+V ou arraste do sistema, use markdown livremente)"
+                placeholder="Escreva algo..."
                 className="w-full h-full p-4 text-sm font-mono bg-white/40 dark:bg-black/20 rounded-2xl border border-black/5 dark:border-white/5 outline-none resize-none text-slate-800 dark:text-slate-100 placeholder-slate-400 leading-relaxed focus:ring-1 focus:ring-amber-400/50 overflow-y-auto"
               />
             </div>
