@@ -130,6 +130,31 @@ export default function NoteScreen() {
     });
   }, [loadAtts, noteId]);
 
+  // Modo leitura: srcs de imagem do corpo resolvidos pro cache LOCAL
+  // (a WebView não tem JWT pra autenticar contra a API remota)
+  const [bodyImgUris, setBodyImgUris] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const ids = new Set<string>();
+      for (const m of body.matchAll(/\/api\/attachments\/([0-9a-fA-F-]+)/g)) {
+        ids.add(m[1]);
+      }
+      const map: Record<string, string> = {};
+      for (const id of ids) {
+        const att = attachments.find((a) => a.id === id);
+        if (!att) continue;
+        const uri = await cacheAttachment(att);
+        if (uri) map[id] = uri;
+      }
+      if (active) setBodyImgUris(map);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [body, attachments]);
+
   const imageAttachments = attachments.filter((a) => a.mime_type.startsWith("image/"));
   const audioAttachments = attachments.filter((a) => a.mime_type.startsWith("audio/"));
   const fileAttachments = attachments.filter(
@@ -576,11 +601,12 @@ export default function NoteScreen() {
             </View>
           )}
           <WebView
-            source={{ html: bodyToHtml(body), baseUrl: apiRef.current?.baseUrl }}
+            source={{ html: bodyToHtml(body, bodyImgUris), baseUrl: "file:///" }}
             style={styles.readBody}
             backgroundColor="transparent"
             javaScriptEnabled={false}
             originWhitelist={["*"]}
+            allowFileAccess={true}
             setSupportMultipleWindows={false}
             onShouldStartLoadWithRequest={(req) => {
               // Links do markdown abrem no navegador do sistema

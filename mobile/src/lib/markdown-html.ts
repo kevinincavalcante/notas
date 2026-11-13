@@ -12,8 +12,18 @@ import { marked } from "marked";
 
 marked.use({ gfm: true, breaks: true });
 
-export function bodyToHtml(body: string): string {
-  const content = marked.parse(body || "", { async: false });
+export function bodyToHtml(body: string, imgUris: Record<string, string> = {}): string {
+  let content = marked.parse(body || "", { async: false }) as string;
+  // Imagens do corpo: resolve do cache LOCAL (file://). A WebView do modo
+  // leitura não tem cookie nem header Bearer pra pedir /api/attachments na
+  // API remota — o proxy devolvia 401 e a foto aparecia quebrada (alt text).
+  if (Object.keys(imgUris).length > 0) {
+    content = content.replace(
+      /(<img[^>]+src=")\/api\/attachments\/([0-9a-fA-F-]+)(")/g,
+      (m, pre: string, id: string, pos: string) =>
+        imgUris[id] ? `${pre}${imgUris[id]}${pos}` : m
+    );
+  }
   return `<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <style>
