@@ -8,25 +8,41 @@ export default function NoteCard({
   tags,
   onPress,
   onLongPress,
+  selectionMode = false,
+  selected = false,
 }: {
   note: NoteRow;
   tags: string[];
   onPress: () => void;
   onLongPress: () => void;
+  selectionMode?: boolean;
+  selected?: boolean;
 }) {
   const preview = note.body.replace(/[#>*`\-_[\]()!]/g, " ").replace(/\s+/g, " ").trim();
   return (
     <Pressable
       onPress={onPress}
-      onLongPress={onLongPress}
+      onLongPress={selectionMode ? undefined : onLongPress}
       delayLongPress={350}
-      style={({ pressed }) => [styles.block, { backgroundColor: colorBg(note.color) }, pressed && styles.pressed]}
+      style={({ pressed }) => [
+        styles.block,
+        { backgroundColor: colorBg(note.color) },
+        selected && styles.selected,
+        pressed && styles.pressed,
+      ]}
     >
       <View style={styles.titleRow}>
-        <Text style={styles.title} numberOfLines={1}>
-          {note.title || "Sem título"}
-        </Text>
-        {Boolean(note.is_pinned) && <Text style={styles.pin}>📌</Text>}
+        {selectionMode && (
+          <View style={[styles.checkCircle, selected && styles.checkCircleOn]}>
+            {selected && <Text style={styles.checkIcon}>✓</Text>}
+          </View>
+        )}
+        <View style={styles.titleWrap}>
+          <Text style={styles.title} numberOfLines={1}>
+            {note.title || "Sem título"}
+          </Text>
+          {Boolean(note.is_pinned) && !selectionMode && <Text style={styles.pin}>📌</Text>}
+        </View>
       </View>
       {preview.length > 0 && <Text style={styles.preview} numberOfLines={3}>{preview}</Text>}
       {tags.length > 0 && (
@@ -52,6 +68,10 @@ const styles = StyleSheet.create({
     paddingBottom: 14,
     marginBottom: 10,
   },
+  selected: {
+    borderColor: "#fbbf24",
+    borderWidth: 2,
+  },
   pressed: {
     opacity: 0.85,
     transform: [{ scale: 0.99 }],
@@ -60,6 +80,29 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+  },
+  titleWrap: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  checkCircle: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: "#71717a",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  checkCircleOn: {
+    backgroundColor: "#fbbf24",
+    borderColor: "#fbbf24",
+  },
+  checkIcon: {
+    color: "#18181b",
+    fontSize: 13,
+    fontWeight: "700",
   },
   title: {
     color: "#fafafa",

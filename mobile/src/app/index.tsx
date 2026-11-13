@@ -44,7 +44,7 @@ import {
   login,
   setApiUrl,
 } from "../lib/api";
-import { getLastSync, onSynced, scheduleQuietSync, setLocalClientProvider, syncQuiet, type SyncApiConfig } from "../lib/sync";
+import { getLastSync, notifyLocalChange, onSynced, scheduleQuietSync, setLocalClientProvider, syncQuiet, type SyncApiConfig } from "../lib/sync";
 
 /**
  * Home — estilo OneNote: blocos com as notas recentes e chips de
@@ -81,6 +81,9 @@ export default function HomeScreen() {
 
   // menu de ações (long-press)
   const [sheetNote, setSheetNote] = useState<NoteRow | null>(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deletingSel, setDeletingSel] = useState(false);
   const [createSheetOpen, setCreateSheetOpen] = useState(false);
 
   const reload = useCallback(async () => {
@@ -204,6 +207,14 @@ export default function HomeScreen() {
           },
         },
         {
+          label: "Selecionar",
+          onPress: () => {
+            setSheetNote(null);
+            setSelectionMode(true);
+            setSelectedIds(new Set([sheetNoteRef.id]));
+          },
+        },
+        {
           label: "Excluir",
           destructive: true,
           onPress: () => {
@@ -284,12 +295,82 @@ export default function HomeScreen() {
     }
   }
 
+  /** Exclui todas as notas selecionadas (com confirmação). */
+  async function handleDeleteSelected() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    Alert.alert(
+      "Excluir notas",
+      `${ids.length} nota${ids.length === 1 ? "" : "s"} será${ids.length === 1 ? "" : "ão"} excluída${ids.length === 1 ? "" : "s"} em todos os dispositivos.`,
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Excluir",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              setDeletingSel(true);
+              try {
+                const { client } = await getDb();
+                for (const id of ids) {
+                  await deleteNote(client, id);
+                }
+                notifyLocalChange();
+                scheduleSync();
+                void reload();
+                setSelectionMode(false);
+                setSelectedIds(new Set());
+              } catch (e) {
+                console.warn("Falha ao excluir selecionadas:", e);
+                Alert.alert("Excluir", "Não foi possível excluir todas as notas selecionadas.");
+              } finally {
+                setDeletingSel(false);
+              }
+            })();
+          },
+        },
+      ]
+    );
+  }
+
+  /** Primeiro link no texto compartilhado (ou null). */
+  function extractFirstUrl(text: string | null): string | null {
+    if (!text) return null;
+    const m = text.match(/https?:\/\/[^\s]+/i);
+    return m ? m[0] : null;
+  }
+
+  /** Nome da página via /api/metadata (og:title; YouTube via oEmbed). */
+  async function fetchPageTitle(url: string): Promise<string | null> {
+    try {
+      const api = await getSyncApi();
+      if (!api) return null;
+      const res = await fetch(
+        `${api.baseUrl}/api/metadata?url=${encodeURIComponent(url)}`,
+        { headers: { Authorization: `Bearer ${api.token}` } }
+      );
+      if (!res.ok) return null;
+      const data = (await res.json()) as { title?: string };
+      return typeof data.title === "string" && data.title.trim() ? data.title.trim() : null;
+    } catch (e) {
+      console.warn("Metadata do link falhou:", e);
+      return null;
+    }
+  }
+
   /** Itens compartilhados de outros apps ("Compartilhar → Notas"). */
   async function handleSharedItems(payload: SharedPayload) {
     try {
       const { client } = await getDb();
       const id = await createNote(client);
       let body = payload.text ?? "";
+
+      // Link compartilhado: título da nota = nome da página (og:title)
+      const sharedUrl = extractFirstUrl(payload.text);
+      if (sharedUrl && payload.files.length === 0) {
+        const title = await fetchPageTitle(sharedUrl);
+        if (title) await updateNote(client, id, { title });
+      }
 
       for (const file of payload.files) {
         let uri = file.uri;
@@ -466,24 +547,77 @@ export default function HomeScreen() {
           <NoteCard
             note={item}
             tags={tagsByNote[item.id] || []}
-            onPress={() => router.push(`/note/${item.id}`)}
+            selectionMode={selectionMode}
+            selected={selectedIds.has(item.id)}
+            onPress={() => {
+              if (selectionMode) {
+                setSelectedIds((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(item.id)) next.delete(item.id);
+                  else next.add(item.id);
+                  return next;
+                });
+              } else {
+                router.push(`/note/${item.id}`);
+              }
+            }}
             onLongPress={() => setSheetNote(item)}
           />
         )}
       />
 
-      {/* FAB flutuante estilo Joplin: + abre os atalhos de criação */}
-      <Pressable
-        style={({ pressed }) => [
-          styles.fab,
-          { position: "absolute", right: 20, bottom: 24 + insets.bottom },
-          pressed && { transform: [{ scale: 0.95 }] },
-        ]}
-        onPress={() => setCreateSheetOpen(true)}
-        accessibilityLabel="Criar nova nota"
-      >
-        <Text style={styles.fabText}>＋</Text>
-      </Pressable>
+      {/* Modo seleção: barra de ações em massa no lugar do FAB */}
+      {selectionMode && (
+        <View
+          style={[
+            styles.selectionBar,
+            { bottom: 24 + insets.bottom },
+          ]}
+        >
+          <Text style={styles.selectionCount}>
+            {selectedIds.size} selecionada{selectedIds.size === 1 ? "" : "s"}
+          </Text>
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <Pressable
+              style={({ pressed }) => [styles.selBtn, pressed && { opacity: 0.8 }]}
+              onPress={() => {
+                setSelectionMode(false);
+                setSelectedIds(new Set());
+              }}
+              disabled={deletingSel}
+            >
+              <Text style={styles.selBtnText}>✕</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [
+                styles.selBtn,
+                styles.selDelete,
+                pressed && { opacity: 0.8 },
+              ]}
+              onPress={() => void handleDeleteSelected()}
+              disabled={deletingSel || selectedIds.size === 0}
+            >
+              <Text style={[styles.selBtnText, styles.selDeleteText]}>
+                🗑 {deletingSel ? "…" : "Excluir"}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+
+      {!selectionMode && (
+        <Pressable
+          style={({ pressed }) => [
+            styles.fab,
+            { position: "absolute", right: 20, bottom: 24 + insets.bottom },
+            pressed && { transform: [{ scale: 0.95 }] },
+          ]}
+          onPress={() => setCreateSheetOpen(true)}
+          accessibilityLabel="Criar nova nota"
+        >
+          <Text style={styles.fabText}>＋</Text>
+        </Pressable>
+      )}
 
       <ActionSheet visible={Boolean(sheetNote)} items={sheetItems} onClose={() => setSheetNote(null)} />
       <ActionSheet
@@ -502,8 +636,7 @@ export default function HomeScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
+  root: {    flex: 1,
     backgroundColor: "#101012",
   },
   center: {
@@ -612,5 +745,47 @@ const styles = StyleSheet.create({
     fontSize: 26,
     fontWeight: "700",
     marginTop: -2,
+  },
+  selectionBar: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#1f1f23",
+    borderWidth: 1,
+    borderColor: "#2c2c31",
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    shadowColor: "#000",
+    shadowOpacity: 0.4,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+  selectionCount: {
+    color: "#e4e4e7",
+    fontSize: 14,
+  },
+  selBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: "#27272a",
+  },
+  selDelete: {
+    backgroundColor: "#450a0a",
+    borderWidth: 1,
+    borderColor: "#ef4444",
+  },
+  selBtnText: {
+    color: "#e4e4e7",
+    fontSize: 14,
+  },
+  selDeleteText: {
+    color: "#f87171",
+    fontWeight: "600",
   },
 });
