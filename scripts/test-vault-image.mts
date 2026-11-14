@@ -59,7 +59,15 @@ try {
   const dek = openVaultMaterial("img-test-pw", material)!.dek;
 
   // 2. nota cifrada
-  const noteRes = await fetch(`${BASE}/api/notes`, {\n    method: "POST",\n    headers: { ...H, "Content-Type": "application/json" },\n    body: JSON.stringify({\n      title: encryptString(dek, "Nota com imagem"),\n      body: encryptString(dek, "corpo"),\n      is_vault: true,\n    }),\n  });
+  const noteRes = await fetch(`${BASE}/api/notes`, {
+    method: "POST",
+    headers: { ...H, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      title: encryptString(dek, "Nota com imagem"),
+      body: encryptString(dek, "corpo"),
+      is_vault: true,
+    }),
+  });
   const note = (await noteRes.json()).note;
 
   // 3. upload cifrado (exatamente como o cliente web faz)
