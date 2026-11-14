@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/turso";
 import { logChange } from "@/lib/sync-log";
+import { deleteAttachmentFile } from "@/lib/storage";
 
 /**
  * Material do cofre (vault_meta): salt + iterações + DEK embrulhada.
@@ -84,13 +85,43 @@ export async function DELETE() {
       sql: `DELETE FROM vault_meta WHERE id = ?`,
       args: [VAULT_ID],
     });
-    // Remove notas marcadas como cofre que ficaram órfãs
-    await db.execute({
-      sql: `DELETE FROM notes WHERE is_vault = 1`,
+    // Remove as notas do cofre COM TOMBSTONE — sem isso as réplicas
+    // (celular/desktop) manteriam as notas fantasmas para sempre, e os
+    // binários dos anexos ficariam órfãos no R2.
+    const vaultNotes = await db.execute({
+      sql: `SELECT id FROM notes WHERE is_vault = 1`,
       args: [],
     });
+    for (const row of vaultNotes.rows) {
+      const noteId = row.id as string;
+      // 1. Anexos da nota: binários fora do storage + linhas
+      const atts = await db.execute({
+        sql: `SELECT id, storage_key FROM attachments WHERE note_id = ?`,
+        args: [noteId],
+      });
+      await Promise.allSettled(
+        atts.rows.map(async (att) => {
+          try {
+            await deleteAttachmentFile(att.storage_key as string);
+          } catch (e) {
+            console.warn(`Aviso ao excluir binário do anexo ${att.id}:`, e);
+          }
+        })
+      );
+      // 2. Tombstone ANTES do DELETE da nota: as réplicas removem a cópia local
+      await db.execute({
+        sql: `
+          INSERT INTO tombstones (id, entity, deleted_at)
+          VALUES (?, 'note', ?)
+          ON CONFLICT(id) DO UPDATE SET deleted_at = MAX(deleted_at, excluded.deleted_at)
+        `,
+        args: [noteId, Date.now()],
+      });
+      await db.execute({ sql: `DELETE FROM notes WHERE id = ?`, args: [noteId] });
+      await logChange("tombstone", noteId, "delete");
+    }
     await logChange("vault_meta", VAULT_ID, "delete");
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, removed: vaultNotes.rows.length });
   } catch (error) {
     console.error("Erro ao resetar material do cofre:", error);
     return NextResponse.json({ error: "Erro ao resetar material do cofre" }, { status: 500 });
