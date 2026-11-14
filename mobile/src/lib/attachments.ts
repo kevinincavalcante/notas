@@ -212,6 +212,9 @@ export async function uploadAttachment(input: UploadInput): Promise<AttachmentRo
 let isProcessingQueue = false;
 let queueTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** Tentativas por item antes de desistir (e deixar a fila seguir). */
+const MAX_ITEM_RETRIES = 10;
+
 /** Agenda um processamento da fila de anexos pendentes com debounce */
 export function triggerPendingUploads(delayMs = 300): void {
   if (queueTimer) clearTimeout(queueTimer);
@@ -336,21 +339,38 @@ export async function processPendingUploads(): Promise<void> {
         } else {
           const err = data.error || `Upload falhou status ${res.status}`;
           console.warn(`[Sync Anexos] Falha no upload de ${item.id}:`, err);
+          const retries = (item.retries || 0) + 1;
           await client.execute({
-            sql: `UPDATE pending_attachments SET retries = retries + 1, last_error = ? WHERE id = ?`,
-            args: [err, item.id],
+            sql: `UPDATE pending_attachments SET retries = ?, last_error = ? WHERE id = ?`,
+            args: [retries, err, item.id],
           });
-          // Se for erro temporário (ex: 404 porque nota ainda está sincronizando), reagenda retry
+          if (retries >= MAX_ITEM_RETRIES) {
+            // Item envenenado (falha determinística, ex.: anexo do cofre velho
+            // ou nota apagada): SAI DA FILA pra não travar as mídias novas.
+            // O anexo fica no SQLite (chip some da nota — o binário não subiu).
+            await client.execute({ sql: `DELETE FROM pending_attachments WHERE id = ?`, args: [item.id] });
+            console.warn(`[Sync Anexos] ${item.id} desistido após ${retries} tentativas — fila segue.`);
+            continue;
+          }
+          // Erro temporário (ex: 404 porque nota ainda está sincronizando): reagenda
           triggerPendingUploads(3000);
           break;
         }
       } catch (uploadErr) {
         const msg = uploadErr instanceof Error ? uploadErr.message : String(uploadErr);
         console.warn(`[Sync Anexos] Erro de rede no upload de ${item.id}:`, msg);
+        const retries = (item.retries || 0) + 1;
         await client.execute({
-          sql: `UPDATE pending_attachments SET retries = retries + 1, last_error = ? WHERE id = ?`,
-          args: [msg, item.id],
+          sql: `UPDATE pending_attachments SET retries = ?, last_error = ? WHERE id = ?`,
+          args: [retries, msg, item.id],
         });
+        if (retries >= MAX_ITEM_RETRIES) {
+          // Mesmo erro de rede por muitas rodadas: desiste do item e segue a
+          // fila (o app recria a pendência se o arquivo ainda existir).
+          await client.execute({ sql: `DELETE FROM pending_attachments WHERE id = ?`, args: [item.id] });
+          console.warn(`[Sync Anexos] ${item.id} desistido após ${retries} tentativas de rede — fila segue.`);
+          continue;
+        }
         // Erro de rede: para a fila e agenda retry com backoff
         triggerPendingUploads(8000);
         break;
