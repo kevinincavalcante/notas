@@ -3,18 +3,18 @@ import * as LocalAuthentication from "expo-local-authentication";
 import * as SecureStore from "expo-secure-store";
 import { AppState } from "react-native";
 import { getSyncApi } from "./api";
-import type { AttachmentRow, NoteRow } from "./db";
+import { getDb, type AttachmentRow, type NoteRow } from "./db";
 import type { NoteVersionItem } from "./versions";
 import {
   base64ToBytes,
   bytesToBase64,
-  createVaultMaterial,
+  createVaultMaterialAsync,
   decryptBytes,
   decryptString,
   encryptString,
   isEncrypted,
-  openVaultMaterial,
-  rewrapDek,
+  openVaultMaterialAsync,
+  rewrapDekAsync,
   setVaultRandomSource,
   DEFAULT_ITERATIONS,
 } from "../../../lib/vault-crypto";
@@ -70,50 +70,138 @@ export function getVaultDek(): Uint8Array | null {
   return dek;
 }
 
-// ---- Material do cofre (remoto) ----
+// ---- Material do cofre (local e remoto) ----
 
-/** Lê o material do cofre na API. Sem cofre criado (setup) → null. */
+/**
+ * Lê o material do cofre: prioriza o SQLite local para acesso instantâneo e offline.
+ * Se não houver localmente, busca da API remota e salva no SQLite.
+ */
 export async function getVaultMeta(): Promise<VaultMeta | null> {
-  const api = await getSyncApi();
-  if (!api) throw new Error("Sem sessão — conecte para acessar o cofre.");
-  const res = await fetch(`${api.baseUrl}/api/vault`, {
-    headers: { Authorization: `Bearer ${api.token}` },
-  });
-  if (!res.ok) throw new Error(`Falha ao ler o cofre (${res.status})`);
-  const data = (await res.json()) as { setup?: boolean; vault_meta?: VaultMeta };
-  if (data.setup || !data.vault_meta) return null;
-  return data.vault_meta;
+  // 1. Tenta carregar do SQLite local primeiro (offline-first)
+  try {
+    const { client } = await getDb();
+    const local = await client.execute({
+      sql: `SELECT id, salt, iterations, kdf, wrapped_dek, updated_at FROM vault_meta WHERE id = 'default'`,
+      args: [],
+    });
+    if (local.rows.length > 0) {
+      const row = local.rows[0] as unknown as VaultMeta;
+      if (row.salt && row.wrapped_dek) {
+        // Tenta sincronizar silenciosamente em background se houver rede
+        void refreshVaultMetaFromRemote().catch(() => {});
+        return row;
+      }
+    }
+  } catch (e) {
+    console.warn("Erro ao ler vault_meta do banco local:", e);
+  }
+
+  // 2. Se não tinha no SQLite local, busca na API
+  return await refreshVaultMetaFromRemote();
 }
 
-/** Grava o material do cofre. 409 (material mais novo já existia) → erro "conflict". */
+/** Busca da API e salva na réplica local se for mais recente */
+async function refreshVaultMetaFromRemote(): Promise<VaultMeta | null> {
+  try {
+    const api = await getSyncApi();
+    if (!api) return null;
+    const res = await fetch(`${api.baseUrl}/api/vault`, {
+      headers: { Authorization: `Bearer ${api.token}` },
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { setup?: boolean; vault_meta?: VaultMeta };
+    if (data.setup || !data.vault_meta) return null;
+
+    const remoteMeta = data.vault_meta;
+    // Grava no SQLite local para acessos futuros
+    try {
+      const { client } = await getDb();
+      await client.execute({
+        sql: `
+          INSERT INTO vault_meta (id, salt, iterations, kdf, wrapped_dek, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            salt = excluded.salt,
+            iterations = excluded.iterations,
+            kdf = excluded.kdf,
+            wrapped_dek = excluded.wrapped_dek,
+            updated_at = excluded.updated_at
+          WHERE excluded.updated_at > vault_meta.updated_at OR vault_meta.updated_at IS NULL
+        `,
+        args: [
+          remoteMeta.id || "default",
+          remoteMeta.salt,
+          remoteMeta.iterations,
+          remoteMeta.kdf || "PBKDF2-SHA256",
+          remoteMeta.wrapped_dek,
+          remoteMeta.updated_at || Date.now(),
+        ],
+      });
+    } catch (saveErr) {
+      console.warn("Falha ao salvar vault_meta recebido da API no SQLite local:", saveErr);
+    }
+
+    return remoteMeta;
+  } catch {
+    return null;
+  }
+}
+
+/** Grava o material do cofre tanto no SQLite local quanto no servidor remoto. */
 export async function saveVaultMeta(material: VaultMaterial): Promise<void> {
-  const api = await getSyncApi();
-  if (!api) throw new Error("Sem sessão — conecte para acessar o cofre.");
-  const res = await fetch(`${api.baseUrl}/api/vault`, {
-    method: "PUT",
-    headers: { Authorization: `Bearer ${api.token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      salt: material.salt,
-      iterations: material.iterations,
-      kdf: material.kdf,
-      wrapped_dek: material.wrapped_dek,
-      updated_at: material.updated_at,
-    }),
+  const { client } = await getDb();
+  await client.execute({
+    sql: `
+      INSERT INTO vault_meta (id, salt, iterations, kdf, wrapped_dek, updated_at)
+      VALUES ('default', ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        salt = excluded.salt,
+        iterations = excluded.iterations,
+        kdf = excluded.kdf,
+        wrapped_dek = excluded.wrapped_dek,
+        updated_at = excluded.updated_at
+    `,
+    args: [
+      material.salt,
+      material.iterations,
+      material.kdf,
+      material.wrapped_dek,
+      material.updated_at,
+    ],
   });
-  if (res.status === 409) throw new Error("conflict");
-  if (!res.ok) throw new Error(`Falha ao salvar o cofre (${res.status})`);
+
+  const api = await getSyncApi();
+  if (api) {
+    const res = await fetch(`${api.baseUrl}/api/vault`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${api.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        salt: material.salt,
+        iterations: material.iterations,
+        kdf: material.kdf,
+        wrapped_dek: material.wrapped_dek,
+        updated_at: material.updated_at,
+      }),
+    });
+    if (res.status === 409) throw new Error("conflict");
+    if (!res.ok) throw new Error(`Falha ao salvar o cofre (${res.status})`);
+  }
 }
 
 // ---- Destravar / travar / setup ----
 
 /** Abre o cofre com a senha. false = senha errada (ou sem cofre criado). */
 export async function unlockVault(password: string): Promise<boolean> {
-  const meta = await getVaultMeta();
-  if (!meta) return false;
-  const opened = openVaultMaterial(password, meta);
+  let meta = await getVaultMeta();
+  if (!meta) {
+    // Se não há meta em lugar nenhum, inicializa o cofre com esta senha
+    return await setupVault(password);
+  }
+  const opened = await openVaultMaterialAsync(password, meta);
   if (!opened) return false;
   dek = opened.dek;
   notifyVaultChanged();
+
   // Com biometria ligada, regrava a DEK no SecureStore — o material pode ter
   // mudado (troca de senha em outro device) e a cópia antiga fica inválida.
   if (await isBiometricEnabled()) {
@@ -124,7 +212,7 @@ export async function unlockVault(password: string): Promise<boolean> {
 
 /** Cria o cofre (primeira vez): material novo + PUT + destrava na hora. */
 export async function setupVault(password: string): Promise<boolean> {
-  const material = createVaultMaterial(password);
+  const material = await createVaultMaterialAsync(password);
   await saveVaultMeta({
     salt: material.salt,
     iterations: material.iterations,
@@ -156,9 +244,9 @@ export async function changeVaultPassword(
   if (!dek) return false;
   const meta = await getVaultMeta();
   if (!meta) return false;
-  const check = openVaultMaterial(currentPassword, meta);
+  const check = await openVaultMaterialAsync(currentPassword, meta);
   if (!check) return false;
-  const rewrapped = rewrapDek(
+  const rewrapped = await rewrapDekAsync(
     dek,
     newPassword,
     iterations ?? meta.iterations ?? DEFAULT_ITERATIONS
@@ -231,7 +319,7 @@ export async function unlockWithBiometric(): Promise<boolean> {
   }
 }
 
-// ---- Auto-lock: backgroud > 5 minutos trava o cofre ----
+// ---- Auto-lock: background > 5 minutos trava o cofre ----
 
 const AUTO_LOCK_MS = 5 * 60 * 1000;
 

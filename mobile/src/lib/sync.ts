@@ -36,7 +36,7 @@ export function notifyLocalChange(): void {
   subs.forEach((fn) => fn());
 }
 
-let inFlight = false;
+let activeSyncPromise: Promise<boolean> | null = null;
 let lastResult: ReplicaSyncResult | null = null;
 let lastError: string | null = null;
 
@@ -45,24 +45,28 @@ export function getLastSync(): { result: ReplicaSyncResult | null; error: string
 }
 
 /**
- * Um ciclo silencioso — barra múltiplas chamadas em paralelo e avisa
- * as telas no fim. Falha só registra (tenta de novo na próxima).
+ * Um ciclo silencioso — barra múltiplas chamadas em paralelo aguardando o ciclo
+ * ativo terminar e avisa as telas no fim. Falha só registra (tenta de novo na próxima).
  */
 export async function syncQuiet(api: SyncApiConfig): Promise<boolean> {
-  if (inFlight) return false;
-  inFlight = true;
-  try {
-    const client = await clientProvider();
-    lastResult = await syncOnceHttp(client, api);
-    lastError = null;
-    subs.forEach((fn) => fn());
-    return true;
-  } catch (e) {
-    lastError = e instanceof Error ? e.message : String(e);
-    return false;
-  } finally {
-    inFlight = false;
-  }
+  if (activeSyncPromise) return activeSyncPromise;
+
+  activeSyncPromise = (async () => {
+    try {
+      const client = await clientProvider();
+      lastResult = await syncOnceHttp(client, api);
+      lastError = null;
+      subs.forEach((fn) => fn());
+      return true;
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e);
+      return false;
+    } finally {
+      activeSyncPromise = null;
+    }
+  })();
+
+  return activeSyncPromise;
 }
 
 let timer: ReturnType<typeof setTimeout> | null = null;

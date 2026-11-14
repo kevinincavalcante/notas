@@ -30,6 +30,39 @@ export function clearVaultMediaCache(): void {
   mediaCache.clear();
 }
 
+/** Detecta o tipo MIME inspecionando os primeiros bytes do arquivo. */
+export function detectMimeFromBytes(bytes: Uint8Array, fallback = "application/octet-stream"): string {
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return "image/png";
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) {
+    return "image/gif";
+  }
+  if (bytes.length >= 8 && bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70) {
+    return "audio/mp4";
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) {
+    return "audio/webm";
+  }
+  return fallback;
+}
+
 /** Baixa, descriptografa e gera blob URL do anexo (idempotente por id). */
 export async function getVaultMediaUrl(
   dek: Uint8Array,
@@ -44,9 +77,22 @@ export async function getVaultMediaUrl(
     if (!res.ok) return null;
     const buf = new Uint8Array(await res.arrayBuffer());
     const plain = decryptBytes(dek, buf);
-    const blob = new Blob([plain as unknown as BlobPart], { type: mime });
+
+    let resolvedMime = mime;
+    if (isEncrypted(resolvedMime)) {
+      try {
+        resolvedMime = decryptString(dek, resolvedMime);
+      } catch {
+        resolvedMime = "application/octet-stream";
+      }
+    }
+    if (!resolvedMime || resolvedMime === "application/octet-stream") {
+      resolvedMime = detectMimeFromBytes(plain, "application/octet-stream");
+    }
+
+    const blob = new Blob([plain as unknown as BlobPart], { type: resolvedMime });
     const url = URL.createObjectURL(blob);
-    mediaCache.set(attachmentId, { url, mime });
+    mediaCache.set(attachmentId, { url, mime: resolvedMime });
     return url;
   } catch (err) {
     console.error("Falha ao descriptografar anexo do cofre:", err);
@@ -153,6 +199,11 @@ export async function uploadEncryptedFile(
     const res = await fetch("/api/attachments/upload", { method: "POST", body: form });
     const data = await res.json();
     if (res.ok && data.attachment) {
+      // Pré-popula o mediaCache com o blob local já decifrado para exibição imediata
+      const resolvedMime = opts.mimeType || detectMimeFromBytes(plain, "application/octet-stream");
+      const blobUrl = URL.createObjectURL(new Blob([plain as unknown as BlobPart], { type: resolvedMime }));
+      mediaCache.set(data.attachment.id, { url: blobUrl, mime: resolvedMime });
+
       // Metadados voltam cifrados: devolve já descriptografados pra UI
       return decryptAttachment(dek, data.attachment as Attachment);
     }

@@ -9,18 +9,18 @@ import {
   useRef,
   useState,
 } from "react";
-import { Lock, ShieldCheck, X, KeyRound, Loader2 } from "lucide-react";
+import { Lock, X, KeyRound, Loader2 } from "lucide-react";
 import {
   DEFAULT_ITERATIONS,
-  createVaultMaterial,
-  deriveKek,
-  rewrapDek,
+  createVaultMaterialAsync,
+  deriveKekAsync,
+  rewrapDekAsync,
   base64ToBytes,
   decryptBytes,
   decryptString,
   encryptBytes,
   encryptString,
-  openVaultMaterial,
+  openVaultMaterialAsync,
 } from "@/lib/vault-crypto";
 import { clearVaultMediaCache } from "@/lib/vault-client";
 import { useUI } from "@/components/UIProvider";
@@ -80,13 +80,11 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
   const [status, setStatus] = useState<VaultStatus>("loading");
   const [dek, setDek] = useState<Uint8Array | null>(null);
   const [meta, setMeta] = useState<VaultMeta | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busy] = useState(false);
 
-  // Modal de destravamento (usado por ensureUnlocked e pelo /vault)
+  // Modal de destravamento (usado por ensureUnlocked quando chamado fora de /vault)
   const [modalOpen, setModalOpen] = useState(false);
-  const [modalMode, setModalMode] = useState<"unlock" | "setup">("unlock");
   const [password, setPassword] = useState("");
-  const [password2, setPassword2] = useState("");
   const [modalError, setModalError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const modalResolveRef = useRef<((ok: boolean) => void) | null>(null);
@@ -141,31 +139,9 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
 
   // --- Ações ----------------------------------------------------------------
 
-  const doUnlock = useCallback(
-    async (pw: string, m: VaultMeta | null): Promise<boolean> => {
-      if (!m) return false;
-      const opened = openVaultMaterial(pw, m);
-      if (!opened) return false;
-      setDek(opened.dek);
-      setMeta(m);
-      setStatus("unlocked");
-      return true;
-    },
-    []
-  );
-
-  const unlock = useCallback(
-    async (password: string): Promise<boolean> => {
-      const m = meta || (await loadMeta());
-      if (!m) return false;
-      return doUnlock(password, m);
-    },
-    [meta, loadMeta, doUnlock]
-  );
-
   const setup = useCallback(
-    async (password: string): Promise<boolean> => {
-      const material = createVaultMaterial(password, DEFAULT_ITERATIONS);
+    async (pw: string): Promise<boolean> => {
+      const material = await createVaultMaterialAsync(pw, DEFAULT_ITERATIONS);
       const now = Date.now();
       try {
         const res = await fetch("/api/vault", {
@@ -208,6 +184,30 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
     [showToast, loadMeta]
   );
 
+  const doUnlock = useCallback(
+    async (pw: string, m: VaultMeta | null): Promise<boolean> => {
+      if (!m) return false;
+      const opened = await openVaultMaterialAsync(pw, m);
+      if (!opened) return false;
+      setDek(opened.dek);
+      setMeta(m);
+      setStatus("unlocked");
+      return true;
+    },
+    []
+  );
+
+  const unlock = useCallback(
+    async (pw: string): Promise<boolean> => {
+      const m = meta || (await loadMeta());
+      if (!m) {
+        return setup(pw);
+      }
+      return doUnlock(pw, m);
+    },
+    [meta, loadMeta, doUnlock, setup]
+  );
+
   const lock = useCallback(() => {
     lockRef.current();
   }, []);
@@ -215,16 +215,13 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
   const changePassword = useCallback(
     async (current: string, next: string): Promise<boolean> => {
       if (!dek || !meta) return false;
-      // Confere a senha atual: deriva e tenta desembrulhar a DEK de novo
       try {
-        const kek = deriveKek(current, base64ToBytes(meta.salt), meta.iterations);
-        const opened = openVaultMaterial(current, meta);
+        const opened = await openVaultMaterialAsync(current, meta);
         if (!opened) return false;
-        void kek;
       } catch {
         return false;
       }
-      const rewrapped = rewrapDek(dek, next, DEFAULT_ITERATIONS);
+      const rewrapped = await rewrapDekAsync(dek, next, DEFAULT_ITERATIONS);
       const now = Date.now();
       try {
         const res = await fetch("/api/vault", {
@@ -247,7 +244,6 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
         return false;
       }
       setMeta({ ...meta, salt: rewrapped.salt, iterations: rewrapped.iterations, wrapped_dek: rewrapped.wrapped_dek, updated_at: now });
-      // DEK continua válida (envelope) — nada a re-criptografar
       showToast("Senha do cofre alterada.", "success");
       return true;
     },
@@ -262,10 +258,8 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
       modalResolveRef.current = resolve;
       setModalError(null);
       setPassword("");
-      setPassword2("");
       void (async () => {
-        const m = await loadMeta();
-        setModalMode(m ? "unlock" : "setup");
+        await loadMeta();
         setModalOpen(true);
       })();
     });
@@ -278,34 +272,13 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
   }
 
   async function handleModalSubmit() {
-    if (submitting) return;
+    if (submitting || !password) return;
     setSubmitting(true);
     setModalError(null);
+    // Yield curto para o navegador pintar o spinner de carregamento
+    await new Promise((r) => setTimeout(r, 60));
     try {
-      if (modalMode === "setup") {
-        if (password.length < 4) {
-          setModalError("Use pelo menos 4 caracteres.");
-          setSubmitting(false);
-          return;
-        }
-        if (password !== password2) {
-          setModalError("As senhas não conferem.");
-          setSubmitting(false);
-          return;
-        }
-        const ok = await setup(password);
-        setSubmitting(false);
-        if (ok) {
-          closeModal(true);
-          showToast("Cofre criado e destravado.", "success");
-        } else {
-          setModalError("Não foi possível criar o cofre.");
-        }
-        return;
-      }
-      // unlock — dar tempo ao PBKDF2 não bloqueia mais nada aqui: roda sync
       const ok = await unlock(password);
-      setSubmitting(false);
       if (ok) {
         closeModal(true);
       } else {
@@ -358,16 +331,14 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2.5">
                 <div className="w-9 h-9 rounded-xl bg-amber-400/15 text-amber-500 flex items-center justify-center">
-                  {modalMode === "setup" ? <ShieldCheck className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
+                  <Lock className="w-5 h-5" />
                 </div>
                 <div>
                   <h3 className="font-semibold text-slate-900 dark:text-white text-sm">
-                    {modalMode === "setup" ? "Criar o cofre" : "Destravar o cofre"}
+                    Cofre
                   </h3>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                    {modalMode === "setup"
-                      ? "Defina a senha que protegerá estas notas."
-                      : "Digite a senha do cofre."}
+                    Digite a senha
                   </p>
                 </div>
               </div>
@@ -389,34 +360,16 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
                 onKeyDown={(e) => {
                   if (e.key === "Enter") void handleModalSubmit();
                 }}
-                placeholder={modalMode === "setup" ? "Nova senha do cofre" : "Senha do cofre"}
+                placeholder="Digite a senha"
                 className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400/60"
               />
-              {modalMode === "setup" && (
-                <input
-                  type="password"
-                  value={password2}
-                  onChange={(e) => setPassword2(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void handleModalSubmit();
-                  }}
-                  placeholder="Repita a senha"
-                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400/60"
-                />
-              )}
               {modalError && (
                 <p className="text-xs text-red-600 dark:text-red-400">{modalError}</p>
-              )}
-              {modalMode === "setup" && (
-                <p className="text-[11px] text-slate-500 dark:text-slate-500 leading-relaxed">
-                  A senha nunca sai do seu dispositivo. Se você esquecê-la, o conteúdo do cofre
-                  não pode ser recuperado — não existe redefinição.
-                </p>
               )}
               <button
                 type="button"
                 onClick={() => void handleModalSubmit()}
-                disabled={submitting}
+                disabled={submitting || !password}
                 className="w-full flex items-center justify-center gap-2 py-2.5 bg-amber-400 hover:bg-amber-300 active:bg-amber-500 text-slate-950 font-semibold text-sm rounded-xl transition disabled:opacity-60"
               >
                 {submitting ? (
@@ -424,11 +377,7 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
                 ) : (
                   <KeyRound className="w-4 h-4" />
                 )}
-                {submitting
-                  ? "Derivando chave…"
-                  : modalMode === "setup"
-                  ? "Criar cofre"
-                  : "Destravar"}
+                {submitting ? "Abrindo cofre…" : "Abrir cofre"}
               </button>
             </div>
           </div>

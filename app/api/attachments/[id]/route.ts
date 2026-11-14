@@ -29,7 +29,10 @@ export async function GET(
 
     const attachment = result.rows[0];
     const fileId = attachment.storage_key as string;
-    const mimeType = (attachment.mime_type as string) || "application/octet-stream";
+    const rawMime = (attachment.mime_type as string) || "application/octet-stream";
+    // Anexos do cofre guardam mime cifrado no banco ("enc1:...") — o binário no storage
+    // é ciphertext puro, portanto o cabeçalho HTTP deve ser neutro (application/octet-stream)
+    const mimeType = rawMime.startsWith("enc1:") ? "application/octet-stream" : rawMime;
     const fileSize = attachment.file_size as number;
 
     const rangeHeader = request.headers.get("range") || undefined;
@@ -155,8 +158,11 @@ async function proxyAttachmentStream(request: NextRequest, id: string) {
     );
   }
 
+  const rawContentType = upstream.headers.get("content-type") || "application/octet-stream";
+  const contentType = rawContentType.startsWith("enc1:") ? "application/octet-stream" : rawContentType;
+
   const headers: Record<string, string> = {
-    "Content-Type": upstream.headers.get("content-type") || "application/octet-stream",
+    "Content-Type": contentType,
     "Accept-Ranges": "bytes",
     "Cache-Control": "private, max-age=31536000, immutable",
   };

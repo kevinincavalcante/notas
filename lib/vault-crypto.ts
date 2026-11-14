@@ -154,7 +154,7 @@ export function decryptBytes(dek: Uint8Array, data: Uint8Array): Uint8Array {
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_KDF = "PBKDF2-SHA256";
-export const DEFAULT_ITERATIONS = 310_000;
+export const DEFAULT_ITERATIONS = 100_000;
 
 export interface VaultKek {
   kek: Uint8Array;
@@ -162,7 +162,44 @@ export interface VaultKek {
   iterations: number;
 }
 
-/** Deriva a KEK da senha (PBKDF2-SHA256, 32 bytes). Bloqueante — ~1s em desktop. */
+/**
+ * Deriva a KEK de forma assíncrona.
+ * Usa Web Crypto API nativa (crypto.subtle) quando disponível (executa em C++ multithread sem travar a UI).
+ * Faz fallback suave para noble/hashes caso subtle não esteja acessível.
+ */
+export async function deriveKekAsync(password: string, salt: Uint8Array, iterations: number): Promise<Uint8Array> {
+  if (iterations < 10_000) throw new Error("Iterações do KDF baixas demais");
+
+  const g = globalThis as { crypto?: { subtle?: { importKey: Function; deriveBits: Function } } };
+  if (g.crypto?.subtle?.importKey && g.crypto?.subtle?.deriveBits) {
+    try {
+      const keyMaterial = await g.crypto.subtle.importKey(
+        "raw",
+        utf8ToBytes(password),
+        { name: "PBKDF2" },
+        false,
+        ["deriveBits"]
+      );
+      const derived = await g.crypto.subtle.deriveBits(
+        {
+          name: "PBKDF2",
+          salt,
+          iterations,
+          hash: "SHA-256",
+        },
+        keyMaterial,
+        256
+      );
+      return new Uint8Array(derived);
+    } catch {
+      // Fallback para JS se subtle falhar
+    }
+  }
+
+  return pbkdf2(sha256, password, salt, { c: iterations, dkLen: 32 });
+}
+
+/** Versão síncrona mantida para compatibilidade direta. */
 export function deriveKek(password: string, salt: Uint8Array, iterations: number): Uint8Array {
   if (iterations < 10_000) throw new Error("Iterações do KDF baixas demais");
   return pbkdf2(sha256, password, salt, { c: iterations, dkLen: 32 });
@@ -181,8 +218,34 @@ export function unwrapDek(kek: Uint8Array, wrapped: string): Uint8Array {
   return dek;
 }
 
-/** Cria um cofre novo: DEK aleatória + salt + parâmetros, já embrulhada. */
-export function createVaultMaterial(password: string, iterations: number = DEFAULT_ITERATIONS): {
+/** Cria um cofre novo (assíncrono, não trava a tela): DEK aleatória + salt + parâmetros, já embrulhada. */
+export async function createVaultMaterialAsync(
+  password: string,
+  iterations: number = DEFAULT_ITERATIONS
+): Promise<{
+  salt: string;
+  iterations: number;
+  kdf: string;
+  wrapped_dek: string;
+  dek: Uint8Array;
+}> {
+  const salt = randomBytes(16);
+  const dek = randomBytes(32);
+  const kek = await deriveKekAsync(password, salt, iterations);
+  return {
+    salt: bytesToBase64(salt),
+    iterations,
+    kdf: DEFAULT_KDF,
+    wrapped_dek: wrapDek(kek, dek),
+    dek,
+  };
+}
+
+/** Cria um cofre novo (síncrono legado). */
+export function createVaultMaterial(
+  password: string,
+  iterations: number = DEFAULT_ITERATIONS
+): {
   salt: string;
   iterations: number;
   kdf: string;
@@ -201,7 +264,20 @@ export function createVaultMaterial(password: string, iterations: number = DEFAU
   };
 }
 
-/** Abre a DEK com a senha — null quando a senha está errada. */
+/** Abre a DEK com a senha de forma assíncrona — null quando a senha está errada. */
+export async function openVaultMaterialAsync(
+  password: string,
+  meta: { salt: string; iterations: number; wrapped_dek: string }
+): Promise<{ dek: Uint8Array } | null> {
+  try {
+    const kek = await deriveKekAsync(password, base64ToBytes(meta.salt), meta.iterations);
+    return { dek: unwrapDek(kek, meta.wrapped_dek) };
+  } catch {
+    return null;
+  }
+}
+
+/** Abre a DEK com a senha (síncrono legado) — null quando a senha está errada. */
 export function openVaultMaterial(
   password: string,
   meta: { salt: string; iterations: number; wrapped_dek: string }
@@ -212,6 +288,21 @@ export function openVaultMaterial(
   } catch {
     return null;
   }
+}
+
+/** Re-embrulha a DEK com uma senha nova (assíncrono). */
+export async function rewrapDekAsync(
+  dek: Uint8Array,
+  newPassword: string,
+  iterations: number = DEFAULT_ITERATIONS
+): Promise<{ salt: string; iterations: number; wrapped_dek: string }> {
+  const salt = randomBytes(16);
+  const kek = await deriveKekAsync(newPassword, salt, iterations);
+  return {
+    salt: bytesToBase64(salt),
+    iterations,
+    wrapped_dek: wrapDek(kek, dek),
+  };
 }
 
 /** Re-embrulha a DEK com uma senha nova (troca de senha sem re-criptografar). */

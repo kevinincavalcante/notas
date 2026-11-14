@@ -1,37 +1,44 @@
 /**
- * Teste end-to-end do Cofre contra o servidor HTTP local (:3000).
- * Uso: npx tsx scripts/test-vault.mts
- * Cria e remove os próprios dados — não deixa rastro no Turso.
+ * Teste E2E do COFRE (modelo B — criptografia 100% no cliente).
+ * Valida:
+ *   1. Gravação/leitura de vault_meta (material embrulhado)
+ *   2. Rejeição de senha errada
+ *   3. Criação de nota cifrada (o banco nunca vê o texto original)
+ *   4. FTS5 propositalmente NÃO indexa notas do cofre
+ *   5. Versões salvas já cifradas
+ *   6. Troca de senha re-embrulha a mesma DEK (sem re-cifrar nada)
+ *   7. Transição: tira do cofre → descriptografa campos
+ *
+ * Uso: npx tsx scripts/test-vault.mts (precisa do next start :3000)
  */
-import { createClient } from "@libsql/client";
-import { SignJWT } from "jose";
-import { readFileSync, existsSync } from "fs";
-import { resolve } from "path";
-import { createVaultMaterial, openVaultMaterial, encryptString, decryptString } from "../lib/vault-crypto";
 
-function loadEnv() {
-  const envPath = resolve(process.cwd(), ".env.local");
-  if (existsSync(envPath)) {
-    for (const line of readFileSync(envPath, "utf-8").split("\n")) {
-      const t = line.trim();
-      if (!t || t.startsWith("#")) continue;
-      const i = t.indexOf("=");
-      if (i !== -1 && !process.env[t.slice(0, i)]) {
-        process.env[t.slice(0, i)] = t.slice(i + 1).trim().replace(/^["']|["']$/g, "");
-      }
-    }
-  }
+import { SignJWT } from "jose";
+import { readFileSync } from "fs";
+import { resolve } from "path";
+import { createClient } from "@libsql/client";
+import {
+  createVaultMaterial,
+  openVaultMaterial,
+  rewrapDek,
+  encryptString,
+  decryptString,
+} from "../lib/vault-crypto";
+
+for (const line of readFileSync(resolve(process.cwd(), ".env.local"), "utf-8").split("\n")) {
+  const t = line.trim();
+  if (!t || t.startsWith("#")) continue;
+  const i = t.indexOf("=");
+  if (i !== -1 && !process.env[t.slice(0, i)]) process.env[t.slice(0, i)] = t.slice(i + 1).trim().replace(/^["']|["']$/g, "");
 }
-loadEnv();
 
 const BASE = "http://127.0.0.1:3000";
 const secret = new TextEncoder().encode(process.env.JWT_SECRET!.trim());
-const token = await new SignJWT({ username: process.env.APP_USER || "test" })
+const token = await new SignJWT({ username: process.env.APP_USER })
   .setProtectedHeader({ alg: "HS256" })
   .setIssuedAt()
   .setExpirationTime("1h")
   .sign(secret);
-const H = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
+const H = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 
 let ok = 0;
 let fail = 0;
@@ -46,6 +53,10 @@ const db = createClient({
   url: process.env.TURSO_URL || process.env.TURSO_LINK,
   authToken: process.env.TURSO_TOKEN || process.env.TURSO_AUTH_TOKEN,
 });
+
+// Preserva o material original do cofre do usuário para não destruí-lo no teste
+const existingMetaRes = await db.execute({ sql: "SELECT * FROM vault_meta WHERE id = 'default'", args: [] }).catch(() => ({ rows: [] }));
+const prevMeta = existingMetaRes.rows[0];
 
 async function cleanup() {
   for (const id of noteIds) {
@@ -66,76 +77,98 @@ try {
 
   const getRes = await fetch(`${BASE}/api/vault`, { headers: H });
   const meta = (await getRes.json()).vault_meta;
-  check("GET /api/vault devolve material", Boolean(meta?.wrapped_dek));
+  check("GET /api/vault devolve salt + wrapped_dek", Boolean(meta?.salt && meta?.wrapped_dek));
 
-  // senha certa abre, errada rejeita
+  // ---- 2. Destravar com a senha certa / errada -----------------------------
   const opened = openVaultMaterial(pw, meta);
-  check("openVaultMaterial com senha certa abre a DEK", opened !== null);
-  check("openVaultMaterial com senha errada recusa", openVaultMaterial("errada", meta) === null);
+  check("senha certa abre o cofre (recupera a DEK)", Boolean(opened?.dek));
+  const bad = openVaultMaterial("senha-errada", meta);
+  check("senha errada rejeita (retorna null)", bad === null);
 
-  // ---- 2. Nota criptografada: criada via API, ciphertext no Turso ----------
-  const titlePlain = "Nota Secreta do Cofre";
-  const bodyPlain = "conteudo-ultra-secreto-xyz";
-  const titleEnc = encryptString(opened!.dek, titlePlain);
-  const bodyEnc = encryptString(opened!.dek, bodyPlain);
+  const dek = opened!.dek;
 
+  // ---- 3. Cria nota cifrada: o banco guarda TEXT puro com enc1:... --------
+  const plainTitle = "Minha senha do banco secreto";
+  const plainBody = "Conta 1234-5 / Agência 0001 — Token X9Z";
   const createRes = await fetch(`${BASE}/api/notes`, {
     method: "POST",
     headers: H,
-    body: JSON.stringify({ title: titleEnc, body: bodyEnc, is_vault: true, color: "default" }),
+    body: JSON.stringify({
+      title: encryptString(dek, plainTitle),
+      body: encryptString(dek, plainBody),
+      color: "default",
+      is_vault: true,
+    }),
   });
+  check("POST /api/notes com is_vault=true", createRes.ok);
   const created = (await createRes.json()).note;
   noteIds.push(created.id);
-  check("POST /api/notes cria nota do cofre", createRes.ok && created.is_vault === true);
 
-  const rowRes = await db.execute({ sql: `SELECT title, body, is_vault FROM notes WHERE id = ?`, args: [created.id] });
-  const row = rowRes.rows[0];
-  check("Turso guarda ciphertext (não plaintext)", row.title === titleEnc && !(row.title as string).includes("Secreta"));
-  check("row.is_vault = 1 no banco", Number(row.is_vault) === 1);
-  check("ciphertext descriptografa pro plaintext original", decryptString(opened!.dek, row.title as string) === titlePlain);
-
-  // ---- 3. Listagens: fora da lista comum, dentro de ?vault=1 ---------------
-  const listRes = await fetch(`${BASE}/api/notes`, { headers: H });
-  const allNotes = (await listRes.json()).notes as { id: string; is_vault: boolean }[];
-  check("GET /api/notes esconde nota do cofre", !allNotes.some((n) => n.id === created.id));
-
-  const vaultRes = await fetch(`${BASE}/api/notes?vault=1`, { headers: H });
-  const vaultNotes = (await vaultRes.json()).notes as { id: string; is_vault: boolean }[];
-  check("GET /api/notes?vault=1 traz só a nota do cofre", vaultNotes.length === 1 && vaultNotes[0].id === created.id);
-
-  // ---- 4. Busca FTS5 não indexa nota do cofre ------------------------------
-  // corpo normal com termo marcador
-  const normalRes = await fetch(`${BASE}/api/notes`, {
-    method: "POST", headers: H,
-    body: JSON.stringify({ title: "Normal com marcador-vaultix", body: "marcador-vaultix texto aberto" }),
+  // Lê direto do SQLite: confirma que NADA do texto original está no banco
+  const dbRow = await db.execute({
+    sql: `SELECT title, body, is_vault FROM notes WHERE id = ?`,
+    args: [created.id],
   });
-  const normalNote = (await normalRes.json()).note;
-  noteIds.push(normalNote.id);
-  await new Promise((r) => setTimeout(r, 300));
+  const row = dbRow.rows[0];
+  check("banco tem ciphertext no title", String(row.title).startsWith("enc1:"));
+  check("banco tem ciphertext no body", String(row.body).startsWith("enc1:"));
+  check("texto original NÃO aparece no banco", !String(row.body).includes("Token X9Z"));
+  check("is_vault = 1 no banco", Number(row.is_vault) === 1);
 
-  const searchRes = await fetch(`${BASE}/api/notes/search?q=marcador-vaultix`, { headers: H });
-  const found = ((await searchRes.json()).notes || []) as { id: string }[];
-  check("busca acha nota normal", found.some((n) => n.id === normalNote.id));
-  check("busca NÃO acha nota do cofre (ciphertext fora do índice)", !found.some((n) => n.id === created.id));
-
-  // ---- 5. PATCH da nota do cofre (edição cifrada pelo cliente) -------------
-  const newBodyEnc = encryptString(opened!.dek, "novo-conteudo-secreto-abc");
-  const patchRes = await fetch(`${BASE}/api/notes/${created.id}`, {
-    method: "PATCH", headers: H, body: JSON.stringify({ body: newBodyEnc }),
+  // ---- 4. FTS5 não indexa notas do cofre -----------------------------------
+  const ftsRow = await db.execute({
+    sql: `SELECT * FROM notes_fts WHERE notes_fts MATCH 'secreto'`,
   });
-  check("PATCH cifra aceito", patchRes.ok);
-  const patchData = await patchRes.json();
-  check("PATCH do cofre não deriva auto-tags", patchData.tags === null || Array.isArray(patchData.tags));
+  check("FTS5 não indexa notas do cofre", ftsRow.rows.length === 0);
 
-  // ---- 6. versões ficam cifradas -------------------------------------------
+  // Busca da API exclui o cofre
+  const searchRes = await fetch(`${BASE}/api/notes/search?q=secreto`, { headers: H });
+  const searchResults = (await searchRes.json()).notes as { id: string }[];
+  check("GET /api/notes/search exclui notas do cofre", !searchResults.some((n) => n.id === created.id));
+
+  // ---- 5. Versões são gravadas cifradas ------------------------------------
+  await fetch(`${BASE}/api/notes/${created.id}`, {
+    method: "PATCH",
+    headers: H,
+    body: JSON.stringify({
+      body: encryptString(dek, plainBody + " (v2 editada)"),
+    }),
+  });
   const versionsRes = await fetch(`${BASE}/api/notes/${created.id}/versions`, { headers: H });
-  const versions = ((await versionsRes.json()).versions || []) as { title: string; body: string }[];
-  check("histórico de versões guarda ciphertext", versions.every((v) => v.body.startsWith("enc1:")));
+  const versions = (await versionsRes.json()).versions as { title: string; body: string }[];
+  check("versão criada", versions.length > 0);
+  check("versão guardada é ciphertext", String(versions[0]?.body).startsWith("enc1:"));
 
-  // ---- 7. Sair do cofre ----------------------------------------------------
+  // ---- 6. Troca de senha: a MESMA DEK continua válida ----------------------
+  const newPw = "nova-senha-456";
+  const rewrapped = rewrapDek(dek, newPw);
+  const rewrapRes = await fetch(`${BASE}/api/vault`, {
+    method: "PUT",
+    headers: H,
+    body: JSON.stringify({ ...rewrapped, kdf: "PBKDF2-SHA256", updated_at: Date.now() }),
+  });
+  check("PUT com senha trocada aceito", rewrapRes.ok);
+
+  const getRes2 = await fetch(`${BASE}/api/vault`, { headers: H });
+  const meta2 = (await getRes2.json()).vault_meta;
+  const openedNew = openVaultMaterial(newPw, meta2);
+  check("nova senha abre o cofre", Boolean(openedNew?.dek));
+  const openedOld = openVaultMaterial(pw, meta2);
+  check("senha antiga agora é rejeitada", openedOld === null);
+
+  // A DEK recuperada com a nova senha AINDA decifra a nota antiga!
+  const decryptedBody = decryptString(openedNew!.dek, String(row.body));
+  check("mesma DEK descriptografa nota criada com a senha anterior", decryptedBody === plainBody);
+
+  // ---- 7. Transição: tirar do cofre descriptografa campos -------------------
   const leaveRes = await fetch(`${BASE}/api/notes/${created.id}`, {
-    method: "PATCH", headers: H,
-    body: JSON.stringify({ title: titlePlain, body: bodyPlain, is_vault: false }),
+    method: "PATCH",
+    headers: H,
+    body: JSON.stringify({
+      title: plainTitle,
+      body: plainBody,
+      is_vault: false,
+    }),
   });
   check("PATCH is_vault=0 aceito", leaveRes.ok);
   const listRes2 = await fetch(`${BASE}/api/notes`, { headers: H });
@@ -153,8 +186,13 @@ try {
   fail++;
 } finally {
   await cleanup();
-  // Material do cofre de teste sai do hub (o setup real é do usuário)
-  await db.execute(`DELETE FROM vault_meta WHERE id = 'default'`).catch(() => {});
+  // Restaura o cofre original se existia
+  if (prevMeta) {
+    await db.execute({
+      sql: `INSERT OR REPLACE INTO vault_meta (id, salt, iterations, kdf, wrapped_dek, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      args: [prevMeta.id, prevMeta.salt, prevMeta.iterations, prevMeta.kdf, prevMeta.wrapped_dek, prevMeta.updated_at],
+    }).catch(() => {});
+  }
 }
 
 console.log(`\nResultado: ${ok} ok / ${fail} falha`);

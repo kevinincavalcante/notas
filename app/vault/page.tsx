@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Header from "@/components/Header";
 import NoteCard from "@/components/NoteCard";
 import NoteModal from "@/components/NoteModal";
-import { Note, Attachment } from "@/types/note";
+import { Note } from "@/types/note";
 import { useUI } from "@/components/UIProvider";
 import { useVault } from "@/components/VaultProvider";
 import { decryptNote, getVaultMediaUrl } from "@/lib/vault-client";
@@ -29,16 +29,37 @@ export default function VaultPage() {
   const vault = useVault();
 
   const [notes, setNotes] = useState<Note[]>([]); // sempre descriptografadas na UI
-  const [loading, setLoading] = useState(true);
+  const [, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
   const [creating, setCreating] = useState(false);
-  const [changingPw, setChangingPw] = useState(false);
+  const [, setChangingPw] = useState(false);
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw] = useState("");
   const [newPw2, setNewPw2] = useState("");
   const [pwError, setPwError] = useState<string | null>(null);
-  const [busyNoteId, setBusyNoteId] = useState<string | null>(null);
+
+  // Desbloqueio direto na página
+  const [unlockPw, setUnlockPw] = useState("");
+  const [unlockBusy, setUnlockBusy] = useState(false);
+  const [unlockError, setUnlockError] = useState<string | null>(null);
+
+  async function handlePageUnlock() {
+    if (unlockBusy || !unlockPw) return;
+    setUnlockBusy(true);
+    setUnlockError(null);
+    await new Promise((r) => setTimeout(r, 60));
+    try {
+      const ok = await vault.unlock(unlockPw);
+      if (!ok) {
+        setUnlockError("Senha incorreta.");
+      } else {
+        setUnlockPw("");
+      }
+    } finally {
+      setUnlockBusy(false);
+    }
+  }
 
   // blob URLs das mídias dos cards (imagens/áudio cifrados)
   const [cardMedia, setCardMedia] = useState<Record<string, string>>({});
@@ -198,10 +219,8 @@ export default function VaultPage() {
     });
     if (!confirmed) return;
 
-    setBusyNoteId(noteId);
     const { removeNoteFromVault } = await import("@/lib/vault-client");
     const removed = await removeNoteFromVault(vault.dek, noteId);
-    setBusyNoteId(null);
     if (removed) {
       setNotes((prev) => prev.filter((n) => n.id !== noteId));
       if (selectedNote?.id === noteId) setSelectedNote(null);
@@ -254,20 +273,42 @@ export default function VaultPage() {
           <div className="w-16 h-16 bg-amber-400/10 text-amber-500 rounded-2xl flex items-center justify-center mb-4 shadow-xs border border-amber-400/20">
             <Lock className="w-8 h-8" />
           </div>
-          <h2 className="text-lg font-semibold text-slate-900 dark:text-white mb-1">Cofre travado</h2>
+          <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-1">Cofre</h2>
           <p className="text-sm text-slate-600 dark:text-slate-400 max-w-sm mb-6 leading-relaxed">
-            {vault.status === "no-vault"
-              ? "Nenhuma senha cadastrada ainda. Crie a senha do cofre para começar."
-              : "Suas notas criptografadas ficam invisíveis até você destravar."}
+            Digite a senha
           </p>
-          <button
-            type="button"
-            onClick={() => void vault.ensureUnlocked()}
-            className="flex items-center gap-2 px-4 py-2 bg-amber-400 hover:bg-amber-300 active:bg-amber-500 text-slate-950 font-semibold text-sm rounded-xl transition shadow-xs active:scale-95"
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void handlePageUnlock();
+            }}
+            className="w-full max-w-xs space-y-3"
           >
-            <Unlock className="w-4 h-4" />
-            {vault.status === "no-vault" ? "Criar senha do cofre" : "Destravar cofre"}
-          </button>
+            <input
+              type="password"
+              autoFocus
+              value={unlockPw}
+              onChange={(e) => setUnlockPw(e.target.value)}
+              placeholder="Digite a senha"
+              className="w-full px-4 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-400/60"
+            />
+            {unlockError && (
+              <p className="text-xs text-red-600 dark:text-red-400 text-left">{unlockError}</p>
+            )}
+            <button
+              type="submit"
+              disabled={unlockBusy || !unlockPw}
+              className="w-full flex items-center justify-center gap-2 py-2.5 bg-amber-400 hover:bg-amber-300 active:bg-amber-500 text-slate-950 font-semibold text-sm rounded-xl transition shadow-xs disabled:opacity-60 cursor-pointer"
+            >
+              {unlockBusy ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Unlock className="w-4 h-4" />
+              )}
+              {unlockBusy ? "Abrindo cofre…" : "Abrir cofre"}
+            </button>
+          </form>
         </div>
       </div>
     );
@@ -319,89 +360,81 @@ export default function VaultPage() {
           <div className="mt-3 grid gap-2 max-w-md">
             <input
               type="password"
+              placeholder="Senha atual"
               value={currentPw}
               onChange={(e) => setCurrentPw(e.target.value)}
-              placeholder="Senha atual"
-              className="px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400/60"
+              className="px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400/60"
             />
             <input
               type="password"
+              placeholder="Nova senha (mínimo 4 caracteres)"
               value={newPw}
               onChange={(e) => setNewPw(e.target.value)}
-              placeholder="Nova senha"
-              className="px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400/60"
+              className="px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400/60"
             />
             <input
               type="password"
+              placeholder="Repetir nova senha"
               value={newPw2}
               onChange={(e) => setNewPw2(e.target.value)}
-              placeholder="Repita a nova senha"
-              className="px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400/60"
+              className="px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400/60"
             />
             {pwError && <p className="text-xs text-red-600 dark:text-red-400">{pwError}</p>}
             <button
               type="button"
               onClick={() => void handleChangePassword()}
-              disabled={changingPw}
-              className="justify-self-start px-4 py-2 bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 rounded-lg font-semibold text-xs transition disabled:opacity-60"
+              className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-semibold text-xs rounded-xl transition w-fit"
             >
-              {changingPw ? "Alterando…" : "Alterar senha"}
+              Salvar nova senha
             </button>
-            <p className="text-[11px] text-slate-500 dark:text-slate-500">
-              A chave de criptografia é a mesma — nada é re-criptografado, apenas a senha que a protege.
-            </p>
           </div>
         </details>
 
-        {loading ? (
-          <div className="flex justify-center items-center py-20 text-slate-400">
-            <Loader2 className="w-5 h-5 animate-spin" />
-            <span className="ml-2 text-sm">Descriptografando notas…</span>
-          </div>
-        ) : filteredNotes.length === 0 ? (
-          <div className="text-center py-24 text-slate-400 flex flex-col items-center gap-3">
+        {filteredNotes.length === 0 ? (
+          <div className="text-center py-16 text-slate-400 select-none">
             {searchQuery ? (
-              <>
-                <SearchX className="w-12 h-12 text-slate-300 dark:text-slate-700" />
-                <p className="text-sm">Nada no cofre com &quot;{searchQuery}&quot;.</p>
-              </>
+              <div className="flex flex-col items-center gap-2">
+                <SearchX className="w-8 h-8 opacity-40" />
+                <p className="text-sm">Nenhuma nota encontrada no cofre para &ldquo;{searchQuery}&rdquo;</p>
+              </div>
             ) : (
-              <>
-                <Vault className="w-14 h-14 text-slate-300 dark:text-slate-700" />
-                <p className="text-base font-medium text-slate-500 dark:text-slate-400">Cofre vazio.</p>
-                <p className="text-xs text-slate-400">
-                  Notas criadas aqui ficam criptografadas no servidor e em todos os dispositivos.
-                </p>
-              </>
+              <div className="flex flex-col items-center gap-3">
+                <Vault className="w-10 h-10 opacity-30 text-amber-500" />
+                <p className="text-sm">Seu cofre está vazio.</p>
+                <button
+                  type="button"
+                  onClick={() => void handleCreateNote()}
+                  className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-semibold text-xs rounded-xl transition"
+                >
+                  Criar primeira nota segura
+                </button>
+              </div>
             )}
           </div>
         ) : (
-          <div className="columns-1 sm:columns-2 md:columns-3 lg:columns-4 gap-4 space-y-4">
+          <div className="columns-1 sm:columns-2 lg:columns-3 xl:columns-4 gap-4 space-y-4">
             {filteredNotes.map((note) => (
-              <div key={note.id} className="break-inside-avoid relative group">
+              <div key={note.id} className="break-inside-avoid">
                 <NoteCard
                   note={note}
-                  attachmentSrcMap={cardMedia}
                   onClick={() => setSelectedNote(note)}
-                  onTogglePin={() => {}}
-                  onToggleArchive={() => {}}
-                  onDelete={() => void handleDeleteNote(note.id)}
-                  onChangeColor={(color) => void handleUpdateNote({ color })}
+                  onTogglePin={(e) => {
+                    e.stopPropagation();
+                    void handleUpdateNote({ is_pinned: !note.is_pinned });
+                  }}
+                  onToggleArchive={(e) => {
+                    e.stopPropagation();
+                    void handleUpdateNote({ is_archived: !note.is_archived });
+                  }}
+                  onDelete={(e) => {
+                    e.stopPropagation();
+                    void handleDeleteNote(note.id);
+                  }}
+                  onChangeColor={(color) => {
+                    void handleUpdateNote({ color });
+                  }}
+                  attachmentSrcMap={cardMedia}
                 />
-                <button
-                  type="button"
-                  title="Remover do cofre (descriptografar)"
-                  onClick={() => void handleRemoveFromVault(note.id)}
-                  disabled={busyNoteId === note.id}
-                  className="absolute bottom-3 right-3 z-10 p-2 rounded-xl bg-white/80 dark:bg-slate-800/80 text-slate-500 hover:text-amber-600 dark:hover:text-amber-400 border border-black/5 dark:border-white/10 opacity-0 group-hover:opacity-100 hover:opacity-100 focus:opacity-100 transition shadow-xs disabled:opacity-50"
-                  style={{ pointerEvents: "auto" }}
-                >
-                  {busyNoteId === note.id ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Unlock className="w-3.5 h-3.5" />
-                  )}
-                </button>
               </div>
             ))}
           </div>
@@ -411,46 +444,35 @@ export default function VaultPage() {
       {selectedNote && (
         <NoteModal
           note={selectedNote}
-          isOpen={Boolean(selectedNote)}
+          isOpen={true}
           onClose={() => setSelectedNote(null)}
           onUpdate={handleUpdateNote}
           onDelete={() => handleDeleteNote(selectedNote.id)}
-          onAddAttachment={(attachment: Attachment) => {
+          onAddAttachment={(att) => {
+            setSelectedNote((prev) =>
+              prev ? { ...prev, attachments: [...(prev.attachments || []), att] } : null
+            );
             setNotes((prev) =>
               prev.map((n) =>
                 n.id === selectedNote.id
-                  ? { ...n, attachments: [...(n.attachments || []), attachment] }
+                  ? { ...n, attachments: [...(n.attachments || []), att] }
                   : n
               )
             );
-            setSelectedNote((n) =>
-              n ? { ...n, attachments: [...(n.attachments || []), attachment] } : n
-            );
           }}
-          onRemoveAttachment={(attachmentId: string) => {
+          onRemoveAttachment={(attId) => {
+            setSelectedNote((prev) =>
+              prev ? { ...prev, attachments: (prev.attachments || []).filter((a) => a.id !== attId) } : null
+            );
             setNotes((prev) =>
               prev.map((n) =>
                 n.id === selectedNote.id
-                  ? {
-                      ...n,
-                      attachments: (n.attachments || []).filter((a) => a.id !== attachmentId),
-                    }
+                  ? { ...n, attachments: (n.attachments || []).filter((a) => a.id !== attId) }
                   : n
               )
             );
-            setSelectedNote((n) =>
-              n ? { ...n, attachments: (n.attachments || []).filter((a) => a.id !== attachmentId) } : n
-            );
           }}
-          onAfterAttachmentChange={() => {
-            // Recarrega E refresca a nota aberta (o anexo novo vem do servidor
-            // com metadados cifrados — precisa passar pelo decryptNote de novo)
-            void loadNotes().then((fresh) => {
-              setSelectedNote((cur) =>
-                cur ? fresh.find((n) => n.id === cur.id) ?? cur : cur
-              );
-            });
-          }}
+          onAfterAttachmentChange={() => void loadNotes()}
         />
       )}
     </div>

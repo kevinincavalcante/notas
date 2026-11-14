@@ -30,7 +30,6 @@ import {
   getVaultMeta,
   isBiometricEnabled,
   lockVault,
-  setupVault,
   subscribeVault,
   unlockVault,
   unlockWithBiometric,
@@ -39,8 +38,8 @@ import {
 import { encryptString } from "../../../lib/vault-crypto";
 
 /**
- * Aba do COFRE — notas cifradas (AES-256-GCM no cliente). Quatro estados:
- * carregando material → setup (criar senha) → travado → destravado.
+ * Aba do COFRE — notas cifradas (AES-256-GCM no cliente). Três estados:
+ * carregando material → travado (solicita "Digite a senha") → destravado.
  * A busca do cofre é em memória sobre o conteúdo decifrado (o FTS5
  * propositalmente exclui notas is_vault).
  */
@@ -56,21 +55,15 @@ function relativeDate(ts: number): string {
   return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getFullYear())}`;
 }
 
-type Phase = "loading" | "setup" | "locked" | "unlocked";
+type Phase = "loading" | "locked" | "unlocked";
 
 export default function VaultScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
   const [phase, setPhase] = useState<Phase>("loading");
-  const [meta, setMeta] = useState<VaultMeta | null>(null);
+  const [, setMeta] = useState<VaultMeta | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-
-  // setup (primeira senha)
-  const [setupPass, setSetupPass] = useState("");
-  const [setupPass2, setSetupPass2] = useState("");
-  const [setupBusy, setSetupBusy] = useState(false);
-  const [setupError, setSetupError] = useState<string | null>(null);
 
   // destravar
   const [pass, setPass] = useState("");
@@ -100,9 +93,7 @@ export default function VaultScreen() {
       setMeta(m);
       setLoadError(null);
       const dek = getVaultDek();
-      if (!m) {
-        setPhase("setup");
-      } else if (!dek) {
+      if (!dek) {
         setPhase("locked");
         setBiometricOn(await isBiometricEnabled());
       } else {
@@ -134,37 +125,13 @@ export default function VaultScreen() {
     }, [reload])
   );
 
-  // ---- Setup (criar a senha do cofre) ----
-  async function handleSetup() {
-    if (setupBusy) return;
-    setSetupError(null);
-    if (setupPass.length < 4) {
-      setSetupError("Use ao menos 4 caracteres.");
-      return;
-    }
-    if (setupPass !== setupPass2) {
-      setSetupError("As senhas não conferem.");
-      return;
-    }
-    setSetupBusy(true);
-    try {
-      const ok = await setupVault(setupPass);
-      if (!ok) setSetupError("Não foi possível criar o cofre.");
-      setSetupPass("");
-      setSetupPass2("");
-      // recarrega via subscribeVault
-    } catch (e) {
-      setSetupError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSetupBusy(false);
-    }
-  }
-
   // ---- Destravar por senha / biometria ----
   async function handleUnlock() {
-    if (busy) return;
+    if (busy || !pass) return;
     setError(null);
     setBusy(true);
+    // Yield curto para garantir que a UI mostre o ActivityIndicator de imediato
+    await new Promise((r) => setTimeout(r, 60));
     try {
       const ok = await unlockVault(pass);
       if (!ok) {
@@ -249,8 +216,6 @@ export default function VaultScreen() {
           onPress: () => {
             void (async () => {
               const { client } = await getDb();
-              // v1 mobile: só title/body des-cifram (versões/anexos já
-              // transicionam completos na web/server)
               await updateNote(client, note.id, { title: note.title, body: note.body });
               await setNoteVault(client, note.id, false);
               notifySync();
@@ -333,65 +298,17 @@ export default function VaultScreen() {
     );
   }
 
-  // ---- Sem cofre: primeira senha ----
-  if (phase === "setup") {
-    return (
-      <View style={[styles.root, styles.center, styles.form]}>
-        <Text style={styles.title}>Cofre</Text>
-        <Text style={styles.subtitle}>Defina a senha do cofre</Text>
-
-        <TextInput
-          style={styles.input}
-          placeholder="Senha do cofre"
-          placeholderTextColor="#71717a"
-          secureTextEntry
-          value={setupPass}
-          onChangeText={setSetupPass}
-          editable={!setupBusy}
-        />
-        <TextInput
-          style={styles.input}
-          placeholder="Repetir senha"
-          placeholderTextColor="#71717a"
-          secureTextEntry
-          value={setupPass2}
-          onChangeText={setSetupPass2}
-          editable={!setupBusy}
-          onSubmitEditing={() => void handleSetup()}
-        />
-
-        <Text style={styles.warn}>
-          ⚠️ A senha do cofre não pode ser recuperada — se você a perder, as
-          notas cifradas ficam ilegíveis para sempre.
-        </Text>
-
-        <Pressable
-          style={[styles.button, setupBusy && { opacity: 0.7 }]}
-          onPress={() => void handleSetup()}
-          disabled={setupBusy}
-        >
-          {setupBusy ? (
-            <ActivityIndicator size="small" color="#18181b" />
-          ) : (
-            <Text style={styles.buttonText}>Criar cofre</Text>
-          )}
-        </Pressable>
-        {setupError && <Text style={styles.error}>{setupError}</Text>}
-      </View>
-    );
-  }
-
-  // ---- Travado ----
+  // ---- Travado: pede "Digite a senha" de forma limpa e direta ----
   if (phase === "locked") {
     return (
       <View style={[styles.root, styles.center, styles.form]}>
         <Text style={styles.lockIcon}>🔒</Text>
-        <Text style={styles.title}>Cofre travado</Text>
-        <Text style={styles.subtitle}>Digite a senha para ver suas notas cifradas</Text>
+        <Text style={styles.title}>Cofre</Text>
+        <Text style={styles.subtitle}>Digite a senha</Text>
 
         <TextInput
           style={styles.input}
-          placeholder="Senha do cofre"
+          placeholder="Digite a senha"
           placeholderTextColor="#71717a"
           secureTextEntry
           value={pass}
@@ -401,14 +318,14 @@ export default function VaultScreen() {
         />
 
         <Pressable
-          style={[styles.button, busy && { opacity: 0.7 }]}
+          style={[styles.button, (busy || !pass) && { opacity: 0.7 }]}
           onPress={() => void handleUnlock()}
-          disabled={busy}
+          disabled={busy || !pass}
         >
           {busy ? (
             <ActivityIndicator size="small" color="#18181b" />
           ) : (
-            <Text style={styles.buttonText}>Destravar</Text>
+            <Text style={styles.buttonText}>Abrir cofre</Text>
           )}
         </Pressable>
 
@@ -454,32 +371,65 @@ export default function VaultScreen() {
         </View>
       </View>
 
+      {loadError && (
+        <Text style={styles.loadError}>Aviso: {loadError}</Text>
+      )}
+
+      {/* Lista + busca (client-side pura, FTS5 não indexa notas do cofre) */}
       <FlatList
         data={visible}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + 24 }]}
+        contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + 20 }]}
         ListHeaderComponent={
           <View style={styles.searchWrap}>
             <TextInput
-              style={styles.input}
+              style={styles.searchInput}
               placeholder="Buscar no cofre…"
               placeholderTextColor="#71717a"
               value={query}
               onChangeText={setQuery}
-              autoCorrect={false}
             />
-            {notes.length === 0 && (
-              <Text style={styles.emptyText}>
-                Nada no cofre ainda — toque em ＋ para criar uma nota cifrada.
-              </Text>
-            )}
           </View>
         }
+        ListEmptyComponent={
+          <Text style={styles.emptyText}>
+            {query
+              ? "Nenhuma nota encontrada no cofre."
+              : "Nenhuma nota no cofre ainda. Toque em ＋ para criar a primeira."}
+          </Text>
+        }
+        renderItem={({ item }) => (
+          <Pressable
+            style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
+            onPress={() => router.push(`/note/${item.id}`)}
+            onLongPress={() => removeFromVault(item)}
+          >
+            <Text style={styles.cardTitle} numberOfLines={1}>
+              {item.title || "Sem título"}
+            </Text>
+            {Boolean(item.body) && (
+              <Text style={styles.cardPreview} numberOfLines={2}>
+                {item.body.replace(/[#*`_~[\]()]/g, "").trim()}
+              </Text>
+            )}
+            <Text style={styles.cardWhen}>{relativeDate(item.updated_at)}</Text>
+          </Pressable>
+        )}
         ListFooterComponent={
           <View style={styles.config}>
-            <Text style={styles.configTitle}>Configurações</Text>
+            <Text style={styles.configTitle}>Configurações do cofre</Text>
 
-            {changingPass ? (
+            <Pressable style={styles.configItem} onPress={() => void handleToggleBiometric()}>
+              <Text style={styles.configLabel}>
+                {biometricOn ? "✓ Biometria ativada" : "Ativar biometria"}
+              </Text>
+            </Pressable>
+
+            {!changingPass ? (
+              <Pressable style={styles.configItem} onPress={() => setChangingPass(true)}>
+                <Text style={styles.configLabel}>Alterar senha do cofre</Text>
+              </Pressable>
+            ) : (
               <View style={styles.changeForm}>
                 <TextInput
                   style={styles.input}
@@ -515,81 +465,28 @@ export default function VaultScreen() {
                     onPress={() => {
                       setChangingPass(false);
                       setChangeError(null);
-                      setCurrentPass("");
-                      setNewPass("");
-                      setNewPass2("");
                     }}
+                    disabled={changeBusy}
                   >
                     <Text style={styles.ghostButtonText}>Cancelar</Text>
                   </Pressable>
                   <Pressable
-                    style={[styles.button, styles.changeRowButton]}
+                    style={[styles.button, styles.changeRowButton, changeBusy && { opacity: 0.7 }]}
                     onPress={() => void handleChangePassword()}
                     disabled={changeBusy}
                   >
                     {changeBusy ? (
                       <ActivityIndicator size="small" color="#18181b" />
                     ) : (
-                      <Text style={styles.buttonText}>Trocar</Text>
+                      <Text style={styles.buttonText}>Salvar nova senha</Text>
                     )}
                   </Pressable>
                 </View>
               </View>
-            ) : (
-              <Pressable
-                style={({ pressed }) => [styles.configItem, pressed && { opacity: 0.8 }]}
-                onPress={() => setChangingPass(true)}
-              >
-                <Text style={styles.configLabel}>🔑 Alterar senha</Text>
-              </Pressable>
             )}
-
-            <Pressable
-              style={({ pressed }) => [styles.configItem, pressed && { opacity: 0.8 }]}
-              onPress={() => void handleToggleBiometric()}
-            >
-              <Text style={styles.configLabel}>
-                Biometria: {biometricOn ? "ligada" : "desligada"}
-              </Text>
-            </Pressable>
-
-            <Pressable
-              style={({ pressed }) => [styles.configItem, pressed && { opacity: 0.8 }]}
-              onPress={() => lockVault()}
-            >
-              <Text style={styles.configLabel}>🔒 Travar agora</Text>
-            </Pressable>
           </View>
         }
-        renderItem={({ item }) => {
-          const preview = item.body
-            .replace(/[#>*`\-_[\]()!]/g, " ")
-            .replace(/\s+/g, " ")
-            .trim();
-          return (
-            <Pressable
-              style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
-              onPress={() => router.push(`/note/${item.id}`)}
-              onLongPress={() => removeFromVault(item)}
-              delayLongPress={350}
-            >
-              <Text style={styles.cardTitle} numberOfLines={1}>
-                {item.title || "Sem título"}
-              </Text>
-              {preview.length > 0 && (
-                <Text style={styles.cardPreview} numberOfLines={2}>
-                  {preview}
-                </Text>
-              )}
-              <Text style={styles.cardWhen}>{relativeDate(item.updated_at)}</Text>
-            </Pressable>
-          );
-        }}
       />
-
-      {loadError && (
-        <Text style={styles.loadError}>{`Falha no cofre: ${loadError}`}</Text>
-      )}
     </View>
   );
 }
@@ -597,106 +494,112 @@ export default function VaultScreen() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: "#101012",
+    backgroundColor: "#09090b",
   },
   center: {
-    justifyContent: "center",
     alignItems: "center",
-    gap: 12,
+    justifyContent: "center",
+  },
+  muted: {
+    color: "#71717a",
+    fontSize: 13,
+    marginTop: 10,
   },
   form: {
-    padding: 28,
-    alignSelf: "stretch",
-    maxWidth: 440,
-    width: "100%",
-    marginHorizontal: "auto",
-  },
-  title: {
-    color: "#fafafa",
-    fontSize: 30,
-    fontWeight: "800",
+    paddingHorizontal: 28,
   },
   lockIcon: {
-    fontSize: 44,
+    fontSize: 48,
+    marginBottom: 8,
+  },
+  title: {
+    fontSize: 22,
+    fontWeight: "700",
+    color: "#fafafa",
+    marginBottom: 4,
   },
   subtitle: {
-    color: "#71717a",
-    fontSize: 13.5,
+    fontSize: 14,
+    color: "#a1a1aa",
     textAlign: "center",
-  },
-  warn: {
-    color: "#fbbf24",
-    fontSize: 12.5,
-    textAlign: "center",
-    lineHeight: 18,
+    marginBottom: 20,
   },
   input: {
+    width: "100%",
+    backgroundColor: "#18181b",
     borderWidth: 1,
-    borderColor: "#2c2c31",
+    borderColor: "#27272a",
     borderRadius: 12,
-    backgroundColor: "#1c1c1f",
-    color: "#fafafa",
     paddingHorizontal: 14,
     paddingVertical: 12,
+    color: "#fafafa",
     fontSize: 15,
-    alignSelf: "stretch",
+    marginBottom: 10,
+  },
+  searchInput: {
+    backgroundColor: "#18181b",
+    borderWidth: 1,
+    borderColor: "#27272a",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    color: "#fafafa",
+    fontSize: 14,
   },
   button: {
+    width: "100%",
     backgroundColor: "#fbbf24",
     borderRadius: 12,
-    paddingVertical: 14,
+    paddingVertical: 13,
     alignItems: "center",
-    alignSelf: "stretch",
+    justifyContent: "center",
     marginTop: 4,
   },
   buttonText: {
-    color: "#1c1917",
-    fontWeight: "700",
-    fontSize: 16,
+    color: "#18181b",
+    fontSize: 15,
+    fontWeight: "600",
   },
   ghostButton: {
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#2c2c31",
-    backgroundColor: "#1c1c1f",
-    paddingVertical: 13,
-    paddingHorizontal: 16,
+    paddingVertical: 12,
     alignItems: "center",
-    alignSelf: "stretch",
+    justifyContent: "center",
   },
   ghostButtonText: {
-    color: "#e4e4e7",
-    fontWeight: "600",
-    fontSize: 14.5,
+    color: "#fbbf24",
+    fontSize: 14,
+    fontWeight: "500",
   },
   error: {
     color: "#f87171",
     fontSize: 13,
-  },
-  muted: {
-    color: "#71717a",
+    marginTop: 10,
+    textAlign: "center",
   },
   header: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
     paddingHorizontal: 16,
-    paddingBottom: 10,
-    backgroundColor: "#18181b",
+    paddingBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#27272a",
   },
   back: {
-    color: "#fafafa",
-    fontSize: 30,
-    paddingHorizontal: 8,
+    color: "#fbbf24",
+    fontSize: 28,
+    fontWeight: "300",
+    lineHeight: 28,
+    paddingRight: 10,
   },
   headerTitle: {
     color: "#fafafa",
-    fontSize: 18,
-    fontWeight: "700",
-    flex: 1,
-    marginLeft: 6,
+    fontSize: 17,
+    fontWeight: "600",
   },
   headerRight: {
     flexDirection: "row",
+    alignItems: "center",
     gap: 20,
   },
   headerIcon: {

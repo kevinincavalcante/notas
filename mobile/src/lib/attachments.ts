@@ -70,20 +70,7 @@ let queueTableEnsured = false;
 async function ensureQueueTable(client: Client): Promise<void> {
   if (queueTableEnsured) return;
   await client.execute(`
-    CREATE TABLE IF NOT EXISTS pending_attachments (
-      id TEXT PRIMARY KEY,
-      note_id TEXT NOT NULL,
-      file_path TEXT NOT NULL,
-      file_name TEXT NOT NULL,
-      mime_type TEXT NOT NULL,
-      file_size INTEGER NOT NULL,
-      duration_seconds REAL DEFAULT NULL,
-      created_at INTEGER NOT NULL,
-      retries INTEGER NOT NULL DEFAULT 0,
-      last_error TEXT,
-      encrypted INTEGER NOT NULL DEFAULT 0
-    )
-  `);
+    CREATE TABLE IF NOT EXISTS pending_attachments (\n      id TEXT PRIMARY KEY,\n      note_id TEXT NOT NULL,\n      file_path TEXT NOT NULL,\n      file_name TEXT NOT NULL,\n      mime_type TEXT NOT NULL,\n      file_size INTEGER NOT NULL,\n      duration_seconds REAL DEFAULT NULL,\n      created_at INTEGER NOT NULL,\n      retries INTEGER NOT NULL DEFAULT 0,\n      last_error TEXT,\n      encrypted INTEGER NOT NULL DEFAULT 0\n    )\n  `);
   // Migração idempotente: bancos antigos não têm a coluna "encrypted"
   const cols = await client.execute(`PRAGMA table_info(pending_attachments)`);
   if (!cols.rows.some((r) => r.name === "encrypted")) {
@@ -114,6 +101,8 @@ export async function saveAttachmentLocally(input: UploadInput): Promise<Attachm
     storedName = encryptString(dek, input.fileName);
     storedMime = encryptString(dek, input.mimeType);
     dest = cachePath({ id: attachmentId, file_name: storedName });
+    // Salva referência do arquivo local já disponível para exibição instantânea
+    plainUris.set(attachmentId, input.uri);
   } else {
     dest = cachePath({ id: attachmentId, file_name: input.fileName });
   }
@@ -351,7 +340,8 @@ export async function processPendingUploads(): Promise<void> {
             sql: `UPDATE pending_attachments SET retries = retries + 1, last_error = ? WHERE id = ?`,
             args: [err, item.id],
           });
-          // Se for erro de servidor/rede, interrompe a fila para tentar mais tarde
+          // Se for erro temporário (ex: 404 porque nota ainda está sincronizando), reagenda retry
+          triggerPendingUploads(3000);
           break;
         }
       } catch (uploadErr) {
@@ -484,9 +474,42 @@ export const cacheExists = {
  * o conteúdo já se mostrou na tela e a sandbox é do próprio app. */
 const plainUris = new Map<string, string>();
 
+/** Detecta extensão adequada pelos primeiros bytes para o decoder do Android/RN reconhecer */
+function detectExtensionFromBytes(bytes: Uint8Array, fallback = ".webp"): string {
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return ".png";
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return ".jpg";
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return ".webp";
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) {
+    return ".gif";
+  }
+  if (bytes.length >= 8 && bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70) {
+    return ".m4a";
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) {
+    return ".webm";
+  }
+  return fallback;
+}
+
 /** Uri exibível pro anexo. Não-cifrado delega ao fluxo de sempre
  * (cacheAttachment); cifrado baixa o ciphertext, decifra e grava o plaintext
- * num arquivo próprio `att-<id>-plain`. */
+ * num arquivo com extensão própria para visualização confiável. */
 export async function getDisplayUri(
   att: AttachmentRow,
   dek: Uint8Array
@@ -506,7 +529,8 @@ export async function getDisplayUri(
       encoding: FileSystem.EncodingType.Base64,
     });
     const plain = decryptBytes(dek, base64ToBytes(b64));
-    const dest = `${FileSystem.cacheDirectory}att-${att.id}-plain`;
+    const ext = detectExtensionFromBytes(plain, ".webp");
+    const dest = `${FileSystem.cacheDirectory}att-${att.id}-plain${ext}`;
     await FileSystem.writeAsStringAsync(dest, bytesToBase64(plain), {
       encoding: FileSystem.EncodingType.Base64,
     });
