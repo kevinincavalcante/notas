@@ -62,11 +62,18 @@ export async function POST(
 
     await logChange("note", id, "upsert");
 
-    // O corpo restaurado pode ter URLs diferentes: recalcula as auto-tags de URL (falha silenciosa)
-    try {
-      await syncBodyAutoTags(id, (version.body as string) || "");
-    } catch (tagErr) {
-      console.warn("Falha nas auto-tags de URL após restauração:", tagErr);
+    // O corpo restaurado pode ter URLs diferentes: recalcula as auto-tags de URL
+    // (falha silenciosa). Notas do cofre ficam de fora — corpo é ciphertext.
+    const vaultRes = await db.execute({
+      sql: `SELECT is_vault FROM notes WHERE id = ?`,
+      args: [id],
+    });
+    if (!vaultRes.rows[0]?.is_vault) {
+      try {
+        await syncBodyAutoTags(id, (version.body as string) || "");
+      } catch (tagErr) {
+        console.warn("Falha nas auto-tags de URL após restauração:", tagErr);
+      }
     }
 
     // Busca nota completa atualizada

@@ -88,10 +88,19 @@ async function main() {
         color TEXT NOT NULL DEFAULT 'default',
         is_pinned INTEGER NOT NULL DEFAULT 0,
         is_archived INTEGER NOT NULL DEFAULT 0,
+        is_vault INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
     `);
+
+    // Migração idempotente: coluna is_vault (cofre) em bancos antigos
+    const notesCols = await db.execute(`PRAGMA table_info(notes)`);
+    const hasIsVault = notesCols.rows.some((row) => row.name === "is_vault");
+    if (!hasIsVault) {
+      await db.execute(`ALTER TABLE notes ADD COLUMN is_vault INTEGER NOT NULL DEFAULT 0`);
+      console.log("✅ Coluna 'is_vault' adicionada à tabela notes");
+    }
 
     console.log("Criando índices para 'notes'...");
     await db.execute(`
@@ -211,23 +220,49 @@ async function main() {
     `);
 
     console.log("Criando triggers de sincronização FTS5...");
+    // Recria SEMPRE: triggers antigos não são atualizados por CREATE IF NOT
+    // EXISTS. Novos triggers excluem notas do cofre (is_vault=1) do índice —
+    // o corpo delas é ciphertext e a busca do cofre é client-side.
+    // O 'delete' do FTS5 external-content ERRA ("database disk image is
+    // malformed") se a linha nunca foi indexada — por isso o delete do estado
+    // antigo só roda quando old.is_vault = 0 (a linha ESTAVA indexada).
+    for (const name of ["notes_ai", "notes_ad", "notes_au"]) {
+      await db.execute(`DROP TRIGGER IF EXISTS ${name};`);
+    }
+
     await db.execute(`
-      CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
+      CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes
+        WHEN new.is_vault = 0 BEGIN
         INSERT INTO notes_fts(rowid, title, body) VALUES (new.rowid, new.title, new.body);
       END;
     `);
 
     await db.execute(`
       CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
-        INSERT INTO notes_fts(notes_fts, rowid, title, body) VALUES('delete', old.rowid, old.title, old.body);
+        INSERT INTO notes_fts(notes_fts, rowid, title, body)
+          SELECT 'delete', old.rowid, old.title, old.body WHERE old.is_vault = 0;
       END;
     `);
 
     await db.execute(`
       CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
-        INSERT INTO notes_fts(notes_fts, rowid, title, body) VALUES('delete', old.rowid, old.title, old.body);
-        INSERT INTO notes_fts(rowid, title, body) VALUES (new.rowid, new.title, new.body);
+        INSERT INTO notes_fts(notes_fts, rowid, title, body)
+          SELECT 'delete', old.rowid, old.title, old.body WHERE old.is_vault = 0;
+        INSERT INTO notes_fts(rowid, title, body)
+          SELECT new.rowid, new.title, new.body WHERE new.is_vault = 0;
       END;
+    `);
+
+    console.log("Criando tabela 'vault_meta' (material do cofre)...");
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS vault_meta (
+        id TEXT PRIMARY KEY,
+        salt TEXT NOT NULL,
+        iterations INTEGER NOT NULL,
+        kdf TEXT NOT NULL DEFAULT 'PBKDF2-SHA256',
+        wrapped_dek TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
     `);
 
     console.log("✅ Migração executada com sucesso!");

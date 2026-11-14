@@ -3,6 +3,15 @@ import { AppState } from "react-native";
 import { getSyncApi } from "./api";
 import { getDb, type AttachmentRow } from "./db";
 import { notifyLocalChange, onSynced, scheduleQuietSync, syncQuiet } from "./sync";
+import { getVaultDek } from "./vault";
+import {
+  base64ToBytes,
+  bytesToBase64,
+  decryptBytes,
+  encryptBytes,
+  encryptString,
+  isEncrypted,
+} from "../../../lib/vault-crypto";
 import type { Client } from "@libsql/client";
 
 /**
@@ -22,6 +31,8 @@ export interface UploadInput {
   mimeType: string;
   noteId: string;
   durationSeconds?: number | null;
+  /** Anexo de nota do cofre: bytes + nome + mime saem cifrados (AES-256-GCM). */
+  encrypted?: boolean;
 }
 
 interface PendingAttachmentRow {
@@ -35,6 +46,7 @@ interface PendingAttachmentRow {
   created_at: number;
   retries: number;
   last_error: string | null;
+  encrypted?: number;
 }
 
 function generateUuid(): string {
@@ -68,9 +80,17 @@ async function ensureQueueTable(client: Client): Promise<void> {
       duration_seconds REAL DEFAULT NULL,
       created_at INTEGER NOT NULL,
       retries INTEGER NOT NULL DEFAULT 0,
-      last_error TEXT
+      last_error TEXT,
+      encrypted INTEGER NOT NULL DEFAULT 0
     )
   `);
+  // Migração idempotente: bancos antigos não têm a coluna "encrypted"
+  const cols = await client.execute(`PRAGMA table_info(pending_attachments)`);
+  if (!cols.rows.some((r) => r.name === "encrypted")) {
+    await client.execute(
+      `ALTER TABLE pending_attachments ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0`
+    );
+  }
   queueTableEnsured = true;
 }
 
@@ -82,21 +102,41 @@ export async function saveAttachmentLocally(input: UploadInput): Promise<Attachm
   const attachmentId = generateUuid();
   const dest = cachePath({ id: attachmentId, file_name: input.fileName });
 
-  // 1. Copia imediatamente o arquivo para o armazenamento permanente/cache do app
-  try {
-    await FileSystem.copyAsync({ from: input.uri, to: dest });
-  } catch (copyErr) {
-    console.warn("Falha ao copiar anexo para armazenamento local:", copyErr);
-  }
-
   let fileSize = 0;
-  try {
-    const info = await FileSystem.getInfoAsync(dest);
-    if (info.exists && typeof (info as { size?: number }).size === "number") {
-      fileSize = (info as { size: number }).size;
+  let storedName = input.fileName;
+  let storedMime = input.mimeType;
+
+  if (input.encrypted) {
+    // Anexo de nota do COFRE: nada trafega em claro — os bytes viram
+    // iv‖ciphertext (AES-256-GCM) e nome/mime são cifrados como texto.
+    const dek = getVaultDek();
+    if (!dek) throw new Error("Cofre travado — destrave para anexar arquivos.");
+    const b64 = await FileSystem.readAsStringAsync(input.uri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    const enc = encryptBytes(dek, base64ToBytes(b64));
+    await FileSystem.writeAsStringAsync(dest, bytesToBase64(enc), {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    fileSize = enc.length;
+    storedName = encryptString(dek, input.fileName);
+    storedMime = encryptString(dek, input.mimeType);
+  } else {
+    // Fluxo de sempre: copia o arquivo pro cache e mede o tamanho
+    try {
+      await FileSystem.copyAsync({ from: input.uri, to: dest });
+    } catch (copyErr) {
+      console.warn("Falha ao copiar anexo para armazenamento local:", copyErr);
     }
-  } catch {
-    // fallback
+
+    try {
+      const info = await FileSystem.getInfoAsync(dest);
+      if (info.exists && typeof (info as { size?: number }).size === "number") {
+        fileSize = (info as { size: number }).size;
+      }
+    } catch {
+      // fallback
+    }
   }
 
   const now = Date.now();
@@ -117,8 +157,8 @@ export async function saveAttachmentLocally(input: UploadInput): Promise<Attachm
       attachmentId,
       input.noteId,
       storageKey,
-      input.fileName,
-      input.mimeType,
+      storedName,
+      storedMime,
       fileSize,
       duration,
       now,
@@ -129,18 +169,19 @@ export async function saveAttachmentLocally(input: UploadInput): Promise<Attachm
   await client.execute({
     sql: `
       INSERT OR REPLACE INTO pending_attachments
-        (id, note_id, file_path, file_name, mime_type, file_size, duration_seconds, created_at, retries, last_error)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+        (id, note_id, file_path, file_name, mime_type, file_size, duration_seconds, created_at, retries, last_error, encrypted)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
     `,
     args: [
       attachmentId,
       input.noteId,
       dest,
-      input.fileName,
-      input.mimeType,
+      storedName,
+      storedMime,
       fileSize,
       duration,
       now,
+      input.encrypted ? 1 : 0,
     ],
   });
 
@@ -153,8 +194,8 @@ export async function saveAttachmentLocally(input: UploadInput): Promise<Attachm
     id: attachmentId,
     note_id: input.noteId,
     storage_key: storageKey,
-    file_name: input.fileName,
-    mime_type: input.mimeType,
+    file_name: storedName,
+    mime_type: storedMime,
     file_size: fileSize,
     duration_seconds: duration,
     created_at: now,
@@ -244,11 +285,15 @@ export async function processPendingUploads(): Promise<void> {
             id: item.id, // Envia o mesmo ID gerado localmente
             noteId: item.note_id,
             fileName: item.file_name,
+            // Anexo do cofre: o servidor pula o sharp e trata como opaco
+            ...(Number(item.encrypted) === 1 ? { encrypted: "1" } : {}),
             ...(item.duration_seconds != null
               ? { duration: String(Math.round(item.duration_seconds)) }
               : {}),
           },
-          mimeType: item.mime_type,
+          // Ciphertext no corpo do multipart: mime neutro (o mime REAL vai
+          // cifrado no campo mime_type; o servidor trata como opaco)
+          mimeType: Number(item.encrypted) === 1 ? "application/octet-stream" : item.mime_type,
         });
 
         let data: {
@@ -418,6 +463,55 @@ export const cacheExists = {
     }
   },
 };
+
+// ---- Exibição de anexos (decifra na hora quando for do cofre) ----
+
+/** Cache em memória att.id → uri do plaintext. O arquivo decifrado mora no
+ * cache do app (sandbox do sistema) e sobrevive ao lock — não invalidamos,
+ * o conteúdo já se mostrou na tela e a sandbox é do próprio app. */
+const plainUris = new Map<string, string>();
+
+/** Uri exibível pro anexo. Não-cifrado delega ao fluxo de sempre
+ * (cacheAttachment); cifrado baixa o ciphertext, decifra e grava o plaintext
+ * num arquivo próprio `att-<id>-plain`. */
+export async function getDisplayUri(
+  att: AttachmentRow,
+  dek: Uint8Array
+): Promise<string | null> {
+  const cached = plainUris.get(att.id);
+  if (cached) return cached;
+
+  // Anexo comum: nada de cofre aqui
+  if (!isEncrypted(att.file_name)) return cacheAttachment(att);
+
+  // Ciphertext já baixado? (cacheAttachment também divide downloads paralelos)
+  const cipherUri = await cacheAttachment(att);
+  if (!cipherUri) return null;
+
+  try {
+    const b64 = await FileSystem.readAsStringAsync(cipherUri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    const plain = decryptBytes(dek, base64ToBytes(b64));
+    const dest = `${FileSystem.cacheDirectory}att-${att.id}-plain`;
+    await FileSystem.writeAsStringAsync(dest, bytesToBase64(plain), {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    plainUris.set(att.id, dest);
+    return dest;
+  } catch (e) {
+    console.warn("Falha ao decifrar anexo para exibição:", e);
+    return null;
+  }
+}
+
+/** Atalho pra UI: resolve o dek da memória; sem dek só anexo comum aparece. */
+export async function displayUriFor(att: AttachmentRow): Promise<string | null> {
+  const dek = getVaultDek();
+  if (!isEncrypted(att.file_name)) return cacheAttachment(att);
+  if (!dek) return null; // cofre travado — placeholder na tela
+  return getDisplayUri(att, dek);
+}
 
 /** Sincroniza silenciosamente (helper de conveniência após mutações). */
 export async function syncAfterChange(): Promise<void> {

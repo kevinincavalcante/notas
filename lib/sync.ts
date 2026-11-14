@@ -89,6 +89,7 @@ async function applyPush(client: Client, push: SyncPush): Promise<string[]> {
 
     const isPinned = note.is_pinned ? 1 : 0;
     const isArchived = note.is_archived ? 1 : 0;
+    const isVault = note.is_vault ? 1 : 0;
 
     const localRes = await client.execute({
       sql: `SELECT updated_at, title, body FROM notes WHERE id = ?`,
@@ -99,8 +100,8 @@ async function applyPush(client: Client, push: SyncPush): Promise<string[]> {
       // Bootstrap/nova nota da réplica: entra direto
       await client.execute({
         sql: `
-          INSERT INTO notes (id, title, body, color, is_pinned, is_archived, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO notes (id, title, body, color, is_pinned, is_archived, is_vault, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         args: [
           note.id,
@@ -109,6 +110,7 @@ async function applyPush(client: Client, push: SyncPush): Promise<string[]> {
           note.color || "default",
           isPinned,
           isArchived,
+          isVault,
           note.created_at || Date.now(),
           note.updated_at || Date.now(),
         ],
@@ -153,7 +155,7 @@ async function applyPush(client: Client, push: SyncPush): Promise<string[]> {
       await client.execute({
         sql: `
           UPDATE notes
-          SET title = ?, body = ?, color = ?, is_pinned = ?, is_archived = ?, updated_at = ?
+          SET title = ?, body = ?, color = ?, is_pinned = ?, is_archived = ?, is_vault = ?, updated_at = ?
           WHERE id = ?
         `,
         args: [
@@ -162,6 +164,7 @@ async function applyPush(client: Client, push: SyncPush): Promise<string[]> {
           note.color || "default",
           isPinned,
           isArchived,
+          isVault,
           note.updated_at,
           note.id,
         ],
@@ -217,6 +220,39 @@ async function applyPush(client: Client, push: SyncPush): Promise<string[]> {
     }
   }
 
+  // Material do cofre: envelope da DEK sincroniza como entidade própria (LWW).
+  // Chegou setup novo/troca de senha em qualquer réplica → hub propaga.
+  for (const meta of push.vault_meta || []) {
+    if (!meta?.id || !meta?.salt || !meta?.wrapped_dek) continue;
+    const localMeta = await client.execute({
+      sql: `SELECT updated_at FROM vault_meta WHERE id = ?`,
+      args: [meta.id],
+    });
+    const localUpdatedAt = Number(localMeta.rows[0]?.updated_at) || 0;
+    if ((meta.updated_at || 0) <= localUpdatedAt) continue;
+    await client.execute({
+      sql: `
+        INSERT INTO vault_meta (id, salt, iterations, kdf, wrapped_dek, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          salt = excluded.salt,
+          iterations = excluded.iterations,
+          kdf = excluded.kdf,
+          wrapped_dek = excluded.wrapped_dek,
+          updated_at = excluded.updated_at
+      `,
+      args: [
+        meta.id,
+        meta.salt,
+        meta.iterations || 0,
+        meta.kdf || "PBKDF2-SHA256",
+        meta.wrapped_dek,
+        meta.updated_at || Date.now(),
+      ],
+    });
+    await logChange("vault_meta", meta.id, "upsert", client);
+  }
+
   // Versões do histórico: append-only e imutáveis — entra com id novo e nunca
   // sobrescreve (INSERT OR IGNORE deduplica re-envios da marca d'água).
   // IMPORTANTE: OR IGNORE não cobre violação de FK — a nota pode ter sido
@@ -250,7 +286,11 @@ async function rederiveTagsForNotes(
   conflicts: string[]
 ): Promise<void> {
   const conflictSet = new Set(conflicts);
-  const changed = (notes || []).filter((n) => n?.id && !conflictSet.has(n.id));
+  // Notas do cofre chegam cifradas — auto-tags derivam do corpo e não fazem
+  // sentido sobre ciphertext: puladas de propósito.
+  const changed = (notes || []).filter(
+    (n) => n?.id && !conflictSet.has(n.id) && !n.is_vault
+  );
   if (changed.length === 0) return;
 
   await Promise.allSettled(
@@ -275,6 +315,7 @@ async function collectChanges(
   const attachmentIds = new Set<string>();
   const tombstoneIds = new Set<string>();
   const attachmentRemoved: string[] = [];
+  const vaultMetaIds = new Set<string>();
 
   // Cursor novo = maior seq global do log (mesmo sem novidades, a réplica
   // nunca mais refaz o bootstrap)
@@ -291,6 +332,7 @@ async function collectChanges(
       if (op === "upsert") attachmentIds.add(entityId);
       else attachmentRemoved.push(entityId);
     } else if (entity === "tombstone") tombstoneIds.add(entityId);
+    else if (entity === "vault_meta" && op === "upsert") vaultMetaIds.add(entityId);
   }
 
   // Bootstrap (cursor 0): o change_log só cobre o futuro — manda o estado completo
@@ -354,6 +396,20 @@ async function collectChanges(
   const tagsRes = await client.execute(`SELECT id, name, kind, source, created_at FROM tags`);
   const noteTagsRes = await client.execute(`SELECT note_id, tag_id, created_at FROM note_tags`);
 
+  // Material do cofre: bootstrap manda tudo (1 linha), depois só o que mudou
+  let vaultMeta: Record<string, unknown>[] = [];
+  if (cursor === 0) {
+    const res = await client.execute(`SELECT * FROM vault_meta`);
+    vaultMeta = res.rows as Record<string, unknown>[];
+  } else if (vaultMetaIds.size > 0) {
+    const placeholders = Array.from(vaultMetaIds).map(() => "?").join(",");
+    const res = await client.execute({
+      sql: `SELECT * FROM vault_meta WHERE id IN (${placeholders})`,
+      args: Array.from(vaultMetaIds),
+    });
+    vaultMeta = res.rows as Record<string, unknown>[];
+  }
+
   return {
     cursor: newCursor,
     notes,
@@ -363,6 +419,7 @@ async function collectChanges(
     versions: versionsRes.rows,
     tags: tagsRes.rows,
     note_tags: noteTagsRes.rows,
+    vault_meta: vaultMeta,
     conflicts,
   };
 }

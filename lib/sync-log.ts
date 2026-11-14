@@ -15,7 +15,7 @@ import type { Client } from "@libsql/client";
  * desktop passa o client da réplica em que está aplicando a mudança.
  */
 export async function logChange(
-  entity: "note" | "attachment" | "tombstone",
+  entity: "note" | "attachment" | "tombstone" | "vault_meta",
   entityId: string,
   op: "upsert" | "delete",
   client: Client = db

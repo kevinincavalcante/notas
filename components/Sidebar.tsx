@@ -16,6 +16,8 @@ import {
   ArchiveRestore,
   Trash2,
   ListTodo,
+  Vault,
+  Lock,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -34,12 +36,15 @@ interface SidebarProps {
   onTogglePin?: (noteId: string) => void;
   onToggleArchive?: (noteId: string) => void;
   onDeleteNote?: (noteId: string) => void;
+  /** Move a nota pro cofre (cifra título/corpo/anexos/versões no cliente) */
+  onMoveToVault?: (noteId: string) => void;
 }
 
 interface ContextMenuState {
   x: number;
   y: number;
   note: Note;
+  busy: boolean;
 }
 
 function formatRelativeDate(timestamp: number): string {
@@ -95,6 +100,7 @@ export default function Sidebar({
   onTogglePin,
   onToggleArchive,
   onDeleteNote,
+  onMoveToVault,
 }: SidebarProps) {
   const [localQuery, setLocalQuery] = useState(searchQuery);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -194,7 +200,7 @@ export default function Sidebar({
       const x = Math.min(e.clientX, window.innerWidth - menuWidth - 8);
       const y = Math.min(e.clientY, window.innerHeight - menuHeight - 8);
 
-      setContextMenu({ x, y, note });
+      setContextMenu({ x, y, note, busy: false });
     },
     []
   );
@@ -393,6 +399,14 @@ export default function Sidebar({
 
         <div className="px-3 py-2 border-t border-slate-200 dark:border-slate-800 shrink-0 flex items-center justify-between">
           <Link
+            href="/vault"
+            className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 transition py-1 px-2 rounded-lg hover:bg-slate-200/60 dark:hover:bg-slate-800"
+          >
+            <Vault className="w-3.5 h-3.5" />
+            <span>Cofre</span>
+          </Link>
+
+          <Link
             href="/archive"
             className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 transition py-1 px-2 rounded-lg hover:bg-slate-200/60 dark:hover:bg-slate-800"
           >
@@ -445,6 +459,25 @@ export default function Sidebar({
               <Archive className="w-3.5 h-3.5" />
             )}
             <span>{contextMenu.note.is_archived ? "Desarquivar" : "Arquivar nota"}</span>
+          </button>
+
+          <div className="h-px bg-slate-200 dark:bg-slate-700 my-1" />
+
+          <button
+            type="button"
+            onClick={() => {
+              if (!contextMenu.note.is_vault && onMoveToVault) {
+                setContextMenu((cm) => (cm ? { ...cm, busy: true } : cm));
+                onMoveToVault(contextMenu.note.id);
+              } else {
+                setContextMenu(null);
+              }
+            }}
+            disabled={contextMenu.busy}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-slate-700 dark:text-slate-200 hover:bg-amber-50 dark:hover:bg-amber-950/30 transition text-left disabled:opacity-60"
+          >
+            <Lock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+            <span>{contextMenu.busy ? "Criptografando…" : "Mover para o cofre"}</span>
           </button>
 
           <div className="h-px bg-slate-200 dark:bg-slate-700 my-1" />

@@ -63,6 +63,14 @@ O script já gera a linha com os escapes necessários pronta para ser copiada e 
 - **Fechar ao Clicar Fora**: Clicar na área escura de fundo (backdrop) fecha e salva a nota automaticamente.
 - **Botão/Gesto Voltar no Celular**: Integrado com a History API (`window.history.pushState` e `popstate`). Se o usuário apertar o botão ou fizer o gesto nativo de voltar no Android, apenas o modal da nota fecha e salva as alterações, sem sair da página do app.
 
+### 6. Cofre — Notas Criptografadas (AES-256-GCM)
+- **Modelo**: criptografia 100% no cliente (envelope: senha → PBKDF2 → KEK → DEK embrulhada em `vault_meta`). A senha nunca sai do dispositivo; trocar a senha re-embrulha a mesma DEK.
+- **Escopo cifrado**: title/body de `notes`, `note_versions` e binários de anexos (R2 com key neutra). Anexos pulam o `sharp`; metadados (`file_name`/`mime_type`) também cifrados.
+- **Busca**: notas do cofre ficam FORA do índice FTS5 (triggers filtram `is_vault`); busca do cofre é client-side em memória.
+- **UI**: aba `/vault` (destravar/criar senha/trocar senha/travar), "Mover para o cofre" no menu de contexto do Sidebar, auto-lock por inatividade (10 min).
+- **Mobile**: biometria via `expo-local-authentication` + DEK no SecureStore (`expo-secure-store`).
+- **Detalhes**: `docs/VAULT.md` · teste E2E: `npx tsx scripts/test-vault.mts`.
+
 ---
 
 ## 🛠️ Comandos Principais

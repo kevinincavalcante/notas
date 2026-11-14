@@ -15,6 +15,8 @@ export interface PushedNote {
   color: string;
   is_pinned: number | boolean;
   is_archived: number | boolean;
+  /** 1 = nota do cofre (title/body/versionaes chegam como ciphertext) */
+  is_vault?: number | boolean;
   created_at: number;
   updated_at: number;
 }
@@ -43,6 +45,16 @@ export interface PushedVersion {
   created_at: number;
 }
 
+/** Linha única do material do cofre (envelope da DEK) — sincroniza como entidade. */
+export interface PushedVaultMeta {
+  id: string;
+  salt: string;
+  iterations: number;
+  kdf: string;
+  wrapped_dek: string;
+  updated_at: number;
+}
+
 export interface SyncPush {
   notes?: PushedNote[];
   attachments?: PushedAttachment[];
@@ -51,6 +63,8 @@ export interface SyncPush {
   tombstones?: PushedTombstone[];
   /** versões do histórico com created_at >= versions_watermark */
   versions?: PushedVersion[];
+  /** material do cofre (linha única) — push por LWW de updated_at */
+  vault_meta?: PushedVaultMeta[];
   /** maior created_at de versão que a réplica que envia já viu (0 = bootstrap) */
   versions_watermark?: number;
 }

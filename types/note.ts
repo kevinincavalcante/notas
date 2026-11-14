@@ -31,6 +31,8 @@ export interface Note {
   color: string;
   is_pinned: boolean;
   is_archived: boolean;
+  /** 1 = nota do cofre (título/corpo/versões/anexos cifrados no cliente) */
+  is_vault?: boolean;
   created_at: number;
   updated_at: number;
   attachments?: Attachment[];

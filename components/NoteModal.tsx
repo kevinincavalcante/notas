@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { Note, Attachment, NoteVersion } from "@/types/note";
 import {
   Pin,
@@ -40,6 +40,14 @@ import VoiceRecorder from "./VoiceRecorder";
 import LinkPreview, { extractUrls } from "./LinkPreview";
 import MarkdownView from "./MarkdownView";
 import { useUI } from "./UIProvider";
+import { useVault } from "./VaultProvider";
+import {
+  decryptNote as decryptNoteFields,
+  decryptVersions,
+  getVaultMediaUrl,
+  uploadEncryptedFile,
+} from "@/lib/vault-client";
+import { isEncrypted } from "@/lib/vault-crypto";
 
 interface NoteModalProps {
   note: Note;
@@ -49,6 +57,8 @@ interface NoteModalProps {
   onDelete: () => Promise<void>;
   onAddAttachment: (attachment: Attachment) => void;
   onRemoveAttachment: (attachmentId: string) => void;
+  /** Ação opcional após remover anexo (ex.: re-sincronizar a lista do cofre) */
+  onAfterAttachmentChange?: () => void;
 }
 
 export default function NoteModal({
@@ -59,8 +69,11 @@ export default function NoteModal({
   onDelete,
   onAddAttachment,
   onRemoveAttachment,
+  onAfterAttachmentChange,
 }: NoteModalProps) {
   const { confirm, showToast } = useUI();
+  const vault = useVault();
+  const isVaultNote = Boolean(note.is_vault);
   const [title, setTitle] = useState(note.title);
   const [body, setBody] = useState(note.body);
   const [color, setColor] = useState(note.color);
@@ -108,6 +121,32 @@ export default function NoteModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [note.id]);
 
+  // Cofre: blob URLs descriptografados dos anexos (imagens/áudio não podem
+  // ser servidos direto pela rota — os bytes estão cifrados no storage)
+  const [vaultMedia, setVaultMedia] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let cancelled = false;
+    if (!isVaultNote || !vault.dek) {
+      setVaultMedia({});
+      return;
+    }
+    (async () => {
+      const map: Record<string, string> = {};
+      for (const att of note.attachments || []) {
+        if (!att.id) continue;
+        // anexos antigos (fora do cofre) seguem na rota normal
+        if (!isEncrypted(att.mime_type) && !isEncrypted(att.file_name)) continue;
+        const url = await getVaultMediaUrl(vault.dek!, att.id, att.mime_type);
+        if (url) map[att.id] = url;
+      }
+      if (!cancelled) setVaultMedia(map);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [note.id, note.attachments, vault.dek, isVaultNote]);
+
   // Intercepta o botão "Voltar" do navegador/Android no celular para fechar a nota
   useEffect(() => {
     if (!isOpen) return;
@@ -136,7 +175,10 @@ export default function NoteModal({
       const res = await fetch(`/api/notes/${note.id}/versions`);
       const data = await res.json();
       if (res.ok) {
-        setVersions(data.versions || []);
+        // Cofre: versões chegam cifradas — descriptografa com a DEK em memória
+        setVersions(
+          isVaultNote && vault.dek ? decryptVersions(vault.dek, data.versions || []) : data.versions || []
+        );
       }
     } catch (err) {
       console.error("Erro ao carregar histórico de versões:", err);
@@ -161,18 +203,21 @@ export default function NoteModal({
       });
       const data = await res.json();
       if (res.ok && data.note) {
-        setTitle(data.note.title);
-        setBody(data.note.body);
-        setColor(data.note.color);
-        setIsPinned(data.note.is_pinned);
-        setIsArchived(data.note.is_archived);
+        // Cofre: o servidor aplica a versão (cifrada → cifrada) e devolve a
+        // nota cifrada — descriptografa só pro estado da UI (skipPatch abaixo)
+        const restored = isVaultNote && vault.dek ? decryptNoteFields(vault.dek, data.note) : data.note;
+        setTitle(restored.title);
+        setBody(restored.body);
+        setColor(restored.color);
+        setIsPinned(restored.is_pinned);
+        setIsArchived(restored.is_archived);
 
         await onUpdate({
-          title: data.note.title,
-          body: data.note.body,
-          color: data.note.color,
-          is_pinned: data.note.is_pinned,
-          is_archived: data.note.is_archived,
+          title: restored.title,
+          body: restored.body,
+          color: restored.color,
+          is_pinned: restored.is_pinned,
+          is_archived: restored.is_archived,
           skipPatch: true,
         });
 
@@ -218,20 +263,33 @@ export default function NoteModal({
   async function uploadImageFile(file: File, atIndex?: number | null) {
     setUploading(true);
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      // Envia ambos os formatos para garantir compatibilidade
-      formData.append("noteId", note.id);
-      formData.append("note_id", note.id);
+      let data: { attachment?: Attachment; error?: string };
 
-      const res = await fetch("/api/attachments/upload", {
-        method: "POST",
-        body: formData,
-      });
+      if (isVaultNote && vault.dek) {
+        // Cofre: bytes + metadados cifrados no cliente antes de sair do app
+        const att = await uploadEncryptedFile(vault.dek, file, {
+          noteId: note.id,
+          fileName: file.name || "imagem",
+          mimeType: file.type || "image/webp",
+        });
+        data = { attachment: att || undefined, error: att ? undefined : "Falha no upload" };
+      } else {
+        const formData = new FormData();
+        formData.append("file", file);
+        // Envia ambos os formatos para garantir compatibilidade
+        formData.append("noteId", note.id);
+        formData.append("note_id", note.id);
 
-      const data = await res.json();
-      if (res.ok && data.attachment) {
+        const res = await fetch("/api/attachments/upload", {
+          method: "POST",
+          body: formData,
+        });
+        data = await res.json();
+      }
+
+      if (data.attachment) {
         onAddAttachment(data.attachment);
+        onAfterAttachmentChange?.();
 
         const el = bodyTextareaRef.current;
         const currentBody = latestStateRef.current.body;
@@ -300,21 +358,35 @@ export default function NoteModal({
     setUploading(true);
 
     try {
-      const formData = new FormData();
-      formData.append("file", blob, `audio-${Date.now()}.webm`);
-      formData.append("noteId", note.id);
-      formData.append("note_id", note.id);
-      formData.append("duration", String(durationSeconds));
-      formData.append("duration_seconds", String(durationSeconds));
+      let data: { attachment?: Attachment; error?: string };
 
-      const res = await fetch("/api/attachments/upload", {
-        method: "POST",
-        body: formData,
-      });
+      if (isVaultNote && vault.dek) {
+        // Cofre: áudio cifrado no cliente (bytes + metadados)
+        const att = await uploadEncryptedFile(vault.dek, blob, {
+          noteId: note.id,
+          fileName: `audio-${Date.now()}.webm`,
+          mimeType: blob.type || "audio/webm",
+          duration: durationSeconds,
+        });
+        data = { attachment: att || undefined, error: att ? undefined : "Falha ao salvar" };
+      } else {
+        const formData = new FormData();
+        formData.append("file", blob, `audio-${Date.now()}.webm`);
+        formData.append("noteId", note.id);
+        formData.append("note_id", note.id);
+        formData.append("duration", String(durationSeconds));
+        formData.append("duration_seconds", String(durationSeconds));
 
-      const data = await res.json();
-      if (res.ok && data.attachment) {
+        const res = await fetch("/api/attachments/upload", {
+          method: "POST",
+          body: formData,
+        });
+        data = await res.json();
+      }
+
+      if (data.attachment) {
         onAddAttachment(data.attachment);
+        onAfterAttachmentChange?.();
       } else {
         showToast("Falha ao salvar áudio: " + (data.error || "Erro desconhecido"), "error");
       }
@@ -342,6 +414,7 @@ export default function NoteModal({
 
       if (res.ok) {
         onRemoveAttachment(attachmentId);
+        onAfterAttachmentChange?.();
         showToast("Anexo removido.", "info");
       } else {
         showToast("Falha ao excluir anexo.", "error");
@@ -548,6 +621,17 @@ export default function NoteModal({
     ) || [];
   const audioAttachments = note.attachments?.filter((a) => a.mime_type.startsWith("audio/")) || [];
   const detectedUrls = extractUrls(body);
+
+  // Cofre: corpo de EXIBIÇÃO com as URLs de anexos trocadas por blob URLs
+  // descriptografados — o estado `body` continua canônico (/api/attachments/...)
+  const vaultDisplayBody = useMemo(() => {
+    if (!isVaultNote || Object.keys(vaultMedia).length === 0) return body;
+    let out = body;
+    for (const [id, url] of Object.entries(vaultMedia)) {
+      out = out.split(`/api/attachments/${id}`).join(url);
+    }
+    return out;
+  }, [body, vaultMedia, isVaultNote]);
 
   // Contagem rápida de palavras e caracteres para visualização profissional
   const wordCount = body.trim() ? body.trim().split(/\s+/).length : 0;
@@ -799,7 +883,7 @@ export default function NoteModal({
                   viewMode === "split" ? "w-1/2" : "w-full max-w-3xl mx-auto"
                 } h-full p-4 overflow-y-auto bg-white/40 dark:bg-black/20 rounded-2xl border border-black/5 dark:border-white/5`}
               >
-                <MarkdownView content={body} onSetImageWidth={setImageWidth} />
+                <MarkdownView content={vaultDisplayBody} onSetImageWidth={setImageWidth} />
               </div>
             )}
           </div>
@@ -835,7 +919,7 @@ export default function NoteModal({
                       >
                         <div className="flex-1 min-w-0">
                           <AudioPlayer
-                            src={`/api/attachments/${audio.id}`}
+                            src={vaultMedia[audio.id] || `/api/attachments/${audio.id}`}
                             durationSeconds={audio.duration_seconds}
                             fileName={audio.file_name}
                           />
@@ -866,7 +950,7 @@ export default function NoteModal({
                         className="relative group rounded-xl overflow-hidden border border-black/10 aspect-video bg-black/5"
                       >
                         <img
-                          src={`/api/attachments/${img.id}`}
+                          src={vaultMedia[img.id] || `/api/attachments/${img.id}`}
                           alt={img.file_name}
                           className="w-full h-full object-cover"
                         />

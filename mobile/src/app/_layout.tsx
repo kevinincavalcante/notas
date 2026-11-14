@@ -21,6 +21,7 @@ export default function RootLayout() {
         <Stack.Screen name="note/[id]" />
         <Stack.Screen name="search" />
         <Stack.Screen name="config" />
+        <Stack.Screen name="vault" />
       </Stack>
     </ThemeProvider>
   );

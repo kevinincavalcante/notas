@@ -70,6 +70,7 @@ export async function collectLocalPush(
   const attUpserts = new Set<string>();
   const attRemoved: string[] = [];
   const tombIds = new Set<string>();
+  const vaultMetaIds = new Set<string>();
 
   for (const row of logRes.rows) {
     const entity = row.entity as string;
@@ -81,7 +82,7 @@ export async function collectLocalPush(
     else if (entity === "attachment") {
       if (op === "upsert") attUpserts.add(entityId);
       else attRemoved.push(entityId);
-    }
+    } else if (entity === "vault_meta" && op === "upsert") vaultMetaIds.add(entityId);
   }
 
   const push: SyncPush = {
@@ -90,6 +91,7 @@ export async function collectLocalPush(
     attachments_removed: attRemoved,
     tombstones: [],
     versions: [],
+    vault_meta: [],
   };
 
   const idList = (set: Set<string>) => Array.from(set);
@@ -131,6 +133,16 @@ export async function collectLocalPush(
     args: [versionsWatermark],
   });
   push.versions = verRes.rows as unknown as SyncPush["versions"];
+
+  // Material do cofre (linha única, LWW por updated_at)
+  if (vaultMetaIds.size > 0) {
+    const ids = idList(vaultMetaIds);
+    const res = await local.execute({
+      sql: `SELECT * FROM vault_meta WHERE id IN (${placeholders(ids.length)})`,
+      args: ids,
+    });
+    push.vault_meta = res.rows as unknown as SyncPush["vault_meta"];
+  }
 
   return push;
 }
@@ -199,6 +211,7 @@ export async function applyPull(
     color: string;
     is_pinned: number;
     is_archived: number;
+    is_vault?: number;
     created_at: number;
     updated_at: number;
   }[]) || []) {
@@ -212,8 +225,8 @@ export async function applyPull(
     if (localRes.rows.length === 0) {
       await local.execute({
         sql: `
-          INSERT INTO notes (id, title, body, color, is_pinned, is_archived, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO notes (id, title, body, color, is_pinned, is_archived, is_vault, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         args: [
           note.id,
@@ -222,6 +235,7 @@ export async function applyPull(
           note.color || "default",
           note.is_pinned ? 1 : 0,
           note.is_archived ? 1 : 0,
+          note.is_vault ? 1 : 0,
           note.created_at || Date.now(),
           note.updated_at || Date.now(),
         ],
@@ -233,7 +247,7 @@ export async function applyPull(
         await local.execute({
           sql: `
             UPDATE notes
-            SET title = ?, body = ?, color = ?, is_pinned = ?, is_archived = ?, updated_at = ?
+            SET title = ?, body = ?, color = ?, is_pinned = ?, is_archived = ?, is_vault = ?, updated_at = ?
             WHERE id = ?
           `,
           args: [
@@ -242,6 +256,7 @@ export async function applyPull(
             note.color || "default",
             note.is_pinned ? 1 : 0,
             note.is_archived ? 1 : 0,
+            note.is_vault ? 1 : 0,
             note.updated_at,
             note.id,
           ],
@@ -352,6 +367,40 @@ export async function applyPull(
         VALUES (?, ?, ?)
       `,
       args: [nt.note_id, nt.tag_id, nt.created_at || Date.now()],
+    });
+  }
+
+  // Material do cofre: LWW por updated_at (ganha a versão mais nova — setup
+  // inicial ou troca de senha feita em qualquer dispositivo)
+  for (const meta of (result.vault_meta as {
+    id: string;
+    salt: string;
+    iterations: number;
+    kdf: string;
+    wrapped_dek: string;
+    updated_at: number;
+  }[]) || []) {
+    if (!meta?.id || !meta?.salt || !meta?.wrapped_dek) continue;
+    await local.execute({
+      sql: `
+        INSERT INTO vault_meta (id, salt, iterations, kdf, wrapped_dek, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          salt = excluded.salt,
+          iterations = excluded.iterations,
+          kdf = excluded.kdf,
+          wrapped_dek = excluded.wrapped_dek,
+          updated_at = excluded.updated_at
+        WHERE excluded.updated_at > vault_meta.updated_at
+      `,
+      args: [
+        meta.id,
+        meta.salt,
+        meta.iterations || 0,
+        meta.kdf || "PBKDF2-SHA256",
+        meta.wrapped_dek,
+        meta.updated_at || Date.now(),
+      ],
     });
   }
 

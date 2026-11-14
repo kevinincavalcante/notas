@@ -36,6 +36,7 @@ export async function GET(
         ...note,
         is_pinned: Boolean(note.is_pinned),
         is_archived: Boolean(note.is_archived),
+        is_vault: Boolean(note.is_vault),
         attachments: attResult.rows,
         tags: tagsByNoteId[id] || [],
       },
@@ -54,7 +55,7 @@ export async function PATCH(
     const { id } = await params;
     const body = await request.json();
 
-    const allowedFields = ["title", "body", "color", "is_pinned", "is_archived"];
+    const allowedFields = ["title", "body", "color", "is_pinned", "is_archived", "is_vault"];
     const updates: string[] = [];
     const values: any[] = [];
 
@@ -114,7 +115,7 @@ export async function PATCH(
     for (const field of allowedFields) {
       if (field in body) {
         updates.push(`${field} = ?`);
-        if (field === "is_pinned" || field === "is_archived") {
+        if (field === "is_pinned" || field === "is_archived" || field === "is_vault") {
           values.push(body[field] ? 1 : 0);
         } else {
           values.push(body[field]);
@@ -137,9 +138,15 @@ export async function PATCH(
     });
     await logChange("note", id, "upsert");
 
-    // Marcadores automáticos do corpo: recalcula quando o corpo mudou (falha silenciosa)
+    // Marcadores automáticos do corpo: recalcula quando o corpo mudou (falha
+    // silenciosa). Notas do cofre são puladas — o corpo é ciphertext.
     let freshTags: unknown = null;
-    if ("body" in body) {
+    const noteIsVault = await db.execute({
+      sql: `SELECT is_vault FROM notes WHERE id = ?`,
+      args: [id],
+    });
+    const vaultFlag = Boolean(Number(noteIsVault.rows[0]?.is_vault) || 0);
+    if ("body" in body && !vaultFlag) {
       try {
         await syncBodyAutoTags(id, (body.body || "").trim());
         // Devolve as tags atualizadas pra UI aplicar na hora, sem precisar de refresh

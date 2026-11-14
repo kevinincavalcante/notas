@@ -15,6 +15,8 @@
     "apk": "bash scripts/build-apk.sh",
     "test:sync:replica": "tsx scripts/test-sync-replica.mts",
     "test:sync:mobile": "tsx scripts/test-sync-mobile.mts",
+    "test:vault": "tsx scripts/test-vault.mts",
+    "test:vault:sync": "tsx scripts/test-vault-sync.mts",
     "electron:bundle": "esbuild electron/main.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist-electron/main.cjs && cp electron/preload.cjs dist-electron/",
     "electron:start": "npm run build && npm run electron:bundle && electron .",
     "electron:deb": "npm run build && npm run electron:bundle && electron-builder --linux deb"
@@ -22,6 +24,8 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1166.0",
     "@libsql/client": "^0.18.0",
+    "@noble/ciphers": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
     "@tailwindcss/typography": "^0.5.20",
     "bcryptjs": "^3.0.3",
     "highlight.js": "^11.12.0",

@@ -13,6 +13,8 @@ export interface NoteRow {
   color: string;
   is_pinned: number;
   is_archived: number;
+  /** 1 = nota do cofre (title/body chegam cifrados; tela própria) */
+  is_vault: number;
   created_at: number;
   updated_at: number;
 }
@@ -52,12 +54,13 @@ const placeholders = (n: number) => Array.from({ length: n }, () => "?").join(",
 // ---- Leitura ----
 
 export async function listNotes(client: Client, tagId: string | null): Promise<NoteRow[]> {
+  // Notas do cofre (is_vault = 1) ficam fora da lista comum — tela própria em /vault
   const res = tagId
     ? await client.execute({
         sql: `
           SELECT n.* FROM notes n
           JOIN note_tags nt ON nt.note_id = n.id
-          WHERE nt.tag_id = ? AND n.is_archived = 0
+          WHERE nt.tag_id = ? AND n.is_archived = 0 AND n.is_vault = 0
           ORDER BY n.is_pinned DESC, n.updated_at DESC
           LIMIT 200
         `,
@@ -65,7 +68,7 @@ export async function listNotes(client: Client, tagId: string | null): Promise<N
       })
     : await client.execute({
         sql: `
-          SELECT * FROM notes WHERE is_archived = 0
+          SELECT * FROM notes WHERE is_archived = 0 AND is_vault = 0
           ORDER BY is_pinned DESC, updated_at DESC
           LIMIT 200
         `,
@@ -123,7 +126,7 @@ export async function searchNotes(client: Client, query: string): Promise<NoteRo
     sql: `
       SELECT n.* FROM notes_fts
       JOIN notes n ON n.rowid = notes_fts.rowid
-      WHERE notes_fts MATCH ? AND n.is_archived = 0
+      WHERE notes_fts MATCH ? AND n.is_archived = 0 AND n.is_vault = 0
       ORDER BY bm25(notes_fts)
       LIMIT 50
     `,
@@ -199,6 +202,15 @@ export async function setNoteArchived(client: Client, id: string, archived: bool
   await client.execute({
     sql: `UPDATE notes SET is_archived = ?, updated_at = ? WHERE id = ?`,
     args: [archived ? 1 : 0, Date.now(), id],
+  });
+  await logChange(client, "note", id, "upsert");
+}
+
+/** Entra/sai do cofre: vira flag (o conteúdo é cifrado/decifrado pelas telas). */
+export async function setNoteVault(client: Client, id: string, vault: boolean): Promise<void> {
+  await client.execute({
+    sql: `UPDATE notes SET is_vault = ?, updated_at = ? WHERE id = ?`,
+    args: [vault ? 1 : 0, Date.now(), id],
   });
   await logChange(client, "note", id, "upsert");
 }

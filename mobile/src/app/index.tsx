@@ -539,7 +539,10 @@ export default function HomeScreen() {
       <TopBar
         user={user}
         onAvatar={() => router.push("/config")}
-        right={[{ label: "⌕", onPress: () => router.push("/search") }]}
+        right={[
+          { label: "⌕", onPress: () => router.push("/search") },
+          { label: "🔒", onPress: () => router.push("/vault") },
+        ]}
       />
       <ChipsRow tags={tags} active={activeTag} onSelect={setActiveTag} />
 

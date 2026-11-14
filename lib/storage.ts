@@ -6,6 +6,7 @@ import {
 } from "@aws-sdk/client-s3";
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 
 let r2ClientInstance: S3Client | null = null;
 
@@ -75,6 +76,13 @@ export async function uploadAttachmentFile(
   const localFilePath = path.join(uploadDir, localFileName);
   fs.writeFileSync(localFilePath, buffer);
   return { fileId: `local:${localFileName}`, fileSize: buffer.length };
+}
+
+/** Key neutra pra anexos cifrados — o nome original não vaza pro storage. */
+export function uploadEncryptedAttachmentFile(
+  buffer: Buffer
+): Promise<UploadResult> {
+  return uploadAttachmentFile(`enc_${crypto.randomUUID()}`, buffer, "application/octet-stream");
 }
 
 export async function getAttachmentStream(

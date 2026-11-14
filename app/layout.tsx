@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { UIProvider } from "@/components/UIProvider";
+import VaultProvider from "@/components/VaultProvider";
 
 export const metadata: Metadata = {
   title: "Notas - Gerenciador Pessoal",
@@ -14,7 +15,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="pt-BR">
-      <body className="antialiased"><UIProvider>{children}</UIProvider></body>
+      <body className="antialiased"><UIProvider><VaultProvider>{children}</VaultProvider></UIProvider></body>
     </html>
   );
 }

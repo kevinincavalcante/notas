@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { uploadAttachmentFile } from "@/lib/storage";
+import { uploadAttachmentFile, uploadEncryptedAttachmentFile } from "@/lib/storage";
 import { db } from "@/lib/turso";
 import { autoTagForFile } from "@/lib/auto-tags";
 import { attachAutoTag } from "@/lib/tags";
@@ -26,6 +26,10 @@ export async function POST(request: Request) {
     const duration = durationStr ? parseFloat(durationStr) : null;
     const customFileName = (formData.get("fileName") || formData.get("file_name")) as string | null;
     const customId = (formData.get("id") || formData.get("attachmentId")) as string | null;
+    // Anexo do cofre: o cliente envia os bytes JÁ cifrados (AES-256-GCM) e os
+    // campos file_name/mime também cifrados. O servidor nunca processa o
+    // conteúdo (pula o sharp) e não anexa auto-tags.
+    const isEncrypted = formData.get("encrypted") === "1";
 
     if (!file || !noteId) {
       return NextResponse.json(
@@ -47,6 +51,52 @@ export async function POST(request: Request) {
     let processedBuffer = fileBuffer;
     let finalMimeType = file.type || "application/octet-stream";
     let finalFileName = customFileName || file.name || "arquivo";
+
+    if (isEncrypted) {
+      // Cofre: bytes já chegam cifrados — sobe como está, com key neutra
+      // (o nome real ficaria visível no storage) e mime genérico.
+      const { fileId, fileSize } = await uploadEncryptedAttachmentFile(processedBuffer);
+      const attachmentId = customId?.trim() ? customId.trim() : crypto.randomUUID();
+      const now = Date.now();
+
+      await db.execute({
+        sql: `
+          INSERT INTO attachments (id, note_id, storage_key, file_name, mime_type, file_size, duration_seconds, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            storage_key = excluded.storage_key,
+            file_name = excluded.file_name,
+            mime_type = excluded.mime_type,
+            file_size = excluded.file_size,
+            duration_seconds = COALESCE(excluded.duration_seconds, attachments.duration_seconds)
+        `,
+        args: [
+          attachmentId,
+          noteId,
+          fileId,
+          finalFileName, // ciphertext "enc1:..." — o cliente descriptografa
+          finalMimeType,
+          fileSize,
+          duration,
+          now,
+        ],
+      });
+      await logChange("attachment", attachmentId, "upsert");
+
+      return NextResponse.json({
+        success: true,
+        attachment: {
+          id: attachmentId,
+          note_id: noteId,
+          storage_key: fileId,
+          file_name: finalFileName,
+          mime_type: finalMimeType,
+          file_size: fileSize,
+          duration_seconds: duration,
+          created_at: now,
+        },
+      });
+    }
 
     // Otimização de Imagens com Sharp (WebP, max 1600px de largura)
     if (file.type.startsWith("image/")) {

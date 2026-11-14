@@ -34,13 +34,14 @@ export async function GET(request: Request) {
           n.color, 
           n.is_pinned, 
           n.is_archived, 
+          n.is_vault,
           n.created_at, 
           n.updated_at,
           snippet(notes_fts, 0, '<mark>', '</mark>', '...', 10) as title_snippet,
           snippet(notes_fts, 1, '<mark>', '</mark>', '...', 15) as body_snippet
         FROM notes_fts
         JOIN notes n ON n.rowid = notes_fts.rowid
-        WHERE notes_fts MATCH ?
+        WHERE notes_fts MATCH ? AND n.is_vault = 0
         ORDER BY bm25(notes_fts)
         LIMIT 50
       `,
@@ -75,6 +76,7 @@ export async function GET(request: Request) {
       ...row,
       is_pinned: Boolean(row.is_pinned),
       is_archived: Boolean(row.is_archived),
+      is_vault: Boolean(row.is_vault),
       attachments: attachmentsByNoteId[row.id as string] || [],
       tags: tagsByNoteId[row.id as string] || [],
     }));

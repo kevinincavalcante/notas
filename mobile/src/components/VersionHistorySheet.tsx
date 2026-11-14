@@ -10,10 +10,13 @@ import {
   View,
 } from "react-native";
 import { fetchVersions, restoreVersion, type NoteVersionItem } from "../lib/versions";
+import { decryptVersionRows } from "../lib/vault";
 
 /**
  * Histórico de versões estilo desktop: lista → pré-visualiza → restaura.
  * O servidor snapshot o estado atual antes de restaurar (nada se perde).
+ * Versões de nota do cofre chegam cifradas — o `dek` opcional decifra
+ * pra exibição (a restauração no servidor copia ciphertext→ciphertext).
  */
 
 function formatWhen(ts: number): string {
@@ -28,11 +31,14 @@ function formatWhen(ts: number): string {
 export default function VersionHistorySheet({
   visible,
   noteId,
+  dek,
   onClose,
   onRestored,
 }: {
   visible: boolean;
   noteId: string;
+  /** DEK do cofre quando a nota é do cofre (versões chegam cifradas). */
+  dek?: Uint8Array | null;
   onClose: () => void;
   onRestored: () => void;
 }) {
@@ -46,13 +52,15 @@ export default function VersionHistorySheet({
     setLoading(true);
     setSelected(null);
     try {
-      setVersions(await fetchVersions(noteId));
+      const raw = await fetchVersions(noteId);
+      // Nota do cofre: title/body chegam como "enc1:..." — decifra pra exibição
+      setVersions(dek ? decryptVersionRows(dek, raw) : raw);
     } catch (e) {
       Alert.alert("Histórico", e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [noteId]);
+  }, [noteId, dek]);
 
   useEffect(() => {
     if (visible) void load();

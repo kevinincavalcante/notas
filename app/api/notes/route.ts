@@ -9,16 +9,19 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const isArchived = searchParams.get("archived") === "1" ? 1 : 0;
+    // ?vault=1 devolve SOMENTE notas do cofre (cifradas — o cliente descriptografa).
+    // Sem o parâmetro, notas do cofre ficam de fora de qualquer listagem normal.
+    const vaultOnly = searchParams.get("vault") === "1";
 
     // Busca as notas ordenadas: fixadas primeiro, depois pela data de atualização
     const notesResult = await db.execute({
       sql: `
-        SELECT id, title, body, color, is_pinned, is_archived, created_at, updated_at
+        SELECT id, title, body, color, is_pinned, is_archived, is_vault, created_at, updated_at
         FROM notes
-        WHERE is_archived = ?
+        WHERE is_archived = ? AND is_vault = ?
         ORDER BY is_pinned DESC, updated_at DESC
       `,
-      args: [isArchived],
+      args: [isArchived, vaultOnly ? 1 : 0],
     });
 
     const noteIds = notesResult.rows.map((r) => r.id as string);
@@ -49,6 +52,7 @@ export async function GET(request: Request) {
       ...row,
       is_pinned: Boolean(row.is_pinned),
       is_archived: Boolean(row.is_archived),
+      is_vault: Boolean(row.is_vault),
       attachments: attachmentsByNoteId[row.id as string] || [],
       tags: tagsByNoteId[row.id as string] || [],
     }));
@@ -70,19 +74,22 @@ export async function POST(request: Request) {
     const color = data.color || "default";
     const isPinned = data.is_pinned ? 1 : 0;
     const isArchived = data.is_archived ? 1 : 0;
+    // Nota do cofre: o cliente envia title/body JÁ cifrados (AES-256-GCM) —
+    // o servidor nunca vê plaintext e não deriva auto-tags de ciphertext.
+    const isVault = data.is_vault ? 1 : 0;
 
     await db.execute({
       sql: `
-        INSERT INTO notes (id, title, body, color, is_pinned, is_archived, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO notes (id, title, body, color, is_pinned, is_archived, is_vault, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
-      args: [id, title, body, color, isPinned, isArchived, now, now],
+      args: [id, title, body, color, isPinned, isArchived, isVault, now, now],
     });
     await logChange("note", id, "upsert");
 
-    // Marcadores automáticos do corpo (falha silenciosa)
+    // Marcadores automáticos do corpo (falha silenciosa) — pulados pro cofre
     let tags: Array<{ id: string; name: string; kind: "auto" | "user" }> = [];
-    if (body) {
+    if (body && !isVault) {
       try {
         await syncBodyAutoTags(id, body);
         const tagsByNoteId = await getTagsByNoteId([id]);
@@ -100,6 +107,7 @@ export async function POST(request: Request) {
         color,
         is_pinned: Boolean(isPinned),
         is_archived: Boolean(isArchived),
+        is_vault: Boolean(isVault),
         created_at: now,
         updated_at: now,
         attachments: [],

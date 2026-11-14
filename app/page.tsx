@@ -7,6 +7,7 @@ import TabStrip from "@/components/TabStrip";
 import { Note, Attachment, Tag } from "@/types/note";
 import { StickyNote, Plus, Menu } from "lucide-react";
 import { useUI } from "@/components/UIProvider";
+import { useVault } from "@/components/VaultProvider";
 
 export default function DashboardPage() {
   const [notes, setNotes] = useState<Note[]>([]);
@@ -20,6 +21,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const { confirm, showToast } = useUI();
+  const vault = useVault();
 
   // Espelho sempre-fresco do notes (usado em paths async de save/exclusão,
   // ex: flush de save no unmount de uma aba recém-excluída)
@@ -418,6 +420,45 @@ export default function DashboardPage() {
     );
   }
 
+  async function handleMoveToVault(noteId: string) {
+    const target = notesRef.current.find((n) => n.id === noteId);
+    if (!target) return;
+    // Fechar a nota aberta: sai da listagem e das abas
+    closeTab(noteId);
+
+    // Confirma + destrava o cofre se necessário (modal global)
+    const confirmed = await confirm({
+      title: "Mover para o cofre",
+      message:
+        "Título, corpo, anexos e histórico serão criptografados no seu dispositivo (AES-256-GCM). A nota some da busca comum e só aparece no Cofre.",
+      confirmText: "Criptografar",
+    });
+    if (!confirmed) {
+      if (notesRef.current.some((n) => n.id === noteId)) openTabNew(noteId);
+      return;
+    }
+
+    const ok = await vault.ensureUnlocked();
+    if (!ok) {
+      showToast("O cofre continua travado — nada foi movido.", "info");
+      if (notesRef.current.some((n) => n.id === noteId)) openTabNew(noteId);
+      return;
+    }
+
+    // some da lista enquanto a transição roda
+    setNotes((prev) => prev.filter((n) => n.id !== noteId));
+
+    const { moveNoteToVault } = await import("@/lib/vault-client");
+    const moved = vault.dek ? await moveNoteToVault(vault.dek, noteId) : false;
+    if (!moved) {
+      showToast("Falha ao criptografar a nota — ela continua nas suas notas.", "error");
+      // recarrega pra trazer a nota de volta ao estado real
+      void loadNotesRef.current();
+    } else {
+      showToast("Nota movida para o cofre. 🔒", "success");
+    }
+  }
+
   function handleSelectNote(note: Note) {
     // Estilo browser: nota já aberta vira a aba ativa; senão abre em nova aba
     openTab(note.id);
@@ -440,6 +481,7 @@ export default function DashboardPage() {
         onTogglePin={handleTogglePin}
         onToggleArchive={handleToggleArchive}
         onDeleteNote={handleDeleteNote}
+        onMoveToVault={handleMoveToVault}
       />
 
       <main className="flex-1 h-full flex flex-col min-w-0 bg-slate-50 dark:bg-slate-950 overflow-hidden">

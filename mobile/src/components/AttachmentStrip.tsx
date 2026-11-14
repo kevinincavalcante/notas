@@ -2,11 +2,10 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
 import {
-  cacheAttachment,
-  cacheExists,
-  cachePath,
+  displayUriFor,
   deleteAttachment,
 } from "../lib/attachments";
+import { decryptAttachmentRow, getVaultDek } from "../lib/vault";
 import type { AttachmentRow } from "../lib/db";
 
 /**
@@ -34,13 +33,9 @@ export function AudioBar({
   const status = useAudioPlayerStatus(player);
 
   useEffect(() => {
-    (async () => {
-      if (await cacheExists.has(att.id, cachePath(att))) {
-        setUri(cachePath(att));
-      } else {
-        setUri(await cacheAttachment(att));
-      }
-    })();
+    // displayUriFor decide sozinho: anexo comum vai pro cache de sempre,
+    // anexo do cofre é decifrado na hora (dek em memória)
+    void displayUriFor(att).then((u) => setUri(u));
   }, [att.id]);
 
   const playing = status?.playing ?? false;
@@ -86,10 +81,21 @@ export function FileChip({
   att: AttachmentRow;
   onRemove?: (att: AttachmentRow) => void;
 }) {
+  // Anexo do cofre: nome chega cifrado — mostra decifrado quando há dek
+  const [name, setName] = useState(att.file_name);
+  useEffect(() => {
+    const dek = getVaultDek();
+    if (!dek) {
+      setName(att.file_name);
+      return;
+    }
+    setName(decryptAttachmentRow(dek, att).file_name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [att.id, att.file_name]);
   return (
     <View style={styles.fileChip}>
       <Text style={styles.fileIcon}>📎</Text>
-      <Text style={styles.fileName} numberOfLines={1}>{att.file_name}</Text>
+      <Text style={styles.fileName} numberOfLines={1}>{name}</Text>
       {onRemove && <RemoveButton att={att} onRemoved={() => onRemove(att)} />}
     </View>
   );

@@ -22,14 +22,21 @@ import { NOTE_COLOR_IDS, NOTE_COLOR_SWATCH } from "../../lib/colors";
 import { notifyLocalChange, onSynced, scheduleQuietSync, type SyncApiConfig } from "../../lib/sync";
 import { getSyncApi } from "../../lib/api";
 import {
+  displayUriFor,
   uploadAttachment,
   deleteAttachment,
   listAttachments,
-  cachePath,
-  cacheExists,
-  cacheAttachment,
   type UploadInput,
 } from "../../lib/attachments";
+import {
+  decryptAttachmentRow,
+  decryptNoteRow,
+  getVaultDek,
+  isBiometricEnabled,
+  unlockVault,
+  unlockWithBiometric,
+} from "../../lib/vault";
+import { decryptString, encryptString, isEncrypted } from "../../../../lib/vault-crypto";
 import type { AttachmentRow } from "../../lib/db";
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
@@ -53,15 +60,11 @@ function KeepTopImage({
 
   useEffect(() => {
     let active = true;
-    (async () => {
-      const local = cachePath(att);
-      if (await cacheExists.has(att.id, local)) {
-        if (active) setUri(local);
-      } else {
-        const remote = await cacheAttachment(att);
-        if (active) setUri(remote);
-      }
-    })();
+    // displayUriFor resolve o cache local e, pro anexo do cofre, decifra
+    // antes de mostrar (dek em memória)
+    void displayUriFor(att).then((resolved) => {
+      if (active) setUri(resolved);
+    });
     return () => {
       active = false;
     };
@@ -103,10 +106,20 @@ export default function NoteScreen() {
   const [selOverride, setSelOverride] = useState<{ start: number; end: number } | undefined>();
   const [attachments, setAttachments] = useState<AttachmentRow[]>([]);
 
+  // ---- Cofre: nota cifrada exige DEK em memória antes de qualquer leitura ----
+  const vaultRef = useRef(false); // a nota em edição é do cofre?
+  const [vaultLocked, setVaultLocked] = useState(false);
+  const [vaultPass, setVaultPass] = useState("");
+  const [vaultError, setVaultError] = useState<string | null>(null);
+  const [vaultBusy, setVaultBusy] = useState(false);
+  const [vaultBiometric, setVaultBiometric] = useState(false);
+
   const attsKeyRef = useRef("");
   const loadAtts = useCallback(() => {
     if (!noteId) return;
     void listAttachments(noteId).then((atts) => {
+      // Anexos ficam CRUS aqui (file_name/mime cifrados no cofre) — a
+      // decifração acontece nos pontos de exibição (filtros, chips, uris)
       // Sem re-render quando nada mudou: um setAttachments novo a cada ciclo
       // de sync re-renderizava o editor inteiro com o teclado aberto
       const key = atts
@@ -129,10 +142,15 @@ export default function NoteScreen() {
         try {
           const { client } = await getDb();
           const fresh = await getNote(client, noteId);
-          if (fresh && fresh.title && !latestRef.current.title) {
-            setTitle(fresh.title);
-            latestRef.current.title = fresh.title;
-            if (savedRef.current) savedRef.current.title = fresh.title;
+          if (!fresh || !fresh.title || latestRef.current.title) return;
+          // Nota do cofre: o título chega cifrado — sem dek, nada a fazer
+          const dek = vaultRef.current ? getVaultDek() : null;
+          if (vaultRef.current && !dek) return;
+          const freshTitle = dek ? decryptNoteRow(dek, fresh).title : fresh.title;
+          if (freshTitle) {
+            setTitle(freshTitle);
+            latestRef.current.title = freshTitle;
+            if (savedRef.current) savedRef.current.title = freshTitle;
           }
         } catch {
           // ignore
@@ -156,7 +174,8 @@ export default function NoteScreen() {
       for (const id of ids) {
         const att = attachments.find((a) => a.id === id);
         if (!att) continue;
-        const uri = await cacheAttachment(att);
+        // displayUriFor decifra anexos do cofre na hora (o resto é o cache de sempre)
+        const uri = await displayUriFor(att);
         if (uri) map[id] = uri;
       }
       if (active) setBodyImgUris(map);
@@ -166,10 +185,18 @@ export default function NoteScreen() {
     };
   }, [body, attachments]);
 
-  const imageAttachments = attachments.filter((a) => a.mime_type.startsWith("image/"));
-  const audioAttachments = attachments.filter((a) => a.mime_type.startsWith("audio/"));
+  // Filtros por tipo: com nota do cofre, mime chega cifrado — a "vista"
+  // decifra os metadados em memória (as linhas guardadas continuam cruas)
+  const vaultDek = vaultRef.current ? getVaultDek() : null;
+  const attView = useCallback(
+    (a: AttachmentRow): AttachmentRow => (vaultDek ? decryptAttachmentRow(vaultDek, a) : a),
+    [vaultDek]
+  );
+  const imageAttachments = attachments.filter((a) => attView(a).mime_type.startsWith("image/"));
+  const audioAttachments = attachments.filter((a) => attView(a).mime_type.startsWith("audio/"));
   const fileAttachments = attachments.filter(
-    (a) => !a.mime_type.startsWith("image/") && !a.mime_type.startsWith("audio/")
+    (a) =>
+      !attView(a).mime_type.startsWith("image/") && !attView(a).mime_type.startsWith("audio/")
   );
   // Modo Joplin: existentes abrem em LEITURA (preview markdown, texto
   // selecionável); ✏️ entra em edição. Nota nova abre direto editando.
@@ -196,6 +223,14 @@ export default function NoteScreen() {
     if (!saved) return;
     const latest = latestRef.current;
 
+    // Cofre travado (ex.: auto-lock no background) com a nota aberta:
+    // NUNCA gravamos plaintext numa nota do cofre — o texto fica em tela
+    // (não salvo) até o usuário destravar de novo
+    if (vaultRef.current && !getVaultDek()) {
+      setStatus("unsaved");
+      return;
+    }
+
     // Nota vazia (título e corpo em branco, sem anexo) → descarta,
     // igual o desktop (sem lixo "Sem título" no banco nem no sync)
     if (latest.title.trim() === "" && latest.body.trim() === "") {
@@ -216,18 +251,34 @@ export default function NoteScreen() {
     }
 
     const patch: NotePatch = {};
-    if (latest.title !== saved.title) patch.title = latest.title;
-    if (latest.body !== saved.body) patch.body = latest.body;
+    // Refs locais guardam PLAINTEXT — a cifração (nota do cofre) acontece
+    // só no patch final, pra comparação latest !== saved continuar limpa
+    const plainPatch: NotePatch = {};
+    if (latest.title !== saved.title) {
+      plainPatch.title = latest.title;
+      patch.title = latest.title;
+    }
+    if (latest.body !== saved.body) {
+      plainPatch.body = latest.body;
+      patch.body = latest.body;
+    }
     if (latest.color !== saved.color) patch.color = latest.color;
     if (Object.keys(patch).length === 0) {
       setStatus("saved");
       return;
     }
+    // Nota do cofre: title/body vão pro banco CIFRADOS (o anexo de attachments
+    // e o markdown do corpo continuam com o nome em claro dentro do plaintext)
+    const dek = vaultRef.current ? getVaultDek() : null;
+    if (dek) {
+      if (patch.title !== undefined) patch.title = encryptString(dek, patch.title);
+      if (patch.body !== undefined) patch.body = encryptString(dek, patch.body);
+    }
     setStatus("saving");
     const { client } = await getDb();
     const now = Date.now();
     await updateNote(client, saved.id, patch);
-    savedRef.current = { ...saved, ...patch, updated_at: now };
+    savedRef.current = { ...saved, ...plainPatch, updated_at: now };
     setStatus("saved");
     notifyLocalChange();
     const cfg = apiRef.current ?? (await getSyncApi());
@@ -257,38 +308,93 @@ export default function NoteScreen() {
     }
   }, [params.startAudio, loaded, recording]);
 
-  // carrega a nota
+  // carrega a nota (destravar o cofre re-executa pra re-decifrar)
+  const loadNote = useCallback(async () => {
+    const { client } = await getDb();
+    const note = noteId ? await getNote(client, noteId) : null;
+    if (!note) {
+      setMissing(true);
+      setLoaded(true);
+      return;
+    }
+    vaultRef.current = Boolean(note.is_vault);
+    const dek = vaultRef.current ? getVaultDek() : null;
+    if (vaultRef.current && !dek) {
+      // 🔒 Cofre travado: tela de senha e nada é lido/decifrado
+      setVaultLocked(true);
+      setVaultError(null);
+      setVaultBiometric(await isBiometricEnabled());
+      setLoaded(true);
+      return;
+    }
+    setVaultLocked(false);
+    // Nota do cofre: refs/estado recebem o CONTEÚDO DESCRIPTOGRAFADO —
+    // o banco continua cifrado (a cifração de volta acontece no flushSave)
+    const view = dek ? decryptNoteRow(dek, note) : note;
+    savedRef.current = view;
+    latestRef.current = { title: view.title, body: view.body, color: view.color };
+    prevBodyRef.current = view.body;
+    setTitle(view.title);
+    setBody(view.body);
+    setColor(view.color);
+    apiRef.current = await getSyncApi();
+    // Anexos na mão já pro modo inicial (nota de áudio: corpo vazio,
+    // mas tem anexo — não é nota nova, abre em leitura)
+    const atts = await listAttachments(noteId);
+    setAttachments(atts);
+    attsKeyRef.current = atts.map((a) => `${a.id}:${a.storage_key}:${a.file_size}`).join("|");
+    setLoaded(true);
+    // Nota nova/sem nada (sem texto E sem anexo) ou solicitada com edit:
+    // abre direto no body
+    if ((!view.title && !view.body && atts.length === 0) || params.mode === "edit" || params.startAudio === "1") {
+      setMode("edit");
+      setTimeout(() => bodyRef.current?.focus(), 350);
+    } else {
+      setMode("read");
+    }
+  }, [noteId, params.mode, params.startAudio]);
+
   useEffect(() => {
-    (async () => {
-      const { client } = await getDb();
-      const note = noteId ? await getNote(client, noteId) : null;
-      if (!note) {
-        setMissing(true);
-        setLoaded(true);
+    void loadNote();
+  }, [loadNote]);
+
+  // ---- Destravar o cofre de dentro da nota ----
+  async function handleVaultUnlock() {
+    if (vaultBusy) return;
+    setVaultError(null);
+    setVaultBusy(true);
+    try {
+      const ok = await unlockVault(vaultPass);
+      if (!ok) {
+        setVaultError("Senha incorreta.");
         return;
       }
-      savedRef.current = note;
-      latestRef.current = { title: note.title, body: note.body, color: note.color };
-      prevBodyRef.current = note.body;
-      setTitle(note.title);
-      setBody(note.body);
-      setColor(note.color);
-      apiRef.current = await getSyncApi();
-      // Anexos na mão já pro modo inicial (nota de áudio: corpo vazio,
-      // mas tem anexo — não é nota nova, abre em leitura)
-      const atts = await listAttachments(noteId);
-      setAttachments(atts);
-      setLoaded(true);
-      // Nota nova/sem nada (sem texto E sem anexo) ou solicitada com edit:
-      // abre direto no body
-      if ((!note.title && !note.body && atts.length === 0) || params.mode === "edit" || params.startAudio === "1") {
-        setMode("edit");
-        setTimeout(() => bodyRef.current?.focus(), 350);
-      } else {
-        setMode("read");
+      setVaultPass("");
+      await loadNote();
+    } catch (e) {
+      setVaultError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setVaultBusy(false);
+    }
+  }
+
+  async function handleVaultUnlockBiometric() {
+    if (vaultBusy) return;
+    setVaultError(null);
+    setVaultBusy(true);
+    try {
+      const ok = await unlockWithBiometric();
+      if (!ok) {
+        setVaultError("Biometria falhou — use a senha.");
+        return;
       }
-    })();
-  }, [noteId]);
+      await loadNote();
+    } catch (e) {
+      setVaultError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setVaultBusy(false);
+    }
+  }
 
   // Gesto ou botão de voltar do Android: salva imediatamente e sai da tela
   useEffect(() => {
@@ -429,12 +535,20 @@ export default function NoteScreen() {
     const fresh = await getNote(client, saved.id);
     if (!fresh) return;
     if (timerRef.current) clearTimeout(timerRef.current);
-    savedRef.current = fresh;
-    latestRef.current = { title: fresh.title, body: fresh.body, color: fresh.color };
-    prevBodyRef.current = fresh.body;
-    setTitle(fresh.title);
-    setBody(fresh.body);
-    setColor(fresh.color);
+    // Nota do cofre: o conteúdo (e o snapshot restaurado) chega cifrado —
+    // a restauração no servidor copia ciphertext→ciphertext, nada quebra
+    const dek = vaultRef.current ? getVaultDek() : null;
+    if (vaultRef.current && !dek) {
+      setVaultLocked(true);
+      return;
+    }
+    const view = dek ? decryptNoteRow(dek, fresh) : fresh;
+    savedRef.current = view;
+    latestRef.current = { title: view.title, body: view.body, color: view.color };
+    prevBodyRef.current = view.body;
+    setTitle(view.title);
+    setBody(view.body);
+    setColor(view.color);
     setStatus("saved");
     setMode("read");
     loadAtts();
@@ -500,10 +614,30 @@ export default function NoteScreen() {
           console.warn("Compressão falhou, enviando original:", e);
         }
       }
-      const att = await runUpload({ uri, fileName, mimeType, noteId: savedRef.current!.id });
+      const att = await runUpload({
+        uri,
+        fileName,
+        mimeType,
+        noteId: savedRef.current!.id,
+        // Nota do cofre: bytes/nome/mime saem cifrados (runUpload só repassa)
+        encrypted: vaultRef.current || undefined,
+      });
       if (att) {
+        // O file_name do anexo cifrado volta encriptado — o markdown do corpo
+        // mantém o nome legível (a troca de uri é só na exibição, via displayUriFor)
+        const dek = vaultRef.current ? getVaultDek() : null;
+        const displayName =
+          dek && isEncrypted(att.file_name)
+            ? (() => {
+                try {
+                  return decryptString(dek, att.file_name);
+                } catch {
+                  return "arquivo";
+                }
+              })()
+            : att.file_name;
         // Insere a foto no corpo da nota como Markdown estilo Keep/Joplin
-        const imgMarkdown = `\n\n![${att.file_name}](/api/attachments/${att.id})\n\n`;
+        const imgMarkdown = `\n\n![${displayName}](/api/attachments/${att.id})\n\n`;
         const currentBody = latestRef.current.body || "";
         const nextBody = currentBody ? `${currentBody.trimEnd()}${imgMarkdown}` : imgMarkdown.trim();
         touch("body", nextBody);
@@ -526,6 +660,8 @@ export default function NoteScreen() {
             mimeType: "audio/mp4",
             noteId: savedRef.current.id,
             durationSeconds: (Date.now() - recordStartRef.current) / 1000,
+            // Nota do cofre: áudio também sai cifrado
+            encrypted: vaultRef.current || undefined,
           });
         }
       } catch (e) {
@@ -565,6 +701,53 @@ export default function NoteScreen() {
     return (
       <View style={[styles.root, styles.center]}>
         <Text style={styles.muted}>Abrindo…</Text>
+      </View>
+    );
+  }
+
+  // 🔒 Cofre travado: nenhuma nota cifrada é lida antes da senha
+  if (vaultLocked) {
+    return (
+      <View style={[styles.root, styles.center, styles.lockWrap]}>
+        <Text style={styles.lockTitle}>🔒 Cofre travado</Text>
+        <Text style={styles.lockHint}>
+          Esta nota está no cofre. Digite a senha para ler.
+        </Text>
+
+        <TextInput
+          style={styles.input}
+          placeholder="Senha do cofre"
+          placeholderTextColor="#71717a"
+          secureTextEntry
+          value={vaultPass}
+          onChangeText={setVaultPass}
+          editable={!vaultBusy}
+          onSubmitEditing={() => void handleVaultUnlock()}
+        />
+
+        <Pressable
+          style={[styles.button, vaultBusy && { opacity: 0.7 }]}
+          onPress={() => void handleVaultUnlock()}
+          disabled={vaultBusy}
+        >
+          {vaultBusy ? (
+            <ActivityIndicator size="small" color="#18181b" />
+          ) : (
+            <Text style={styles.buttonText}>Destravar</Text>
+          )}
+        </Pressable>
+
+        {vaultBiometric && !vaultBusy && (
+          <Pressable style={styles.ghostButton} onPress={() => void handleVaultUnlockBiometric()}>
+            <Text style={styles.ghostButtonText}>🔓 Desbloquear com biometria</Text>
+          </Pressable>
+        )}
+
+        {vaultError && <Text style={styles.error}>{vaultError}</Text>}
+
+        <Pressable onPress={() => router.back()} hitSlop={8}>
+          <Text style={styles.link}>Voltar</Text>
+        </Pressable>
       </View>
     );
   }
@@ -783,6 +966,7 @@ export default function NoteScreen() {
       <VersionHistorySheet
         visible={historyOpen}
         noteId={noteId ?? ""}
+        dek={vaultRef.current ? getVaultDek() : null}
         onClose={() => setHistoryOpen(false)}
         onRestored={() => void reloadNote()}
       />
@@ -930,6 +1114,67 @@ const styles = StyleSheet.create({
   link: {
     color: "#60a5fa",
     fontSize: 14,
+  },
+  // ---- Cofre travado (estilos reaproveitados do login do index) ----
+  lockWrap: {
+    padding: 28,
+    alignSelf: "stretch",
+    maxWidth: 440,
+    width: "100%",
+    marginHorizontal: "auto",
+  },
+  lockTitle: {
+    color: "#fafafa",
+    fontSize: 24,
+    fontWeight: "800",
+  },
+  lockHint: {
+    color: "#71717a",
+    fontSize: 13.5,
+    textAlign: "center",
+    marginBottom: 6,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: "#2c2c31",
+    borderRadius: 12,
+    backgroundColor: "#1c1c1f",
+    color: "#fafafa",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    alignSelf: "stretch",
+  },
+  button: {
+    backgroundColor: "#fbbf24",
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: "center",
+    alignSelf: "stretch",
+    marginTop: 6,
+  },
+  buttonText: {
+    color: "#1c1917",
+    fontWeight: "700",
+    fontSize: 16,
+  },
+  ghostButton: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#2c2c31",
+    backgroundColor: "#1c1c1f",
+    paddingVertical: 13,
+    alignItems: "center",
+    alignSelf: "stretch",
+  },
+  ghostButtonText: {
+    color: "#e4e4e7",
+    fontWeight: "600",
+    fontSize: 14.5,
+  },
+  error: {
+    color: "#f87171",
+    fontSize: 13,
   },
   topImagesContainer: {
     gap: 12,

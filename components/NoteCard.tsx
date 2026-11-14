@@ -13,6 +13,8 @@ interface NoteCardProps {
   onToggleArchive: (e: React.MouseEvent) => void;
   onDelete: (e: React.MouseEvent) => void;
   onChangeColor: (color: string) => void;
+  /** Cofre: blob URL descriptografado por anexo (imagens/áudio do card) */
+  attachmentSrcMap?: Record<string, string>;
 }
 
 export default function NoteCard({
@@ -22,6 +24,7 @@ export default function NoteCard({
   onToggleArchive,
   onDelete,
   onChangeColor,
+  attachmentSrcMap,
 }: NoteCardProps) {
   const imageAttachments = note.attachments?.filter((a) => a.mime_type.startsWith("image/")) || [];
   const audioAttachments = note.attachments?.filter((a) => a.mime_type.startsWith("audio/")) || [];
@@ -62,7 +65,7 @@ export default function NoteCard({
             {imageAttachments.slice(0, 1).map((img) => (
               <img
                 key={img.id}
-                src={`/api/attachments/${img.id}`}
+                src={attachmentSrcMap?.[img.id] || `/api/attachments/${img.id}`}
                 alt={img.file_name}
                 loading="lazy"
                 className="w-full h-auto object-cover max-h-56"
@@ -125,7 +128,7 @@ export default function NoteCard({
               {audioAttachments.map((audio) => (
                 <AudioPlayer
                   key={audio.id}
-                  src={`/api/attachments/${audio.id}`}
+                  src={attachmentSrcMap?.[audio.id] || `/api/attachments/${audio.id}`}
                   durationSeconds={audio.duration_seconds}
                   fileName={audio.file_name}
                 />
