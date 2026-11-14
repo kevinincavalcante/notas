@@ -9,24 +9,22 @@ import {
   useRef,
   useState,
 } from "react";
-import { Lock, X, KeyRound, Loader2 } from "lucide-react";
 import {
-  DEFAULT_ITERATIONS,
   createVaultMaterialAsync,
-  deriveKekAsync,
+  openVaultMaterialAsync,
   rewrapDekAsync,
-  base64ToBytes,
-  decryptBytes,
+  encryptString,
   decryptString,
   encryptBytes,
-  encryptString,
-  openVaultMaterialAsync,
+  decryptBytes,
+  DEFAULT_ITERATIONS,
 } from "@/lib/vault-crypto";
-import { clearVaultMediaCache } from "@/lib/vault-client";
 import { useUI } from "@/components/UIProvider";
+import { KeyRound, Loader2, Lock, X } from "lucide-react";
+import { clearVaultMediaCache } from "@/lib/vault-client";
 
 /**
- * Estado global do cofre (modelo B — criptografia 100% no cliente):
+ * VaultProvider — gerencia o ciclo de vida criptográfico do Cofre no cliente:
  *
  *   - A senha nunca sai do dispositivo: vira KEK via PBKDF2 e a DEK fica
  *     SOMENTE em memória enquanto o cofre está destravado.
@@ -56,6 +54,7 @@ interface VaultContextValue {
   ensureUnlocked: () => Promise<boolean>;
   unlock: (password: string) => Promise<boolean>;
   setup: (password: string) => Promise<boolean>;
+  resetVault: () => Promise<boolean>;
   lock: () => void;
   changePassword: (current: string, next: string) => Promise<boolean>;
   /** Helpers de cifra — só chamáveis destravado (lançam erro se não). */
@@ -155,13 +154,14 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
             updated_at: now,
           }),
         });
+        if (res.status === 409) {
+          // Conflito: recarrega o que veio do outro dispositivo
+          await loadMeta();
+          showToast("Conflito ao criar o cofre — tente destravar com a senha existente.", "error");
+          return false;
+        }
         if (!res.ok) {
-          if (res.status === 409) {
-            showToast("O cofre já foi configurado em outro dispositivo — destrave com a senha dele.", "error");
-            await loadMeta();
-            return false;
-          }
-          showToast("Falha ao criar o cofre.", "error");
+          showToast("Falha ao salvar o cofre no servidor.", "error");
           return false;
         }
       } catch {
@@ -199,14 +199,43 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
 
   const unlock = useCallback(
     async (pw: string): Promise<boolean> => {
-      const m = meta || (await loadMeta());
+      let m = meta || (await loadMeta());
       if (!m) {
         return setup(pw);
       }
-      return doUnlock(pw, m);
+      let ok = await doUnlock(pw, m);
+      if (!ok) {
+        // Tenta buscar do servidor caso tenha sido resetado ou reconfigurado
+        const fresh = await loadMeta();
+        if (!fresh) {
+          return setup(pw);
+        }
+        if (fresh.updated_at !== m.updated_at) {
+          m = fresh;
+          ok = await doUnlock(pw, m);
+        }
+      }
+      return ok;
     },
     [meta, loadMeta, doUnlock, setup]
   );
+
+  const resetVault = useCallback(async (): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/vault", { method: "DELETE" });
+      if (res.ok) {
+        setMeta(null);
+        setDek(null);
+        setStatus("no-vault");
+        clearVaultMediaCache();
+        showToast("Cofre redefinido com sucesso.", "info");
+        return true;
+      }
+    } catch {
+      showToast("Falha ao redefinir cofre.", "error");
+    }
+    return false;
+  }, [showToast]);
 
   const lock = useCallback(() => {
     lockRef.current();
@@ -218,12 +247,8 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
       try {
         const opened = await openVaultMaterialAsync(current, meta);
         if (!opened) return false;
-      } catch {
-        return false;
-      }
-      const rewrapped = await rewrapDekAsync(dek, next, DEFAULT_ITERATIONS);
-      const now = Date.now();
-      try {
+        const rewrapped = await rewrapDekAsync(dek, next, DEFAULT_ITERATIONS);
+        const now = Date.now();
         const res = await fetch("/api/vault", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -235,26 +260,37 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
             updated_at: now,
           }),
         });
-        if (!res.ok) {
-          showToast("Falha ao salvar a nova senha do cofre.", "error");
+        if (res.status === 409) {
+          showToast("Outro dispositivo alterou o cofre — recarregando.", "error");
+          await loadMeta();
           return false;
         }
+        if (!res.ok) {
+          showToast("Falha ao atualizar senha no servidor.", "error");
+          return false;
+        }
+        const updatedMeta: VaultMeta = {
+          ...meta,
+          salt: rewrapped.salt,
+          iterations: rewrapped.iterations,
+          wrapped_dek: rewrapped.wrapped_dek,
+          updated_at: now,
+        };
+        setMeta(updatedMeta);
+        showToast("Senha do cofre alterada com sucesso.", "success");
+        return true;
       } catch {
-        showToast("Sem conexão para trocar a senha.", "error");
         return false;
       }
-      setMeta({ ...meta, salt: rewrapped.salt, iterations: rewrapped.iterations, wrapped_dek: rewrapped.wrapped_dek, updated_at: now });
-      showToast("Senha do cofre alterada.", "success");
-      return true;
     },
-    [dek, meta, showToast]
+    [dek, meta, showToast, loadMeta]
   );
 
-  // --- ensureUnlocked: abre modal e promete o resultado ----------------------
+  // --- Destravamento sob demanda (garante DEK pra abrir notas do cofre) -----
 
   const ensureUnlocked = useCallback((): Promise<boolean> => {
     if (status === "unlocked") return Promise.resolve(true);
-    return new Promise((resolve) => {
+    return new Promise<boolean>((resolve) => {
       modalResolveRef.current = resolve;
       setModalError(null);
       setPassword("");
@@ -304,6 +340,7 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
       ensureUnlocked,
       unlock,
       setup,
+      resetVault,
       lock,
       changePassword,
       encryptString: (s: string) => encryptString(requireDek(), s),
@@ -312,7 +349,7 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
       decryptBytes: (b: Uint8Array) => decryptBytes(requireDek(), b),
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [status, dek, busy, ensureUnlocked, unlock, setup, lock, changePassword]
+    [status, dek, busy, ensureUnlocked, unlock, setup, resetVault, lock, changePassword]
   );
 
   return (
@@ -364,7 +401,19 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
                 className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400/60"
               />
               {modalError && (
-                <p className="text-xs text-red-600 dark:text-red-400">{modalError}</p>
+                <div className="space-y-1">
+                  <p className="text-xs text-red-600 dark:text-red-400">{modalError}</p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeModal(false);
+                      void resetVault();
+                    }}
+                    className="text-[11px] text-red-500 hover:underline cursor-pointer"
+                  >
+                    Esqueceu a senha? Redefinir cofre
+                  </button>
+                </div>
               )}
               <button
                 type="button"

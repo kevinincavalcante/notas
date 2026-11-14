@@ -197,7 +197,55 @@ export async function unlockVault(password: string): Promise<boolean> {
     // Se não há meta em lugar nenhum, inicializa o cofre com esta senha
     return await setupVault(password);
   }
-  const opened = await openVaultMaterialAsync(password, meta);
+  let opened = await openVaultMaterialAsync(password, meta);
+  if (!opened) {
+    // Se a senha falhou com o material local, verifica se no servidor o cofre foi resetado ou alterado
+    const api = await getSyncApi();
+    if (api) {
+      try {
+        const res = await fetch(`${api.baseUrl.replace(/\/+$/, "")}/api/vault`, {
+          headers: { Authorization: `Bearer ${api.token}` },
+        });
+        if (res.ok) {
+          const data = (await res.json()) as { setup?: boolean; vault_meta?: VaultMeta };
+          const { client } = await getDb();
+          if (data.setup || !data.vault_meta) {
+            // Servidor está sem cofre (resetado). Limpa o local e define com esta senha
+            await client.execute({ sql: `DELETE FROM vault_meta WHERE id = 'default'`, args: [] });
+            return await setupVault(password);
+          } else if (data.vault_meta.updated_at !== meta.updated_at) {
+            // Servidor tem material diferente
+            const remoteMeta = data.vault_meta;
+            await client.execute({
+              sql: `
+                INSERT INTO vault_meta (id, salt, iterations, kdf, wrapped_dek, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                  salt = excluded.salt,
+                  iterations = excluded.iterations,
+                  kdf = excluded.kdf,
+                  wrapped_dek = excluded.wrapped_dek,
+                  updated_at = excluded.updated_at
+              `,
+              args: [
+                remoteMeta.id,
+                remoteMeta.salt,
+                remoteMeta.iterations,
+                remoteMeta.kdf,
+                remoteMeta.wrapped_dek,
+                remoteMeta.updated_at,
+              ],
+            });
+            meta = remoteMeta;
+            opened = await openVaultMaterialAsync(password, remoteMeta);
+          }
+        }
+      } catch (e) {
+        console.warn("Falha ao consultar status remoto do cofre:", e);
+      }
+    }
+  }
+
   if (!opened) return false;
   dek = opened.dek;
   notifyVaultChanged();
@@ -206,6 +254,31 @@ export async function unlockVault(password: string): Promise<boolean> {
   // mudado (troca de senha em outro device) e a cópia antiga fica inválida.
   if (await isBiometricEnabled()) {
     await SecureStore.setItemAsync(DEK_KEY, bytesToBase64(dek));
+  }
+  return true;
+}
+
+/** Redefine o cofre: apaga material e notas do cofre no cliente e no servidor. */
+export async function resetVault(): Promise<boolean> {
+  const { client } = await getDb();
+  await client.execute({ sql: `DELETE FROM vault_meta WHERE id = 'default'`, args: [] });
+  await client.execute({ sql: `DELETE FROM notes WHERE is_vault = 1`, args: [] });
+  dek = null;
+  notifyVaultChanged();
+  try {
+    await SecureStore.deleteItemAsync(DEK_KEY);
+  } catch {}
+
+  const api = await getSyncApi();
+  if (api) {
+    try {
+      await fetch(`${api.baseUrl.replace(/\/+$/, "")}/api/vault`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${api.token}` },
+      });
+    } catch (e) {
+      console.warn("Falha ao resetar cofre no servidor remoto:", e);
+    }
   }
   return true;
 }

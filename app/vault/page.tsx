@@ -61,6 +61,21 @@ export default function VaultPage() {
     }
   }
 
+  async function handleResetVaultPrompt() {
+    const ok = await confirm({
+      title: "Redefinir cofre",
+      message: "Isso apagará todas as notas do cofre e permitirá cadastrar uma nova senha. Deseja continuar?",
+      confirmText: "Redefinir",
+      variant: "danger",
+    });
+    if (!ok) return;
+    const resetOk = await vault.resetVault();
+    if (resetOk) {
+      setUnlockPw("");
+      setUnlockError(null);
+    }
+  }
+
   // blob URLs das mídias dos cards (imagens/áudio cifrados)
   const [cardMedia, setCardMedia] = useState<Record<string, string>>({});
   const mediaNonce = useRef(0);
@@ -294,7 +309,16 @@ export default function VaultPage() {
               className="w-full px-4 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-400/60"
             />
             {unlockError && (
-              <p className="text-xs text-red-600 dark:text-red-400 text-left">{unlockError}</p>
+              <div className="space-y-1.5 text-left">
+                <p className="text-xs text-red-600 dark:text-red-400">{unlockError}</p>
+                <button
+                  type="button"
+                  onClick={() => void handleResetVaultPrompt()}
+                  className="text-xs text-red-500 hover:text-red-600 hover:underline cursor-pointer block"
+                >
+                  Esqueceu a senha? Redefinir cofre
+                </button>
+              </div>
             )}
             <button
               type="submit"

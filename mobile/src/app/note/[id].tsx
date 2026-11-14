@@ -35,6 +35,7 @@ import {
   isBiometricEnabled,
   unlockVault,
   unlockWithBiometric,
+  resetVault,
 } from "../../lib/vault";
 import { decryptString, encryptString, isEncrypted } from "../../../../lib/vault-crypto";
 import type { AttachmentRow } from "../../lib/db";
@@ -376,6 +377,28 @@ export default function NoteScreen() {
   }, [loadNote]);
 
   // ---- Destravar o cofre de dentro da nota ----
+  function handleResetVaultPrompt() {
+    Alert.alert(
+      "Redefinir cofre",
+      "Isso apagará todas as notas do cofre e permitirá cadastrar uma nova senha. Deseja continuar?",
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Redefinir",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              await resetVault();
+              setVaultError(null);
+              setVaultPass("");
+              router.back();
+            })();
+          },
+        },
+      ]
+    );
+  }
+
   async function handleVaultUnlock() {
     if (vaultBusy) return;
     setVaultError(null);
@@ -756,7 +779,16 @@ export default function NoteScreen() {
           </Pressable>
         )}
 
-        {vaultError && <Text style={styles.error}>{vaultError}</Text>}
+        {vaultError && (
+          <View style={{ alignItems: "center", marginTop: 8 }}>
+            <Text style={styles.error}>{vaultError}</Text>
+            <Pressable onPress={handleResetVaultPrompt} style={{ marginTop: 10 }} hitSlop={8}>
+              <Text style={{ color: "#ef4444", fontSize: 13, textDecorationLine: "underline" }}>
+                Esqueceu a senha? Redefinir cofre
+              </Text>
+            </Pressable>
+          </View>
+        )}
 
         <Pressable onPress={() => router.back()} hitSlop={8}>
           <Text style={styles.link}>Voltar</Text>

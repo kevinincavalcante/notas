@@ -77,3 +77,22 @@ export async function PUT(request: Request) {
     return NextResponse.json({ error: "Erro ao salvar material do cofre" }, { status: 500 });
   }
 }
+
+export async function DELETE() {
+  try {
+    await db.execute({
+      sql: `DELETE FROM vault_meta WHERE id = ?`,
+      args: [VAULT_ID],
+    });
+    // Remove notas marcadas como cofre que ficaram órfãs
+    await db.execute({
+      sql: `DELETE FROM notes WHERE is_vault = 1`,
+      args: [],
+    });
+    await logChange("vault_meta", VAULT_ID, "delete");
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error("Erro ao resetar material do cofre:", error);
+    return NextResponse.json({ error: "Erro ao resetar material do cofre" }, { status: 500 });
+  }
+}

@@ -32,6 +32,7 @@ import {
   lockVault,
   subscribeVault,
   unlockVault,
+  resetVault,
   unlockWithBiometric,
   type VaultMeta,
 } from "../lib/vault";
@@ -126,6 +127,28 @@ export default function VaultScreen() {
   );
 
   // ---- Destravar por senha / biometria ----
+  function handleResetVaultPrompt() {
+    Alert.alert(
+      "Redefinir cofre",
+      "Isso apagará todas as notas do cofre e permitirá cadastrar uma nova senha. Deseja continuar?",
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Redefinir",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              await resetVault();
+              setError(null);
+              setPass("");
+              void reload();
+            })();
+          },
+        },
+      ]
+    );
+  }
+
   async function handleUnlock() {
     if (busy || !pass) return;
     setError(null);
@@ -335,7 +358,16 @@ export default function VaultScreen() {
           </Pressable>
         )}
 
-        {error && <Text style={styles.error}>{error}</Text>}
+        {error && (
+          <View style={{ alignItems: "center", marginTop: 8 }}>
+            <Text style={styles.error}>{error}</Text>
+            <Pressable onPress={handleResetVaultPrompt} style={{ marginTop: 10 }} hitSlop={8}>
+              <Text style={{ color: "#ef4444", fontSize: 13, textDecorationLine: "underline" }}>
+                Esqueceu a senha? Redefinir cofre
+              </Text>
+            </Pressable>
+          </View>
+        )}
       </View>
     );
   }
