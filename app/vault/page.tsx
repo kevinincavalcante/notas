@@ -44,11 +44,11 @@ export default function VaultPage() {
   const [cardMedia, setCardMedia] = useState<Record<string, string>>({});
   const mediaNonce = useRef(0);
 
-  const loadNotes = useCallback(async () => {
+  const loadNotes = useCallback(async (): Promise<Note[]> => {
     if (!vault.dek) {
       setNotes([]);
       setCardMedia({});
-      return;
+      return [];
     }
     setLoading(true);
     try {
@@ -64,10 +64,14 @@ export default function VaultPage() {
       ]);
       if (activeRes.ok && archivedRes.ok) {
         const cipher = [...(activeData.notes || []), ...(archivedData.notes || [])];
-        setNotes(cipher.map((n: Note) => decryptNote(vault.dek!, n)));
+        const plain = cipher.map((n: Note) => decryptNote(vault.dek!, n));
+        setNotes(plain);
+        return plain;
       }
+      return [];
     } catch (err) {
       console.error("Erro ao carregar notas do cofre:", err);
+      return [];
     } finally {
       setLoading(false);
     }
@@ -438,7 +442,15 @@ export default function VaultPage() {
               n ? { ...n, attachments: (n.attachments || []).filter((a) => a.id !== attachmentId) } : n
             );
           }}
-          onAfterAttachmentChange={() => void loadNotes()}
+          onAfterAttachmentChange={() => {
+            // Recarrega E refresca a nota aberta (o anexo novo vem do servidor
+            // com metadados cifrados — precisa passar pelo decryptNote de novo)
+            void loadNotes().then((fresh) => {
+              setSelectedNote((cur) =>
+                cur ? fresh.find((n) => n.id === cur.id) ?? cur : cur
+              );
+            });
+          }}
         />
       )}
     </div>

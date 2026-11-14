@@ -47,7 +47,6 @@ import {
   getVaultMediaUrl,
   uploadEncryptedFile,
 } from "@/lib/vault-client";
-import { isEncrypted } from "@/lib/vault-crypto";
 
 interface NoteModalProps {
   note: Note;
@@ -134,8 +133,9 @@ export default function NoteModal({
       const map: Record<string, string> = {};
       for (const att of note.attachments || []) {
         if (!att.id) continue;
-        // anexos antigos (fora do cofre) seguem na rota normal
-        if (!isEncrypted(att.mime_type) && !isEncrypted(att.file_name)) continue;
+        // No cofre TODOS os binários de anexo estão cifrados no storage —
+        // tenta descriptografar sempre; se falhar (anexo antigo em claro),
+        // o src cai de volta na rota normal.
         const url = await getVaultMediaUrl(vault.dek!, att.id, att.mime_type);
         if (url) map[att.id] = url;
       }

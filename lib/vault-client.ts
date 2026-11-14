@@ -137,6 +137,8 @@ export async function uploadEncryptedFile(
   form.append("note_id", opts.noteId);
   form.append("fileName", fileNameEnc);
   form.append("file_name", fileNameEnc);
+  form.append("mime", mimeEnc);
+  form.append("mime_type", mimeEnc);
   form.append("encrypted", "1");
   if (opts.id) {
     form.append("id", opts.id);

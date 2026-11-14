@@ -30,6 +30,7 @@ export async function POST(request: Request) {
     // campos file_name/mime também cifrados. O servidor nunca processa o
     // conteúdo (pula o sharp) e não anexa auto-tags.
     const isEncrypted = formData.get("encrypted") === "1";
+    const customMime = (formData.get("mime") || formData.get("mime_type")) as string | null;
 
     if (!file || !noteId) {
       return NextResponse.json(
@@ -54,10 +55,11 @@ export async function POST(request: Request) {
 
     if (isEncrypted) {
       // Cofre: bytes já chegam cifrados — sobe como está, com key neutra
-      // (o nome real ficaria visível no storage) e mime genérico.
+      // (o nome real ficaria visível no storage) e mime cifrado do cliente.
       const { fileId, fileSize } = await uploadEncryptedAttachmentFile(processedBuffer);
       const attachmentId = customId?.trim() ? customId.trim() : crypto.randomUUID();
       const now = Date.now();
+      const storedMime = customMime || "application/octet-stream";
 
       await db.execute({
         sql: `
@@ -75,7 +77,7 @@ export async function POST(request: Request) {
           noteId,
           fileId,
           finalFileName, // ciphertext "enc1:..." — o cliente descriptografa
-          finalMimeType,
+          storedMime,
           fileSize,
           duration,
           now,
@@ -90,7 +92,7 @@ export async function POST(request: Request) {
           note_id: noteId,
           storage_key: fileId,
           file_name: finalFileName,
-          mime_type: finalMimeType,
+          mime_type: storedMime,
           file_size: fileSize,
           duration_seconds: duration,
           created_at: now,

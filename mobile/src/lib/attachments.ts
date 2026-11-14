@@ -100,11 +100,23 @@ async function ensureQueueTable(client: Client): Promise<void> {
  */
 export async function saveAttachmentLocally(input: UploadInput): Promise<AttachmentRow> {
   const attachmentId = generateUuid();
-  const dest = cachePath({ id: attachmentId, file_name: input.fileName });
 
   let fileSize = 0;
   let storedName = input.fileName;
   let storedMime = input.mimeType;
+  // No cofre o nome guardado é CIFRADO — o arquivo local precisa morar no
+  // MESMO caminho que a exibição vai procurar (cachePath com o nome cifrado),
+  // senão a pré-visualização da foto nova fica em spinner até o upload subir.
+  let dest: string;
+  if (input.encrypted) {
+    const dek = getVaultDek();
+    if (!dek) throw new Error("Cofre travado — destrave para anexar arquivos.");
+    storedName = encryptString(dek, input.fileName);
+    storedMime = encryptString(dek, input.mimeType);
+    dest = cachePath({ id: attachmentId, file_name: storedName });
+  } else {
+    dest = cachePath({ id: attachmentId, file_name: input.fileName });
+  }
 
   if (input.encrypted) {
     // Anexo de nota do COFRE: nada trafega em claro — os bytes viram
@@ -119,8 +131,6 @@ export async function saveAttachmentLocally(input: UploadInput): Promise<Attachm
       encoding: FileSystem.EncodingType.Base64,
     });
     fileSize = enc.length;
-    storedName = encryptString(dek, input.fileName);
-    storedMime = encryptString(dek, input.mimeType);
   } else {
     // Fluxo de sempre: copia o arquivo pro cache e mede o tamanho
     try {
@@ -285,8 +295,11 @@ export async function processPendingUploads(): Promise<void> {
             id: item.id, // Envia o mesmo ID gerado localmente
             noteId: item.note_id,
             fileName: item.file_name,
-            // Anexo do cofre: o servidor pula o sharp e trata como opaco
-            ...(Number(item.encrypted) === 1 ? { encrypted: "1" } : {}),
+            // Anexo do cofre: o servidor pula o sharp e trata como opaco —
+            // o mime REAL vai CIFRADO no campo mime (o do multipart é neutro)
+            ...(Number(item.encrypted) === 1
+              ? { encrypted: "1", mime: item.mime_type }
+              : {}),
             ...(item.duration_seconds != null
               ? { duration: String(Math.round(item.duration_seconds)) }
               : {}),
