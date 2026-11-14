@@ -613,13 +613,18 @@ export default function NoteModal({
 
   if (!isOpen) return null;
 
+  const isImageAttachment = (a: Attachment) =>
+    Boolean(a.mime_type.startsWith("image/") || /\.(jpe?g|png|webp|gif|svg)$/i.test(a.file_name || ""));
+  const isAudioAttachment = (a: Attachment) =>
+    Boolean(a.mime_type.startsWith("audio/") || /\.(m4a|mp3|wav|ogg|aac|flac|webm)$/i.test(a.file_name || ""));
+
   const imageAttachments =
     note.attachments?.filter(
       (a) =>
-        a.mime_type.startsWith("image/") &&
+        isImageAttachment(a) &&
         !body.includes(`/api/attachments/${a.id}`)
     ) || [];
-  const audioAttachments = note.attachments?.filter((a) => a.mime_type.startsWith("audio/")) || [];
+  const audioAttachments = note.attachments?.filter(isAudioAttachment) || [];
   const detectedUrls = extractUrls(body);
 
   // Cofre: corpo de EXIBIÇÃO com as URLs de anexos trocadas por blob URLs

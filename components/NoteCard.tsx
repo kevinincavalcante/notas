@@ -26,8 +26,13 @@ export default function NoteCard({
   onChangeColor,
   attachmentSrcMap,
 }: NoteCardProps) {
-  const imageAttachments = note.attachments?.filter((a) => a.mime_type.startsWith("image/")) || [];
-  const audioAttachments = note.attachments?.filter((a) => a.mime_type.startsWith("audio/")) || [];
+  const isImageAttachment = (a: { mime_type?: string; file_name?: string }) =>
+    Boolean(a.mime_type?.startsWith("image/") || /\.(jpe?g|png|webp|gif|svg|bmp)$/i.test(a.file_name || ""));
+  const isAudioAttachment = (a: { mime_type?: string; file_name?: string }) =>
+    Boolean(a.mime_type?.startsWith("audio/") || /\.(m4a|mp3|wav|ogg|aac|flac|webm)$/i.test(a.file_name || ""));
+
+  const imageAttachments = note.attachments?.filter(isImageAttachment) || [];
+  const audioAttachments = note.attachments?.filter(isAudioAttachment) || [];
   const detectedUrls = extractUrls(note.body);
   // Esconde a sintaxe de imagem markdown no texto do card (a imagem já aparece como preview)
   const displayBody = (note.body_snippet || note.body).replace(

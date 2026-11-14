@@ -54,21 +54,27 @@ function randomBytes(length: number): Uint8Array {
 const B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 export function bytesToBase64(bytes: Uint8Array): string {
-  let out = "";
+  const parts: string[] = [];
+  let chunk = "";
   let i = 0;
   for (; i + 2 < bytes.length; i += 3) {
     const n = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
-    out += B64_ALPHABET[(n >> 18) & 63] + B64_ALPHABET[(n >> 12) & 63] + B64_ALPHABET[(n >> 6) & 63] + B64_ALPHABET[n & 63];
+    chunk += B64_ALPHABET[(n >> 18) & 63] + B64_ALPHABET[(n >> 12) & 63] + B64_ALPHABET[(n >> 6) & 63] + B64_ALPHABET[n & 63];
+    if (chunk.length >= 8192) {
+      parts.push(chunk);
+      chunk = "";
+    }
   }
   const rest = bytes.length - i;
   if (rest === 1) {
     const n = bytes[i] << 16;
-    out += B64_ALPHABET[(n >> 18) & 63] + B64_ALPHABET[(n >> 12) & 63] + "==";
+    chunk += B64_ALPHABET[(n >> 18) & 63] + B64_ALPHABET[(n >> 12) & 63] + "==";
   } else if (rest === 2) {
     const n = (bytes[i] << 16) | (bytes[i + 1] << 8);
-    out += B64_ALPHABET[(n >> 18) & 63] + B64_ALPHABET[(n >> 12) & 63] + B64_ALPHABET[(n >> 6) & 63] + "=";
+    chunk += B64_ALPHABET[(n >> 18) & 63] + B64_ALPHABET[(n >> 12) & 63] + B64_ALPHABET[(n >> 6) & 63] + "=";
   }
-  return out;
+  if (chunk) parts.push(chunk);
+  return parts.join("");
 }
 
 const B64_LOOKUP = (() => {
@@ -81,7 +87,12 @@ const B64_LOOKUP = (() => {
 })();
 
 export function base64ToBytes(b64: string): Uint8Array {
-  const clean = b64.replace(/=+$/, "").replace(/-/g, "+").replace(/_/g, "/");
+  // Limpa espaços em branco e novas linhas (\n / \r\n emitidos pelo Base64 nativo do Android)
+  const clean = b64
+    .replace(/[\s\r\n]+/g, "")
+    .replace(/=+$/, "")
+    .replace(/-/g, "+")
+    .replace(/_/g, "/");
   const len = clean.length;
   if (len % 4 === 1) throw new Error("base64 inválido");
   const outLen = Math.floor((len * 3) / 4);
@@ -90,7 +101,8 @@ export function base64ToBytes(b64: string): Uint8Array {
   let buffer = 0;
   let bits = 0;
   for (let i = 0; i < len; i++) {
-    const v = B64_LOOKUP[clean.charCodeAt(i)];
+    const code = clean.charCodeAt(i);
+    const v = code < 128 ? B64_LOOKUP[code] : -1;
     if (v < 0) throw new Error("base64 inválido");
     buffer = (buffer << 6) | v;
     bits += 6;

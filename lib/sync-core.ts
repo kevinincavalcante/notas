@@ -284,9 +284,15 @@ export async function applyPull(
     if (!att?.id || !att?.note_id || !notasLocais.has(att.note_id)) continue;
     await local.execute({
       sql: `
-        INSERT OR IGNORE INTO attachments
+        INSERT INTO attachments
           (id, note_id, storage_key, file_name, mime_type, file_size, duration_seconds, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          storage_key = excluded.storage_key,
+          file_name = excluded.file_name,
+          mime_type = excluded.mime_type,
+          file_size = excluded.file_size,
+          duration_seconds = COALESCE(excluded.duration_seconds, attachments.duration_seconds)
       `,
       args: [
         att.id,

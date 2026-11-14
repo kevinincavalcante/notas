@@ -68,7 +68,7 @@ function KeepTopImage({
     return () => {
       active = false;
     };
-  }, [att.id]);
+  }, [att.id, att.storage_key]);
 
   if (!uri) {
     return (
@@ -144,7 +144,7 @@ export default function NoteScreen() {
           const fresh = await getNote(client, noteId);
           if (!fresh || !fresh.title || latestRef.current.title) return;
           // Nota do cofre: o título chega cifrado — sem dek, nada a fazer
-          const dek = vaultRef.current ? getVaultDek() : null;
+          const dek = getVaultDek();
           if (vaultRef.current && !dek) return;
           const freshTitle = dek ? decryptNoteRow(dek, fresh).title : fresh.title;
           if (freshTitle) {
@@ -187,17 +187,34 @@ export default function NoteScreen() {
 
   // Filtros por tipo: com nota do cofre, mime chega cifrado — a "vista"
   // decifra os metadados em memória (as linhas guardadas continuam cruas)
-  const vaultDek = vaultRef.current ? getVaultDek() : null;
+  const vaultDek = getVaultDek();
   const attView = useCallback(
     (a: AttachmentRow): AttachmentRow => (vaultDek ? decryptAttachmentRow(vaultDek, a) : a),
     [vaultDek]
   );
-  const imageAttachments = attachments.filter((a) => attView(a).mime_type.startsWith("image/"));
-  const audioAttachments = attachments.filter((a) => attView(a).mime_type.startsWith("audio/"));
-  const fileAttachments = attachments.filter(
-    (a) =>
-      !attView(a).mime_type.startsWith("image/") && !attView(a).mime_type.startsWith("audio/")
-  );
+  const imageAttachments = attachments.filter((a) => {
+    const v = attView(a);
+    const mime = v.mime_type || "";
+    if (mime.startsWith("image/")) return true;
+    const name = v.file_name || "";
+    return /\.(jpe?g|png|webp|gif|svg|bmp)$/i.test(name);
+  });
+  const audioAttachments = attachments.filter((a) => {
+    const v = attView(a);
+    const mime = v.mime_type || "";
+    if (mime.startsWith("audio/")) return true;
+    const name = v.file_name || "";
+    return /\.(m4a|mp3|wav|ogg|aac|flac|webm)$/i.test(name);
+  });
+  const fileAttachments = attachments.filter((a) => {
+    const v = attView(a);
+    const mime = v.mime_type || "";
+    const name = v.file_name || "";
+    const isImg = mime.startsWith("image/") || /\.(jpe?g|png|webp|gif|svg|bmp)$/i.test(name);
+    const isAud = mime.startsWith("audio/") || /\.(m4a|mp3|wav|ogg|aac|flac|webm)$/i.test(name);
+    return !isImg && !isAud;
+  });
+
   // Modo Joplin: existentes abrem em LEITURA (preview markdown, texto
   // selecionável); ✏️ entra em edição. Nota nova abre direto editando.
   const [mode, setMode] = useState<"read" | "edit">("read");
@@ -424,10 +441,6 @@ export default function NoteScreen() {
       latestRef.current.body = value;
     }
     setStatus("unsaved");
-    // Salvamento agora acontece só ao SAIR da nota (voltar, alternar pra
-    // leitura, app em background). Autosave a cada pausa de digitação
-    // disparava SQLite + sync + re-renders que engasgavam o editor com
-    // texto grande e criavam a disputa "salvo/salvando" a cada frase.
   }
 
   // lista numerada automática: intercepta a digitação e aplica as regras
@@ -537,7 +550,7 @@ export default function NoteScreen() {
     if (timerRef.current) clearTimeout(timerRef.current);
     // Nota do cofre: o conteúdo (e o snapshot restaurado) chega cifrado —
     // a restauração no servidor copia ciphertext→ciphertext, nada quebra
-    const dek = vaultRef.current ? getVaultDek() : null;
+    const dek = getVaultDek();
     if (vaultRef.current && !dek) {
       setVaultLocked(true);
       return;
@@ -620,12 +633,12 @@ export default function NoteScreen() {
         mimeType,
         noteId: savedRef.current!.id,
         // Nota do cofre: bytes/nome/mime saem cifrados (runUpload só repassa)
-        encrypted: vaultRef.current || undefined,
+        encrypted: vaultRef.current || Boolean(savedRef.current?.is_vault) || undefined,
       });
       if (att) {
         // O file_name do anexo cifrado volta encriptado — o markdown do corpo
         // mantém o nome legível (a troca de uri é só na exibição, via displayUriFor)
-        const dek = vaultRef.current ? getVaultDek() : null;
+        const dek = getVaultDek();
         const displayName =
           dek && isEncrypted(att.file_name)
             ? (() => {
@@ -661,7 +674,7 @@ export default function NoteScreen() {
             noteId: savedRef.current.id,
             durationSeconds: (Date.now() - recordStartRef.current) / 1000,
             // Nota do cofre: áudio também sai cifrado
-            encrypted: vaultRef.current || undefined,
+            encrypted: vaultRef.current || Boolean(savedRef.current?.is_vault) || undefined,
           });
         }
       } catch (e) {
@@ -880,84 +893,84 @@ export default function NoteScreen() {
 
             <TextInput
               style={styles.titleInput}
-          value={title}
-          onChangeText={(t) => touch("title", t)}
-          placeholder="Título"
-          placeholderTextColor="#52525b"
-          returnKeyType="done"
-        />
+              value={title}
+              onChangeText={(t) => touch("title", t)}
+              placeholder="Título"
+              placeholderTextColor="#52525b"
+              returnKeyType="done"
+            />
 
-        <TextInput
-          ref={bodyRef}
-          style={styles.bodyInput}
-          value={body}
-          onChangeText={onBodyChange}
-          onSelectionChange={(e) => onBodySelection(e.nativeEvent.selection)}
-          onKeyPress={(e) => {
-            if (e.nativeEvent.key === "Enter") enterRef.current = true;
-          }}
-          selection={selOverride}
-          placeholder="Digite…"
-          placeholderTextColor="#52525b"
-          multiline
-          textAlignVertical="top"
-        />
-      </ScrollView>
+            <TextInput
+              ref={bodyRef}
+              style={styles.bodyInput}
+              value={body}
+              onChangeText={onBodyChange}
+              onSelectionChange={(e) => onBodySelection(e.nativeEvent.selection)}
+              onKeyPress={(e) => {
+                if (e.nativeEvent.key === "Enter") enterRef.current = true;
+              }}
+              selection={selOverride}
+              placeholder="Digite…"
+              placeholderTextColor="#52525b"
+              multiline
+              textAlignVertical="top"
+            />
+          </ScrollView>
 
-      {/* Barra inferior estilo Keep: mídia + 🎨 paleta + ⋯ menu */}
-      <View style={[styles.toolbar, { paddingBottom: insets.bottom + 8 }]}>
-        {showColors && (
-          <View style={styles.swatches}>
-            {NOTE_COLOR_IDS.map((id) => (
-              <Pressable
-                key={id}
-                onPress={() => pickColor(id)}
-                style={[
-                  styles.swatch,
-                  { backgroundColor: NOTE_COLOR_SWATCH[id] },
-                  color === id && styles.swatchActive,
-                ]}
-              />
-            ))}
-          </View>
-        )}
-        <View style={styles.toolbarRow}>
-          <View style={styles.toolGroup}>
-            {busyAtt ? (
-              <View style={styles.toolBtn}>
-                <ActivityIndicator size="small" color="#fbbf24" />
+          {/* Barra inferior estilo Keep: mídia + 🎨 paleta + ⋯ menu */}
+          <View style={[styles.toolbar, { paddingBottom: insets.bottom + 8 }]}>
+            {showColors && (
+              <View style={styles.swatches}>
+                {NOTE_COLOR_IDS.map((id) => (
+                  <Pressable
+                    key={id}
+                    onPress={() => pickColor(id)}
+                    style={[
+                      styles.swatch,
+                      { backgroundColor: NOTE_COLOR_SWATCH[id] },
+                      color === id && styles.swatchActive,
+                    ]}
+                  />
+                ))}
               </View>
-            ) : (
-              <>
-                <Pressable onPress={() => void pickImage(true)} hitSlop={6} style={({ pressed }) => [styles.toolBtn, pressed && { opacity: 0.8 }]}>
-                  <Text style={styles.toolIcon}>📷</Text>
-                </Pressable>
-                <Pressable onPress={() => void pickImage(false)} hitSlop={6} style={({ pressed }) => [styles.toolBtn, pressed && { opacity: 0.8 }]}>
-                  <Text style={styles.toolIcon}>🖼️</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => void toggleRecording()}
-                  hitSlop={6}
-                  style={({ pressed }) => [styles.toolBtn, recording && styles.recordingBtn, pressed && { opacity: 0.8 }]}
-                >
-                  <Text style={styles.toolIcon}>{recording ? "⏹" : "🎙"}</Text>
-                </Pressable>
-                <Pressable onPress={() => setShowColors((v) => !v)} hitSlop={6} style={({ pressed }) => [styles.toolBtn, pressed && { opacity: 0.8 }]}>
-                  <Text style={styles.toolIcon}>🎨</Text>
-                  <View style={[styles.toolDot, { backgroundColor: NOTE_COLOR_SWATCH[color] }]} />
-                </Pressable>
-              </>
             )}
+            <View style={styles.toolbarRow}>
+              <View style={styles.toolGroup}>
+                {busyAtt ? (
+                  <View style={styles.toolBtn}>
+                    <ActivityIndicator size="small" color="#fbbf24" />
+                  </View>
+                ) : (
+                  <>
+                    <Pressable onPress={() => void pickImage(true)} hitSlop={6} style={({ pressed }) => [styles.toolBtn, pressed && { opacity: 0.8 }]}>
+                      <Text style={styles.toolIcon}>📷</Text>
+                    </Pressable>
+                    <Pressable onPress={() => void pickImage(false)} hitSlop={6} style={({ pressed }) => [styles.toolBtn, pressed && { opacity: 0.8 }]}>
+                      <Text style={styles.toolIcon}>🖼️</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => void toggleRecording()}
+                      hitSlop={6}
+                      style={({ pressed }) => [styles.toolBtn, recording && styles.recordingBtn, pressed && { opacity: 0.8 }]}
+                    >
+                      <Text style={styles.toolIcon}>{recording ? "⏹" : "🎙"}</Text>
+                    </Pressable>
+                    <Pressable onPress={() => setShowColors((v) => !v)} hitSlop={6} style={({ pressed }) => [styles.toolBtn, pressed && { opacity: 0.8 }]}>
+                      <Text style={styles.toolIcon}>🎨</Text>
+                      <View style={[styles.toolDot, { backgroundColor: NOTE_COLOR_SWATCH[color] }]} />
+                    </Pressable>
+                  </>
+                )}
+              </View>
+              <Pressable
+                onPress={() => setSheetOpen(true)}
+                hitSlop={6}
+                style={({ pressed }) => [styles.toolBtn, pressed && { opacity: 0.8 }]}
+              >
+                <Text style={styles.toolIcon}>⋯</Text>
+              </Pressable>
+            </View>
           </View>
-          <Pressable
-            onPress={() => setSheetOpen(true)}
-            hitSlop={6}
-            style={({ pressed }) => [styles.toolBtn, pressed && { opacity: 0.8 }]}
-          >
-            <Text style={styles.toolIcon}>⋯</Text>
-          </Pressable>
-        </View>
-      </View>
         </>
       )}
       </KeyboardAvoidingView>
@@ -966,7 +979,7 @@ export default function NoteScreen() {
       <VersionHistorySheet
         visible={historyOpen}
         noteId={noteId ?? ""}
-        dek={vaultRef.current ? getVaultDek() : null}
+        dek={getVaultDek()}
         onClose={() => setHistoryOpen(false)}
         onRestored={() => void reloadNote()}
       />

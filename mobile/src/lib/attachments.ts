@@ -60,17 +60,31 @@ function generateUuid(): string {
   });
 }
 
-/** Caminho do cache local (sob demanda ou persistido localmente). */
+/** Caminho do cache local (sob demanda ou persistido localmente).
+ * Usa chave determinística baseada no id do anexo — assim, não depende de
+ * se o file_name é cifrado ('enc1:...') ou decifrado ('foto.webp'). */
 export function cachePath(att: { id: string; file_name?: string }): string {
-  const safeName = (att.file_name || "arquivo").replace(/[^\w.\-]+/g, "_");
-  return `${FileSystem.cacheDirectory}att-${att.id}-${safeName}`;
+  return `${FileSystem.cacheDirectory}att-${att.id}.bin`;
 }
 
 let queueTableEnsured = false;
 async function ensureQueueTable(client: Client): Promise<void> {
   if (queueTableEnsured) return;
   await client.execute(`
-    CREATE TABLE IF NOT EXISTS pending_attachments (\n      id TEXT PRIMARY KEY,\n      note_id TEXT NOT NULL,\n      file_path TEXT NOT NULL,\n      file_name TEXT NOT NULL,\n      mime_type TEXT NOT NULL,\n      file_size INTEGER NOT NULL,\n      duration_seconds REAL DEFAULT NULL,\n      created_at INTEGER NOT NULL,\n      retries INTEGER NOT NULL DEFAULT 0,\n      last_error TEXT,\n      encrypted INTEGER NOT NULL DEFAULT 0\n    )\n  `);
+    CREATE TABLE IF NOT EXISTS pending_attachments (
+      id TEXT PRIMARY KEY,
+      note_id TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      file_name TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      file_size INTEGER NOT NULL,
+      duration_seconds REAL DEFAULT NULL,
+      created_at INTEGER NOT NULL,
+      retries INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      encrypted INTEGER NOT NULL DEFAULT 0
+    )
+  `);
   // Migração idempotente: bancos antigos não têm a coluna "encrypted"
   const cols = await client.execute(`PRAGMA table_info(pending_attachments)`);
   if (!cols.rows.some((r) => r.name === "encrypted")) {
@@ -79,6 +93,12 @@ async function ensureQueueTable(client: Client): Promise<void> {
     );
   }
   queueTableEnsured = true;
+}
+
+function detectExtensionFromName(fileName?: string): string {
+  if (!fileName) return ".webp";
+  const m = fileName.match(/\.([a-zA-Z0-9]+)$/);
+  return m ? `.${m[1].toLowerCase()}` : ".webp";
 }
 
 /**
@@ -91,27 +111,19 @@ export async function saveAttachmentLocally(input: UploadInput): Promise<Attachm
   let fileSize = 0;
   let storedName = input.fileName;
   let storedMime = input.mimeType;
-  // No cofre o nome guardado é CIFRADO — o arquivo local precisa morar no
-  // MESMO caminho que a exibição vai procurar (cachePath com o nome cifrado),
-  // senão a pré-visualização da foto nova fica em spinner até o upload subir.
-  let dest: string;
+  const dest = cachePath({ id: attachmentId });
+
   if (input.encrypted) {
     const dek = getVaultDek();
     if (!dek) throw new Error("Cofre travado — destrave para anexar arquivos.");
     storedName = encryptString(dek, input.fileName);
     storedMime = encryptString(dek, input.mimeType);
-    dest = cachePath({ id: attachmentId, file_name: storedName });
+
     // Salva referência do arquivo local já disponível para exibição instantânea
     plainUris.set(attachmentId, input.uri);
-  } else {
-    dest = cachePath({ id: attachmentId, file_name: input.fileName });
-  }
 
-  if (input.encrypted) {
     // Anexo de nota do COFRE: nada trafega em claro — os bytes viram
     // iv‖ciphertext (AES-256-GCM) e nome/mime são cifrados como texto.
-    const dek = getVaultDek();
-    if (!dek) throw new Error("Cofre travado — destrave para anexar arquivos.");
     const b64 = await FileSystem.readAsStringAsync(input.uri, {
       encoding: FileSystem.EncodingType.Base64,
     });
@@ -120,8 +132,18 @@ export async function saveAttachmentLocally(input: UploadInput): Promise<Attachm
       encoding: FileSystem.EncodingType.Base64,
     });
     fileSize = enc.length;
+
+    // Também persiste uma cópia decifrada em disco para sobreviver ao reinício do app
+    const ext = detectExtensionFromName(input.fileName);
+    const plainDest = `${FileSystem.cacheDirectory}att-${attachmentId}-plain${ext}`;
+    try {
+      await FileSystem.copyAsync({ from: input.uri, to: plainDest });
+      plainUris.set(attachmentId, plainDest);
+    } catch {
+      // fallback já está em plainUris
+    }
   } else {
-    // Fluxo de sempre: copia o arquivo pro cache e mede o tamanho
+    // Fluxo comum: copia o arquivo pro cache e mede o tamanho
     try {
       await FileSystem.copyAsync({ from: input.uri, to: dest });
     } catch (copyErr) {
@@ -268,15 +290,21 @@ export async function processPendingUploads(): Promise<void> {
         continue;
       }
 
-      // Checa se o arquivo local ainda existe
-      const fileExists = await cacheExists.has(item.id, item.file_path);
-      if (!fileExists) {
-        await client.execute({ sql: `DELETE FROM pending_attachments WHERE id = ?`, args: [item.id] });
-        continue;
+      // Checa se o arquivo local ainda existe (tenta o path gravado ou o canônico)
+      let uploadPath = item.file_path;
+      if (!(await cacheExists.has(item.id, uploadPath))) {
+        const canonical = cachePath({ id: item.id });
+        if (await cacheExists.has(item.id, canonical)) {
+          uploadPath = canonical;
+        } else {
+          // Arquivo local sumiu do disco — descarta a pendência
+          await client.execute({ sql: `DELETE FROM pending_attachments WHERE id = ?`, args: [item.id] });
+          continue;
+        }
       }
 
       try {
-        const res = await FileSystem.uploadAsync(uploadUrl, item.file_path, {
+        const res = await FileSystem.uploadAsync(uploadUrl, uploadPath, {
           fieldName: "file",
           httpMethod: "POST",
           uploadType: FileSystem.FileSystemUploadType.MULTIPART,
@@ -388,30 +416,25 @@ onSynced(() => {
   triggerPendingUploads(600);
 });
 
-// Quando o app volta ao primeiro plano (foreground), retoma uploads pendentes
-if (typeof AppState !== "undefined" && AppState.addEventListener) {
+// Ao voltar para o primeiro plano (foreground), processa pendências
+if (typeof AppState !== "undefined" && typeof AppState.addEventListener === "function") {
   AppState.addEventListener("change", (state) => {
     if (state === "active") {
-      triggerPendingUploads(800);
+      triggerPendingUploads(1000);
     }
   });
 }
 
-/** Remove anexo (deleta no remoto + local) — igual o DELETE do desktop. */
+/**
+ * Remove anexo do banco local, do cache e dispara remoção remota se já tiver subido.
+ */
 export async function deleteAttachment(att: AttachmentRow): Promise<void> {
   const api = await getSyncApi();
   const { client } = await getDb();
-  await ensureQueueTable(client);
 
-  // Se o anexo ainda estiver na fila de pendentes, cancela a pendência
-  await client.execute({
-    sql: `DELETE FROM pending_attachments WHERE id = ?`,
-    args: [att.id],
-  });
-
-  // Se já tinha subido pro servidor remoto (storage_key não-pendente), deleta na API
+  // Se já tinha storage_key remota (não era apenas pending:), pede delete na API
   if (api && att.storage_key && !att.storage_key.startsWith("pending:")) {
-    await fetch(`${api.baseUrl}/api/attachments/${att.id}`, {
+    void fetch(`${api.baseUrl.replace(/\/+$/, "")}/api/attachments/${att.id}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${api.token}` },
     }).catch((e) => console.warn("Falha ao deletar no remoto:", e));
@@ -422,7 +445,11 @@ export async function deleteAttachment(att: AttachmentRow): Promise<void> {
     sql: `INSERT INTO change_log (entity, entity_id, op, at) VALUES ('attachment', ?, 'delete', ?)`,
     args: [att.id, Date.now()],
   });
+  plainUris.delete(att.id);
   void cacheExists.deleteCache(cachePath(att));
+  for (const ext of [".webp", ".jpg", ".jpeg", ".png", ".gif", ".m4a", ".webm"]) {
+    void cacheExists.deleteCache(`${FileSystem.cacheDirectory}att-${att.id}-plain${ext}`);
+  }
   notifyLocalChange();
   if (api) scheduleQuietSync(api);
 }
@@ -494,6 +521,15 @@ export const cacheExists = {
  * o conteúdo já se mostrou na tela e a sandbox é do próprio app. */
 const plainUris = new Map<string, string>();
 
+/** Detecta se o anexo pertence ao cofre (cifrado no banco ou no storage). */
+export function isVaultAttachment(att: { id?: string; file_name?: string; mime_type?: string; storage_key?: string }): boolean {
+  if (att.storage_key && att.storage_key.startsWith("enc_")) return true;
+  if (att.file_name && isEncrypted(att.file_name)) return true;
+  if (att.mime_type && isEncrypted(att.mime_type)) return true;
+  if (att.id && plainUris.has(att.id)) return true;
+  return false;
+}
+
 /** Detecta extensão adequada pelos primeiros bytes para o decoder do Android/RN reconhecer */
 function detectExtensionFromBytes(bytes: Uint8Array, fallback = ".webp"): string {
   if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
@@ -537,10 +573,26 @@ export async function getDisplayUri(
   const cached = plainUris.get(att.id);
   if (cached) return cached;
 
-  // Anexo comum: nada de cofre aqui
-  if (!isEncrypted(att.file_name)) return cacheAttachment(att);
+  // 1. Procura arquivo plano já decifrado em disco
+  for (const ext of [".webp", ".jpg", ".jpeg", ".png", ".gif", ".m4a", ".webm"]) {
+    const plainPath = `${FileSystem.cacheDirectory}att-${att.id}-plain${ext}`;
+    try {
+      const info = await FileSystem.getInfoAsync(plainPath);
+      if (info.exists) {
+        plainUris.set(att.id, plainPath);
+        return plainPath;
+      }
+    } catch {
+      // ignora e continua
+    }
+  }
 
-  // Ciphertext já baixado? (cacheAttachment também divide downloads paralelos)
+  // 2. Se o anexo não for cifrado (fallback)
+  if (!isVaultAttachment(att) && !isEncrypted(att.file_name) && !isEncrypted(att.mime_type)) {
+    return cacheAttachment(att);
+  }
+
+  // 3. Garante que o ciphertext está no cache local (baixa do servidor se necessário)
   const cipherUri = await cacheAttachment(att);
   if (!cipherUri) return null;
 
@@ -548,7 +600,8 @@ export async function getDisplayUri(
     const b64 = await FileSystem.readAsStringAsync(cipherUri, {
       encoding: FileSystem.EncodingType.Base64,
     });
-    const plain = decryptBytes(dek, base64ToBytes(b64));
+    const cipherBytes = base64ToBytes(b64);
+    const plain = decryptBytes(dek, cipherBytes);
     const ext = detectExtensionFromBytes(plain, ".webp");
     const dest = `${FileSystem.cacheDirectory}att-${att.id}-plain${ext}`;
     await FileSystem.writeAsStringAsync(dest, bytesToBase64(plain), {
@@ -565,9 +618,14 @@ export async function getDisplayUri(
 /** Atalho pra UI: resolve o dek da memória; sem dek só anexo comum aparece. */
 export async function displayUriFor(att: AttachmentRow): Promise<string | null> {
   const dek = getVaultDek();
-  if (!isEncrypted(att.file_name)) return cacheAttachment(att);
-  if (!dek) return null; // cofre travado — placeholder na tela
-  return getDisplayUri(att, dek);
+  const cached = plainUris.get(att.id);
+  if (cached) return cached;
+
+  if (isVaultAttachment(att) || isEncrypted(att.file_name) || isEncrypted(att.mime_type)) {
+    if (!dek) return null; // cofre travado — placeholder na tela
+    return getDisplayUri(att, dek);
+  }
+  return cacheAttachment(att);
 }
 
 /** Sincroniza silenciosamente (helper de conveniência após mutações). */
