@@ -2,7 +2,7 @@
  * E2E do fluxo de IMAGEM no cofre: cria cofre + nota cifrada, sobe imagem
  * cifrada (como o cliente faz), baixa e descriptografa — os bytes têm que
  * bater com a imagem original (valid WebP).
- * Uso: npx tsx scripts/_tmp-vault-image.mts (precisa de next start :3000)
+ * Uso: npx tsx scripts/test-vault-image.mts (precisa de next start :3000)
  */
 import { SignJWT } from "jose";
 import { readFileSync } from "fs";
