@@ -42,6 +42,28 @@ import MarkdownView from "./MarkdownView";
 import VersionHistoryModal from "./VersionHistoryModal";
 import { useUI } from "./UIProvider";
 
+/**
+ * A versão da nota de onde o estado do editor nasce. O corpo passa pelo
+ * repairImageTitles pra comparação pendente-vs-semente ser exata.
+ */
+function repairImageTitles(bodyText: string): string {
+  return bodyText.replace(
+    /\((\/api\/attachments\/[^)\s]+|https?:\/\/[^)\s]+)"(\d{1,3})"\)/g,
+    '$1 "$2")'
+  );
+}
+
+function seedFromNote(n: Note) {
+  return {
+    title: n.title,
+    body: repairImageTitles(n.body),
+    color: n.color,
+    is_pinned: n.is_pinned,
+    is_archived: n.is_archived,
+    updated_at: n.updated_at,
+  };
+}
+
 interface NoteEditorProps {
   note: Note;
   autoFocusBody?: boolean;
@@ -107,21 +129,30 @@ export default function NoteEditor({
     latestStateRef.current = { title, body, color, isPinned, isArchived, noteId: note.id };
   }, [title, body, color, isPinned, isArchived, note.id]);
 
+  // Semente: a versão da nota de onde o estado do editor foi carregado.
+  // Pendências são comparadas contra ELA, não contra a prop `note` — quando
+  // o sync atualiza a nota em background, a prop muda, e comparar contra ela
+  // fazia o estado antigo parecer "pendente": o flush salvava conteúdo VELHO
+  // com updated_at NOVO, o LWW coroava o velho e a edição do celular era
+  // descartada em todos os dispositivos.
+  const seedRef = useRef(seedFromNote(note));
+
   const saveTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Salva alterações pendentes
+  // Salva alterações pendentes (só de verdade: estado diferente da semente)
   const flushSave = useCallback(async () => {
     if (saveTimerRef.current) {
       clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
     }
     const current = latestStateRef.current;
+    const seed = seedRef.current;
     if (
-      current.title !== note.title ||
-      current.body !== note.body ||
-      current.color !== note.color ||
-      current.isPinned !== note.is_pinned ||
-      current.isArchived !== note.is_archived
+      current.title !== seed.title ||
+      current.body !== seed.body ||
+      current.color !== seed.color ||
+      current.isPinned !== seed.is_pinned ||
+      current.isArchived !== seed.is_archived
     ) {
       setSaveStatus("saving");
       await onUpdate({
@@ -131,9 +162,20 @@ export default function NoteEditor({
         is_pinned: current.isPinned,
         is_archived: current.isArchived,
       });
+      // A semente vira o que acabou de salvar — a prop `note` do pai só
+      // chega depois que o PATCH responde, e comparar contra ela recriava
+      // a "pendência fantasma" a cada flush
+      seedRef.current = {
+        title: current.title,
+        body: current.body,
+        color: current.color,
+        is_pinned: current.isPinned,
+        is_archived: current.isArchived,
+        updated_at: Date.now(),
+      };
       setSaveStatus("saved");
     }
-  }, [note, onUpdate]);
+  }, [onUpdate]);
 
   // Espelho da nota (props) pro unmount: latestStateRef só guarda título/corpo/etc,
   // e a checagem de descarte também precisa dos anexos
@@ -172,18 +214,21 @@ export default function NoteEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Ao mudar de nota: salva a nota anterior (se tiver alterações) e carrega os novos dados
+  // Ao mudar de nota: salva a nota anterior (se tiver alterações REAIS contra
+  // a semente dela) e carrega os novos dados
   const prevNoteIdRef = useRef(note.id);
   useEffect(() => {
     if (prevNoteIdRef.current !== note.id) {
-      // Salva nota anterior antes de trocar
+      // Salva nota anterior antes de trocar — pendência de verdade é contra a
+      // semente dela (seedRef ainda guarda a semente da nota anterior)
       const current = latestStateRef.current;
+      const oldSeed = seedRef.current;
       if (
-        current.title !== note.title ||
-        current.body !== note.body ||
-        current.color !== note.color
+        current.title !== oldSeed.title ||
+        current.body !== oldSeed.body ||
+        current.color !== oldSeed.color
       ) {
-        onUpdate({
+        void onUpdate({
           title: current.title,
           body: current.body,
           color: current.color,
@@ -205,6 +250,7 @@ export default function NoteEditor({
       setColor(note.color);
       setIsPinned(note.is_pinned);
       setIsArchived(note.is_archived);
+      seedRef.current = seedFromNote(note);
       setShowHistory(false);
       setSaveStatus("saved");
 
@@ -212,8 +258,37 @@ export default function NoteEditor({
       if (typeof window !== "undefined" && window.innerWidth < 768) {
         setViewMode("edit");
       }
+    } else if ((note.updated_at || 0) > (seedRef.current.updated_at || 0)) {
+      // Mesma nota com versão mais nova — veio do sync em background.
+      // Só adota título/corpo se NÃO há edição pendente do usuário (estado
+      // ainda igual à semente): com edição pendente, quem escreveu por
+      // último aqui foi o usuário e o flush dele vence por LWW
+      const current = latestStateRef.current;
+      const seed = seedRef.current;
+      const semEdicao =
+        current.title === seed.title &&
+        current.body === seed.body &&
+        current.color === seed.color &&
+        current.isPinned === seed.is_pinned &&
+        current.isArchived === seed.is_archived;
+
+      setColor(note.color);
+      setIsPinned(note.is_pinned);
+      setIsArchived(note.is_archived);
+
+      if (semEdicao) {
+        setTitle(note.title);
+        setBody(repairImageTitles(note.body));
+        seedRef.current = seedFromNote(note);
+      } else {
+        // Base do usuário passa a ser a versão nova: o flush da edição dele
+        // compara contra ela e vence por LWW — sem sobrescrever o sync com
+        // conteúdo velho
+        seedRef.current = seedFromNote(note);
+      }
     } else {
-      // Atualizações de props vindas do pai
+      // Prop sem versão mais nova (re-render comum): só espelha os campos
+      // que a UI edita por atalho
       setColor(note.color);
       setIsPinned(note.is_pinned);
       setIsArchived(note.is_archived);
@@ -702,13 +777,6 @@ export default function NoteEditor({
       const newPos = start + text.length;
       el?.setSelectionRange(newPos, newPos);
     });
-  }
-
-  function repairImageTitles(bodyText: string): string {
-    return bodyText.replace(
-      /\((\/api\/attachments\/[^)\s]+|https?:\/\/[^)\s]+)"(\d{1,3})"\)/g,
-      '$1 "$2")'
-    );
   }
 
   async function handleDrop(e: React.DragEvent) {
