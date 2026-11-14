@@ -186,12 +186,15 @@ try {
   fail++;
 } finally {
   await cleanup();
-  // Restaura o cofre original se existia
+  // Restaura o cofre original se existia; se NÃO existia, o material de teste
+  // sai (deixar material de teste no lugar também "quebra" a senha do usuário)
   if (prevMeta) {
     await db.execute({
       sql: `INSERT OR REPLACE INTO vault_meta (id, salt, iterations, kdf, wrapped_dek, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
       args: [prevMeta.id, prevMeta.salt, prevMeta.iterations, prevMeta.kdf, prevMeta.wrapped_dek, prevMeta.updated_at],
     }).catch(() => {});
+  } else {
+    await db.execute(`DELETE FROM vault_meta WHERE id = 'default'`).catch(() => {});
   }
 }
 

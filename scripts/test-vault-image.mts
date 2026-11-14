@@ -107,12 +107,14 @@ try {
   // limpeza da nota de teste
   await fetch(`${BASE}/api/notes/${note.id}`, { method: "DELETE", headers: H });
 } finally {
-  // Restaura o cofre original se existia
+  // Restaura o cofre original se existia; senão o material de teste sai
   if (prevMeta) {
     await db.execute({
       sql: `INSERT OR REPLACE INTO vault_meta (id, salt, iterations, kdf, wrapped_dek, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
       args: [prevMeta.id, prevMeta.salt, prevMeta.iterations, prevMeta.kdf, prevMeta.wrapped_dek, prevMeta.updated_at],
     }).catch(() => {});
+  } else {
+    await db.execute(`DELETE FROM vault_meta WHERE id = 'default'`).catch(() => {});
   }
 }
 

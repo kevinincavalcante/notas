@@ -36,6 +36,37 @@ const remote = createClient({
   authToken: process.env.TURSO_TOKEN,
 });
 
+/**
+ * Cofre REAL do usuário: snapshot antes, restauração no fim — o DELETE cego
+ * aqui já apagou a senha de verdade do usuário uma vez (23:16 UTC, erro
+ * "senha não reconhece" misterioso). Nunca mais.
+ */
+interface SavedMeta {
+  id: string; salt: string; iterations: number; kdf: string; wrapped_dek: string; updated_at: number;
+}
+const savedMetaRes = await remote.execute(
+  { sql: `SELECT id, salt, iterations, kdf, wrapped_dek, updated_at FROM vault_meta WHERE id = 'default'`, args: [] }
+).catch(() => ({ rows: [] as Record<string, unknown>[] }));
+const savedMeta: SavedMeta | null = savedMetaRes.rows.length > 0
+  ? (savedMetaRes.rows[0] as unknown as SavedMeta)
+  : null;
+async function restoreVaultMeta(): Promise<void> {
+  if (savedMeta) {
+    await remote.execute({
+      sql: `
+        INSERT INTO vault_meta (id, salt, iterations, kdf, wrapped_dek, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          salt = excluded.salt, iterations = excluded.iterations, kdf = excluded.kdf,
+          wrapped_dek = excluded.wrapped_dek, updated_at = excluded.updated_at
+      `,
+      args: [savedMeta.id, savedMeta.salt, savedMeta.iterations, savedMeta.kdf, savedMeta.wrapped_dek, savedMeta.updated_at],
+    });
+  } else {
+    await remote.execute({ sql: `DELETE FROM vault_meta WHERE id = 'default'` });
+  }
+}
+
 const dir = join(tmpdir(), `vault-sync-test-${randomUUID()}`);
 mkdirSync(dir, { recursive: true });
 const local = createClient({ url: `file:${join(dir, "notas.db")}` });
@@ -160,8 +191,8 @@ try {
   console.error("💥 erro:", err);
   fail++;
 } finally {
-  // material de teste sai do hub
-  await remote.execute({ sql: `DELETE FROM vault_meta WHERE id = 'default'` }).catch(() => {});
+  // Material REAL restaurado (ou removido se o usuário não tinha cofre)
+  await restoreVaultMeta().catch(() => {});
   rmSync(dir, { recursive: true, force: true });
 }
 
