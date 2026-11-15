@@ -77,6 +77,41 @@ export function AudioBar({
 }
 
 /** Chip compacto de arquivo genérico (não-imagem, não-áudio). */
+/** Salvar/compartilhar anexo: decifra em memória (se for do cofre), grava
+ *  no cache com o NOME REAL e abre o compartilhar do Android ("Salvar em
+ *  Arquivos", enviar por app...). O ciphertext nunca toca o disco. */
+export async function shareAttachmentFile(att: AttachmentRow): Promise<void> {
+  const uri = await displayUriFor(att);
+  if (!uri) {
+    Alert.alert("Arquivo", "Não foi possível preparar o arquivo — o cofre está travado?");
+    return;
+  }
+  const dek = getVaultDek();
+  let realName = att.file_name || `arquivo-${att.id.slice(0, 8)}`;
+  if (isEncrypted(realName) && dek) {
+    try {
+      realName = decryptString(dek, realName);
+    } catch {
+      realName = "arquivo";
+    }
+  }
+  const safeName = realName.replace(/[/\\:*?"<>|]/g, "_");
+  const dest = `${FileSystem.cacheDirectory}${safeName}`;
+  await FileSystem.deleteAsync(dest, { idempotent: true });
+  await FileSystem.copyAsync({ from: uri, to: dest });
+  if (await Sharing.isAvailableAsync()) {
+    await Sharing.shareAsync(dest, {
+      dialogTitle: "Salvar arquivo",
+      mimeType:
+        att.mime_type && !isEncrypted(att.mime_type)
+          ? att.mime_type
+          : "application/octet-stream",
+    });
+  } else {
+    Alert.alert("Arquivo", `Salvo em: ${dest}`);
+  }
+}
+
 export function FileChip({
   att,
   onRemove,
@@ -97,42 +132,11 @@ export function FileChip({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [att.id, att.file_name]);
 
-  /** Salvar/compartilhar: decifra em memória (se for do cofre), grava no
-   *  cache com o NOME REAL e abre o compartilhar do Android ("Salvar em
-   *  Arquivos", enviar por app, etc.). O ciphertext nunca toca o disco. */
   async function handleShare() {
     if (busy) return;
     setBusy(true);
     try {
-      const uri = await displayUriFor(att);
-      if (!uri) {
-        Alert.alert("Arquivo", "Não foi possível preparar o arquivo — o cofre está travado?");
-        return;
-      }
-      const dek = getVaultDek();
-      let realName = att.file_name || `arquivo-${att.id.slice(0, 8)}`;
-      if (isEncrypted(realName) && dek) {
-        try {
-          realName = decryptString(dek, realName);
-        } catch {
-          realName = "arquivo";
-        }
-      }
-      const safeName = realName.replace(/[/\\:*?"<>|]/g, "_");
-      const dest = `${FileSystem.cacheDirectory}${safeName}`;
-      await FileSystem.deleteAsync(dest, { idempotent: true });
-      await FileSystem.copyAsync({ from: uri, to: dest });
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(dest, {
-          dialogTitle: "Salvar arquivo",
-          mimeType:
-            att.mime_type && !isEncrypted(att.mime_type)
-              ? att.mime_type
-              : "application/octet-stream",
-        });
-      } else {
-        Alert.alert("Arquivo", `Salvo em: ${dest}`);
-      }
+      await shareAttachmentFile(att);
     } catch (e) {
       Alert.alert("Arquivo", e instanceof Error ? e.message : String(e));
     } finally {

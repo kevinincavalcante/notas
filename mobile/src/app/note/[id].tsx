@@ -4,7 +4,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ActionSheet, { type ActionItem } from "../../components/ActionSheet";
-import { AudioBar, FileChip } from "../../components/AttachmentStrip";
+import { AudioBar, FileChip, shareAttachmentFile } from "../../components/AttachmentStrip";
 import VersionHistorySheet from "../../components/VersionHistorySheet";
 import { autoList } from "../../lib/auto-list";
 import { bodyToHtml } from "../../lib/markdown-html";
@@ -165,14 +165,24 @@ export default function NoteScreen() {
   const [bodyImgUris, setBodyImgUris] = useState<Record<string, string>>({});
 
   // IDs de imagem no corpo — captura URL RELATIVA (/api/attachments/<uuid>)
-  // e ABSOLUTA (nota criada no web: https://host/api/attachments/<uuid>)
+  // e ABSOLUTA (nota criada no web: https://host/api/attachments/<uuid>).
+  // Anexos do TIPO ARQUIVO (.key, pdf...) ficam FORA: o corpo mostra chip
+  // "⬇ Baixar" (notasfile://) — não são mídia pendente nem viram <img>
   const bodyImgIds = useMemo(() => {
+    const dek = getVaultDek();
     const ids = new Set<string>();
     for (const m of body.matchAll(/\/api\/attachments\/([0-9a-fA-F-]+)/g)) {
-      ids.add(m[1]);
+      const id = m[1];
+      const att = attachments.find((a) => a.id === id);
+      if (att) {
+        const v = dek ? decryptAttachmentRow(dek, att) : att;
+        const ext = (v.file_name || "").match(/\.([a-zA-Z0-9]{1,8})$/)?.[1]?.toLowerCase();
+        if (ext && !["jpg", "jpeg", "png", "webp", "gif", "svg", "bmp"].includes(ext)) continue;
+      }
+      ids.add(id);
     }
     return Array.from(ids);
-  }, [body]);
+  }, [body, attachments]);
 
   // Mídias do corpo cuja uri local ainda NÃO resolveu (baixando/decifrando)
   const bodyUrisPending = useMemo(
@@ -969,9 +979,13 @@ export default function NoteScreen() {
               {audioAttachments.map((audio) => (
                 <AudioBar key={audio.id} att={audio} />
               ))}
-              {fileAttachments.map((file) => (
-                <FileChip key={file.id} att={file} />
-              ))}
+              {/* Arquivos REFERENCIADOS no corpo viram chip DENTRO do
+                  WebView (notasfile://) — aqui só os avulsos */}
+              {fileAttachments
+                .filter((file) => !bodyImgIds.includes(file.id))
+                .map((file) => (
+                  <FileChip key={file.id} att={file} />
+                ))}
             </View>
           )}
           {/* Mídias do corpo ainda baixando/decifrando: indicador + previews
@@ -1001,6 +1015,14 @@ export default function NoteScreen() {
             allowFileAccess={true}
             setSupportMultipleWindows={false}
             onShouldStartLoadWithRequest={(req) => {
+              // Chip de ARQUIVO no corpo: decifra em memória e abre o
+              // compartilhar do Android (salvar em Arquivos, enviar...)
+              if (req.url.startsWith("notasfile://")) {
+                const id = req.url.replace("notasfile://", "").split("?")[0];
+                const att = attachments.find((a) => a.id === id);
+                if (att) void shareAttachmentFile(att);
+                return false;
+              }
               // Links do markdown abrem no navegador do sistema
               if (req.url.startsWith("http")) {
                 import("react-native").then(({ Linking }) => void Linking.openURL(req.url));

@@ -12,8 +12,35 @@ import { marked } from "marked";
 
 marked.use({ gfm: true, breaks: true });
 
+const IMAGE_HTML_EXT = new Set(["jpg", "jpeg", "png", "webp", "gif", "svg", "bmp"]);
+
+/** Alt/src com extensão que não é de imagem = ARQUIVO anexado (.key, pdf...) */
+function fileLikeText(text: string): boolean {
+  const m = text.match(/\.([a-zA-Z0-9]{1,8})$/);
+  return Boolean(m && !IMAGE_HTML_EXT.has(m[1].toLowerCase()));
+}
+
 export function bodyToHtml(body: string, imgUris: Record<string, string> = {}): string {
   let content = marked.parse(body || "", { async: false }) as string;
+  // ARQUIVO anexado no corpo (.key, pdf, zip...): vira CHIP CLICÁVEL dentro
+  // do corpo (efeito igual ao web) — o toque dispara notasfile://<id>, que
+  // o editor intercepta no onShouldStartLoadWithRequest e abre o
+  // compartilhar do Android com o arquivo decifrado.
+  content = content.replace(
+    /<img([^>]*?)src="(?:https?:\/\/[^"]*?)?\/api\/attachments\/([0-9a-fA-F-]+)"([^>]*?)>/g,
+    (m, pre: string, id: string, pos: string) => {
+      const altMatch = /alt="([^"]*)"/.exec(`${pre}${pos}`);
+      const alt = altMatch ? altMatch[1] : "";
+      if (!fileLikeText(alt) && !fileLikeText(m)) return m; // imagem de verdade
+      return (
+        `<a href="notasfile://${id}" style="display:inline-flex;align-items:center;gap:7px;margin:4px 0;` +
+        `padding:7px 12px;background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.4);` +
+        `border-radius:10px;color:#fcd34d;text-decoration:none;font-size:13.5px;">` +
+        `📎 ${alt || "arquivo"}` +
+        `<span style="background:#fbbf24;color:#18181b;border-radius:7px;padding:2px 8px;font-size:11.5px;font-weight:700;">⬇ Baixar</span></a>`
+      );
+    }
+  );
   // Imagens do corpo: resolve do cache LOCAL (file://). A WebView do modo
   // leitura não tem cookie nem header Bearer pra pedir /api/attachments na
   // API remota — o proxy devolvia 401 e a foto aparecia quebrada (alt text).
