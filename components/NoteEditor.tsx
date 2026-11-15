@@ -39,6 +39,7 @@ import ColorPicker from "./ColorPicker";
 import VoiceRecorder from "./VoiceRecorder";
 import LinkPreview, { extractUrls } from "./LinkPreview";
 import MarkdownView from "./MarkdownView";
+import { downloadAttachmentFile } from "@/lib/vault-client";
 import VersionHistoryModal from "./VersionHistoryModal";
 import { useUI } from "./UIProvider";
 
@@ -1102,7 +1103,17 @@ export default function NoteEditor({
               )}
 
               <div className="flex-1">
-                <MarkdownView content={body} onSetImageWidth={setImageWidth} />
+                <MarkdownView
+                  content={body}
+                  onSetImageWidth={setImageWidth}
+                  onFileAttachmentClick={(id) => {
+                    const att = note.attachments?.find((a) => a.id === id);
+                    if (!att) return;
+                    void downloadAttachmentFile(null, att).catch((e) =>
+                      console.error("Falha ao baixar anexo:", e)
+                    );
+                  }}
+                />
               </div>
 
               {/* Previews de Links Ricos integrados diretamente dentro da coluna de preview */}

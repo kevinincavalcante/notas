@@ -13,9 +13,20 @@ interface MarkdownViewProps {
   placeholder?: string;
   /** Habilita o popover de redimensionamento: clicar na imagem no preview oferece 25/50/75/100% */
   onSetImageWidth?: (src: string, percent: number) => void;
+  /** Referência no corpo a um anexo que NÃO é imagem/áudio (.key, .pdf...):
+   *  o preview renderiza um chip "⬇ Baixar" em vez de imagem quebrada */
+  onFileAttachmentClick?: (attachmentId: string, alt: string) => void;
 }
 
 const IMAGE_SIZES = [25, 50, 75, 100];
+const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp", "gif", "svg", "bmp"]);
+
+/** Alt/src termina com extensão que não é de imagem → é um ARQUIVO anexado
+ *  (key, pdf, zip, txt...). Renderiza chip de download, não <img> quebrado. */
+function fileLikeAttachment(text: string): boolean {
+  const m = text.match(/\.([a-zA-Z0-9]{1,8})$/);
+  return Boolean(m && !IMAGE_EXTENSIONS.has(m[1].toLowerCase()));
+}
 
 /** Extrai percentual de largura do title da imagem (convenção: title="50" ou "50%") */
 function parsePercent(title?: string): number | null {
@@ -288,7 +299,12 @@ function customUrlTransform(url: string): string {
  * - autoDetectCodeBlocks + CodeBlock: syntax highlighting automático e para blocos de código
  * - preserveExtraNewlines: múltiplos Enters consecutivos respeitam o espaçamento do editor
  */
-export default function MarkdownView({ content, placeholder, onSetImageWidth }: MarkdownViewProps) {
+export default function MarkdownView({
+  content,
+  placeholder,
+  onSetImageWidth,
+  onFileAttachmentClick,
+}: MarkdownViewProps) {
   const [activeImage, setActiveImage] = useState<{ src: string; percent: number } | null>(null);
 
   const processedContent = useMemo(() => {
@@ -336,6 +352,33 @@ export default function MarkdownView({ content, placeholder, onSetImageWidth }: 
           },
           img: ({ src, alt, title, node, ...rest }) => {
             const srcStr = typeof src === "string" ? src : "";
+            // Anexo ARQUIVO (não-imagem) referenciado no corpo: chip de
+            // download em vez de <img> quebrado — o id vem da URL canônica
+            const attMatch = /\/api\/attachments\/([0-9a-fA-F-]{36})/.exec(srcStr);
+            if (
+              attMatch &&
+              onFileAttachmentClick &&
+              (fileLikeAttachment(alt ?? "") || fileLikeAttachment(srcStr))
+            ) {
+              return (
+                <span className="inline-flex items-center gap-2 my-3 px-3 py-2 rounded-xl bg-amber-400/10 border border-amber-400/30 max-w-full align-top">
+                  <span className="text-base shrink-0">📎</span>
+                  <span className="text-xs font-medium text-amber-700 dark:text-amber-300 truncate max-w-[16rem]">
+                    {alt || "arquivo"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onFileAttachmentClick(attMatch[1], alt ?? "");
+                    }}
+                    className="text-[11px] font-semibold px-2 py-1 rounded-lg bg-amber-400 text-slate-950 hover:bg-amber-300 transition shrink-0"
+                  >
+                    ⬇ Baixar
+                  </button>
+                </span>
+              );
+            }
             const percent = parsePercent(title) ?? 100;
             const isActive = activeImage?.src === srcStr;
 

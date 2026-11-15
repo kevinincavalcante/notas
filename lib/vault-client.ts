@@ -100,6 +100,53 @@ export async function getVaultMediaUrl(
   }
 }
 
+/** Baixa um anexo pro disco do usuário. No cofre: baixa o ciphertext,
+ *  decifra EM MEMÓRIA e salva com o nome/mime reais (cifrados no banco).
+ *  Fora do cofre (dek = null): baixa direto. */
+export async function downloadAttachmentFile(
+  dek: Uint8Array | null,
+  att: Pick<Attachment, "id" | "file_name" | "mime_type">
+): Promise<void> {
+  const res = await fetch(`/api/attachments/${att.id}`);
+  if (!res.ok) throw new Error(`Falha ao baixar o anexo (${res.status})`);
+  const buf = new Uint8Array(await res.arrayBuffer());
+  let bytes: Uint8Array = buf;
+  if (dek) {
+    try {
+      bytes = decryptBytes(dek, buf);
+    } catch {
+      // anexo antigo em claro (pré-cofre) — usa os bytes como estão
+    }
+  }
+  let name = att.file_name || "arquivo";
+  let mime = att.mime_type || "application/octet-stream";
+  if (isEncrypted(name) && dek) {
+    try {
+      name = decryptString(dek, name);
+    } catch {
+      name = "arquivo";
+    }
+  }
+  if (isEncrypted(mime) && dek) {
+    try {
+      mime = decryptString(dek, mime);
+    } catch {
+      mime = "application/octet-stream";
+    }
+  }
+  const blob = new Blob([bytes as unknown as BlobPart], {
+    type: mime || "application/octet-stream",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
 /** Descriptografa metadados do anexo (file_name e mime cifrados). */
 export function decryptAttachment(dek: Uint8Array, att: Attachment): Attachment {
   if (!isEncrypted(att.file_name) && !isEncrypted(att.mime_type)) return att;

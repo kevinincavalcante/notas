@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from "react-native";
+import * as Sharing from "expo-sharing";
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
+import * as FileSystem from "expo-file-system/legacy";
 import {
   displayUriFor,
   deleteAttachment,
 } from "../lib/attachments";
 import { decryptAttachmentRow, getVaultDek } from "../lib/vault";
+import { decryptString, isEncrypted } from "../../../lib/vault-crypto";
 import type { AttachmentRow } from "../lib/db";
 
 /**
@@ -83,6 +86,7 @@ export function FileChip({
 }) {
   // Anexo do cofre: nome chega cifrado — mostra decifrado quando há dek
   const [name, setName] = useState(att.file_name);
+  const [busy, setBusy] = useState(false);
   useEffect(() => {
     const dek = getVaultDek();
     if (!dek) {
@@ -92,12 +96,64 @@ export function FileChip({
     setName(decryptAttachmentRow(dek, att).file_name);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [att.id, att.file_name]);
+
+  /** Salvar/compartilhar: decifra em memória (se for do cofre), grava no
+   *  cache com o NOME REAL e abre o compartilhar do Android ("Salvar em
+   *  Arquivos", enviar por app, etc.). O ciphertext nunca toca o disco. */
+  async function handleShare() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const uri = await displayUriFor(att);
+      if (!uri) {
+        Alert.alert("Arquivo", "Não foi possível preparar o arquivo — o cofre está travado?");
+        return;
+      }
+      const dek = getVaultDek();
+      let realName = att.file_name || `arquivo-${att.id.slice(0, 8)}`;
+      if (isEncrypted(realName) && dek) {
+        try {
+          realName = decryptString(dek, realName);
+        } catch {
+          realName = "arquivo";
+        }
+      }
+      const safeName = realName.replace(/[/\\:*?"<>|]/g, "_");
+      const dest = `${FileSystem.cacheDirectory}${safeName}`;
+      await FileSystem.deleteAsync(dest, { idempotent: true });
+      await FileSystem.copyAsync({ from: uri, to: dest });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(dest, {
+          dialogTitle: "Salvar arquivo",
+          mimeType:
+            att.mime_type && !isEncrypted(att.mime_type)
+              ? att.mime_type
+              : "application/octet-stream",
+        });
+      } else {
+        Alert.alert("Arquivo", `Salvo em: ${dest}`);
+      }
+    } catch (e) {
+      Alert.alert("Arquivo", e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <View style={styles.fileChip}>
+    <Pressable
+      style={({ pressed }) => [styles.fileChip, pressed && { opacity: 0.85 }]}
+      onPress={() => void handleShare()}
+    >
       <Text style={styles.fileIcon}>📎</Text>
       <Text style={styles.fileName} numberOfLines={1}>{name}</Text>
+      {busy ? (
+        <ActivityIndicator size="small" color="#fbbf24" />
+      ) : (
+        <Text style={styles.fileSaveIcon}>⬇</Text>
+      )}
       {onRemove && <RemoveButton att={att} onRemoved={() => onRemove(att)} />}
-    </View>
+    </Pressable>
   );
 }
 
@@ -189,6 +245,7 @@ const styles = StyleSheet.create({
     maxWidth: 220,
   },
   fileIcon: { fontSize: 16 },
+  fileSaveIcon: { fontSize: 15, color: "#fbbf24" },
   fileName: { color: "#e4e4e7", fontSize: 12.5, flexShrink: 1 },
   removeBtn: {
     position: "absolute",

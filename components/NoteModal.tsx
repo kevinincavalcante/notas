@@ -44,9 +44,19 @@ import { useVault } from "./VaultProvider";
 import {
   decryptNote as decryptNoteFields,
   decryptVersions,
+  downloadAttachmentFile,
   getVaultMediaUrl,
   uploadEncryptedFile,
 } from "@/lib/vault-client";
+import { decryptString, isEncrypted } from "@/lib/vault-crypto";
+
+/** Classificação de anexos (por mime com fallback na extensão do nome). */
+const isImageAttachment = (a: { mime_type?: string; file_name?: string }) =>
+  Boolean(a.mime_type?.startsWith("image/") || /\.(jpe?g|png|webp|gif|svg|bmp)$/i.test(a.file_name || ""));
+const isAudioAttachment = (a: { mime_type?: string; file_name?: string }) =>
+  Boolean(a.mime_type?.startsWith("audio/") || /\.(m4a|mp3|wav|ogg|aac|flac|webm)$/i.test(a.file_name || ""));
+const isFileAttachment = (a: { mime_type?: string; file_name?: string }) =>
+  !isImageAttachment(a) && !isAudioAttachment(a);
 
 /** Placeholder pra anexo CITADO no corpo mas inexistente (id perdido por
  * edição ou upload que nunca completou). Mostra um aviso explícito no
@@ -153,6 +163,9 @@ export default function NoteModal({
       const map: Record<string, string> = { ...(attachmentSrcMap || {}) };
       for (const att of note.attachments || []) {
         if (!att.id || map[att.id]) continue;
+        // Anexos ARQUIVO (.key, pdf...) não viram blob — o download deles
+        // decifra na hora do clique (economiza decifrar MB à toa)
+        if (isFileAttachment(att)) continue;
         // No cofre TODOS os binários de anexo estão cifrados no storage —
         // tenta descriptografar sempre; se falhar (anexo antigo em claro),
         // o src cai de volta na rota normal.
@@ -290,8 +303,8 @@ export default function NoteModal({
         // Cofre: bytes + metadados cifrados no cliente antes de sair do app
         const att = await uploadEncryptedFile(vault.dek, file, {
           noteId: note.id,
-          fileName: file.name || "imagem",
-          mimeType: file.type || "image/webp",
+          fileName: file.name || "arquivo",
+          mimeType: file.type || "application/octet-stream",
         });
         data = { attachment: att || undefined, error: att ? undefined : "Falha no upload" };
       } else {
@@ -311,6 +324,49 @@ export default function NoteModal({
       if (data.attachment) {
         onAddAttachment(data.attachment);
         onAfterAttachmentChange?.();
+
+        // ARQUIVO (.key, .pdf, .zip...): nada de markdown de imagem quebrada.
+        // Fora do cofre insere link clicável; no cofre o chip "Arquivos"
+        // abaixo do editor faz o download (decifrando na hora).
+        const attIsFile =
+          isFileAttachment(data.attachment) ||
+          /\.(key|pem|pdf|zip|rar|7z|txt|csv|docx?|xlsx?|pptx?|json|log|xml|yml|yaml|sql|sh|ps1|apk|gz|tar)$/i.test(
+            data.attachment.file_name || file.name || ""
+          );
+        if (attIsFile && !isVaultNote) {
+          const el = bodyTextareaRef.current;
+          const currentBody = latestStateRef.current.body;
+          const insertPos =
+            typeof atIndex === "number"
+              ? atIndex
+              : el && typeof el.selectionStart === "number"
+                ? el.selectionStart
+                : currentBody.length;
+          const linkMarkdown = `\n\n[${data.attachment.file_name}](/api/attachments/${data.attachment.id})\n\n`;
+          const updatedBody =
+            currentBody.slice(0, insertPos) + linkMarkdown + currentBody.slice(insertPos);
+
+          setBody(updatedBody);
+          latestStateRef.current.body = updatedBody;
+          onUpdate({
+            title: latestStateRef.current.title,
+            body: updatedBody,
+            color: latestStateRef.current.color,
+            is_pinned: latestStateRef.current.isPinned,
+            is_archived: latestStateRef.current.isArchived,
+          });
+          requestAnimationFrame(() => {
+            if (el) {
+              const newPos = insertPos + linkMarkdown.length;
+              el.focus();
+              el.setSelectionRange(newPos, newPos);
+            }
+          });
+          return;
+        }
+        if (attIsFile) {
+          return; // cofre: só o chip (não insere link que apontaria pro ciphertext)
+        }
 
         const el = bodyTextareaRef.current;
         const currentBody = latestStateRef.current.body;
@@ -416,6 +472,29 @@ export default function NoteModal({
       showToast("Erro ao enviar áudio.", "error");
     } finally {
       setUploading(false);
+    }
+  }
+
+  /** Nome legível de anexo (decifra quando o cofre está destravado). */
+  function attachmentDisplayName(a: Attachment): string {
+    if (a.file_name && isEncrypted(a.file_name) && vault.dek) {
+      try {
+        return decryptString(vault.dek, a.file_name);
+      } catch {
+        return "arquivo";
+      }
+    }
+    return a.file_name || "arquivo";
+  }
+
+  /** Baixa o anexo pro disco. No cofre, decifra em memória antes (o
+   *  ciphertext nunca toca o disco em claro sem passar pela DEK). */
+  async function handleDownloadAttachment(a: Attachment) {
+    try {
+      await downloadAttachmentFile(isVaultNote ? vault.dek : null, a);
+      showToast("Arquivo baixado.", "success");
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Falha ao baixar o arquivo.", "error");
     }
   }
 
@@ -643,11 +722,6 @@ export default function NoteModal({
 
   if (!isOpen) return null;
 
-  const isImageAttachment = (a: Attachment) =>
-    Boolean(a.mime_type.startsWith("image/") || /\.(jpe?g|png|webp|gif|svg)$/i.test(a.file_name || ""));
-  const isAudioAttachment = (a: Attachment) =>
-    Boolean(a.mime_type.startsWith("audio/") || /\.(m4a|mp3|wav|ogg|aac|flac|webm)$/i.test(a.file_name || ""));
-
   const imageAttachments =
     note.attachments?.filter(
       (a) =>
@@ -655,14 +729,21 @@ export default function NoteModal({
         !body.includes(`/api/attachments/${a.id}`)
     ) || [];
   const audioAttachments = note.attachments?.filter(isAudioAttachment) || [];
+  const fileAttachments = note.attachments?.filter(isFileAttachment) || [];
   const detectedUrls = extractUrls(body);
 
   // Cofre: corpo de EXIBIÇÃO com as URLs de anexos trocadas por blob URLs
   // descriptografados — o estado `body` continua canônico (/api/attachments/...)
   const vaultDisplayBody = useMemo(() => {
     if (!isVaultNote) return body;
+    // Anexos do TIPO ARQUIVO (.key, pdf...): o preview NÃO troca por blob —
+    // o MarkdownView renderiza chip "⬇ Baixar" com o id canônico
+    const fileAttIds = new Set(
+      (note.attachments || []).filter(isFileAttachment).map((a) => a.id as string)
+    );
     let out = body;
     for (const [id, url] of Object.entries(vaultMedia)) {
+      if (fileAttIds.has(id)) continue;
       out = out.split(`/api/attachments/${id}`).join(url);
     }
     // Anexos citados no corpo que NÃO existem no banco (id perdido por edição
@@ -943,13 +1024,20 @@ export default function NoteModal({
                   viewMode === "split" ? "w-1/2" : "w-full max-w-3xl mx-auto"
                 } h-full p-4 overflow-y-auto bg-white/40 dark:bg-black/20 rounded-2xl border border-black/5 dark:border-white/5`}
               >
-                <MarkdownView content={vaultDisplayBody} onSetImageWidth={setImageWidth} />
+                <MarkdownView
+                  content={vaultDisplayBody}
+                  onSetImageWidth={setImageWidth}
+                  onFileAttachmentClick={(id) => {
+                    const att = note.attachments?.find((a) => a.id === id);
+                    if (att) void handleDownloadAttachment(att);
+                  }}
+                />
               </div>
             )}
           </div>
 
           {/* Seção Extra: Anexos e Links ricos em acordião ou bloco limpo */}
-          {(imageAttachments.length > 0 || audioAttachments.length > 0 || detectedUrls.length > 0) && (
+          {(imageAttachments.length > 0 || audioAttachments.length > 0 || fileAttachments.length > 0 || detectedUrls.length > 0) && (
             <div className="px-6 pb-6 space-y-4 border-t border-black/5 dark:border-white/5 pt-4 bg-black/5 dark:bg-black/10">
               {/* Previews de Links Ricos */}
               {detectedUrls.length > 0 && (
@@ -960,6 +1048,44 @@ export default function NoteModal({
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                     {detectedUrls.map((url) => (
                       <LinkPreview key={url} url={url} />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Arquivos (.key, .pdf, .zip...) — chip com download. No cofre,
+                  o download decifra em memória e salva com o nome real */}
+              {fileAttachments.length > 0 && (
+                <div className="space-y-2">
+                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                    Arquivos
+                  </span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {fileAttachments.map((f) => (
+                      <div
+                        key={f.id}
+                        className="flex items-center gap-2 p-2 rounded-xl bg-white/60 dark:bg-slate-800/60 border border-black/5 dark:border-white/5"
+                      >
+                        <span className="text-base shrink-0">📎</span>
+                        <span className="flex-1 min-w-0 text-xs font-medium text-slate-700 dark:text-slate-200 truncate">
+                          {attachmentDisplayName(f)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void handleDownloadAttachment(f)}
+                          title="Baixar arquivo"
+                          className="px-2 py-1 text-[11px] font-semibold rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 transition shrink-0"
+                        >
+                          ⬇ Baixar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteAttachment(f.id)}
+                          className="p-1.5 text-slate-400 hover:text-red-500 transition rounded-lg shrink-0"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -1063,7 +1189,6 @@ export default function NoteModal({
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*"
               className="hidden"
               onChange={handleFileUpload}
             />
