@@ -544,7 +544,7 @@ export default function DashboardPage() {
                     >
                       <Menu className="w-5 h-5" />
                     </button>
-                    <span className="font-semibold text-sm text-slate-800 dark:text-slate-300">Notas</span>
+                    <span className="font-semibold text-sm text-slate-800 dark:text-slate-300">Knotas</span>
                   </div>
 
                   <div className="flex-1 flex flex-col items-center justify-center p-6 text-center select-none">

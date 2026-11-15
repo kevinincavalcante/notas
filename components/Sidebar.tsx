@@ -234,7 +234,7 @@ export default function Sidebar({
               <StickyNote className="w-4 h-4" />
             </div>
             <span className="font-bold text-lg text-slate-900 dark:text-amber-400 tracking-tight">
-              Notas
+              Knotas
             </span>
           </div>
           <button

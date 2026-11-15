@@ -100,7 +100,7 @@ export default function Header({ searchQuery, onSearchChange, onToggleSidebar }:
             }`}
           >
             <StickyNote className="w-4 h-4" />
-            <span className="hidden md:inline">Notas</span>
+            <span className="hidden md:inline">Knotas</span>
           </Link>
 
           <Link

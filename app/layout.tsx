@@ -4,7 +4,7 @@ import { UIProvider } from "@/components/UIProvider";
 import VaultProvider from "@/components/VaultProvider";
 
 export const metadata: Metadata = {
-  title: "Notas - Gerenciador Pessoal",
+  title: "Knotas - Gerenciador Pessoal",
   description: "Gerenciador pessoal de notas estilo Google Keep de alta performance",
 };
 

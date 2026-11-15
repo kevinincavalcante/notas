@@ -38,7 +38,7 @@ async function createWindow(url: string): Promise<BrowserWindow> {
     height: 860,
     minWidth: 940,
     minHeight: 600,
-    title: "Notas",
+    title: "Knotas",
     autoHideMenuBar: true,
     backgroundColor: "#0f172a",
     webPreferences: {
