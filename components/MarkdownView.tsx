@@ -39,6 +39,18 @@ function parsePercent(title?: string): number | null {
 }
 
 /**
+ * Linguagens que o highlight.js não conhece (mas o app usa): mapeia pra
+ * equivalente suportado — sem isso o hljs caía no auto-detect e rotulava
+ * um .env como "routeros" (o mais parecido no catálogo).
+ */
+const LANGUAGE_ALIASES: Record<string, string> = {
+  env: "ini",
+  dotenv: "ini",
+  properties: "ini",
+  conf: "ini",
+};
+
+/**
  * Componente dedicado para renderizar blocos de código com Syntax Highlighting,
  * tag da linguagem identificada e botão de copiar.
  */
@@ -46,11 +58,13 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
   const [copied, setCopied] = useState(false);
 
   const { highlightedHtml, detectedLang } = useMemo(() => {
+    const requested = language?.toLowerCase();
+    const normalized = requested ? (LANGUAGE_ALIASES[requested] ?? requested) : undefined;
     try {
-      if (language && hljs.getLanguage(language)) {
+      if (normalized && hljs.getLanguage(normalized)) {
         return {
-          highlightedHtml: hljs.highlight(code, { language, ignoreIllegals: true }).value,
-          detectedLang: language,
+          highlightedHtml: hljs.highlight(code, { language: normalized, ignoreIllegals: true }).value,
+          detectedLang: requested ?? normalized,
         };
       }
       const auto = hljs.highlightAuto(code);
@@ -61,7 +75,7 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
     } catch {
       return {
         highlightedHtml: code,
-        detectedLang: language || "código",
+        detectedLang: requested || "código",
       };
     }
   }, [code, language]);

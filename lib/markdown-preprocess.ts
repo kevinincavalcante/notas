@@ -14,9 +14,16 @@
 
 const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_.\-]*\s*=/;
 const ENV_COMMENT_RE = /^\s*#/;
+/** Linha que só tem "&nbsp;" (e espaços): é linha em branco colada de HTML. */
+const NBSP_ONLY_RE = /^(?:&nbsp;|&#160;|&#xa0;|\s)+$/i;
+
+function isBlankLike(line: string): boolean {
+  const t = line.trim();
+  return t === "" || NBSP_ONLY_RE.test(t);
+}
 
 function isEnvLikeBlock(lines: string[]): boolean {
-  const nonBlank = lines.filter((l) => l.trim() !== "");
+  const nonBlank = lines.filter((l) => !isBlankLike(l));
   if (nonBlank.length === 0) return false;
   let assignments = 0;
   let comments = 0;
@@ -45,7 +52,10 @@ export function autoFenceEnvBlocks(content: string): string {
   const flush = () => {
     if (buffer.length === 0) return;
     if (isEnvLikeBlock(buffer)) {
-      out.push("```env", ...buffer, "```");
+      // Bloco de config gerado por NÓS: o "&nbsp;" colado de HTML é lixo de
+      // formatação (vira espaço), diferente de código do usuário (que fica
+      // literal)
+      out.push("```env", ...buffer.map((l) => l.replace(NBSP_RE, " ")), "```");
     } else {
       out.push(...buffer);
     }
@@ -66,8 +76,11 @@ export function autoFenceEnvBlocks(content: string): string {
       if (trimmed.startsWith(fenceMarker)) inFence = false;
       continue;
     }
-    if (line.trim() === "") {
+    if (isBlankLike(line)) {
       flush();
+      // Linha só-"&nbsp;" é lixo de HTML: some do preview. Linha em branco
+      // de verdade continua (respiro entre as seções).
+      if (line.trim() !== "") continue;
       out.push(line);
       continue;
     }
@@ -87,12 +100,11 @@ function replaceOutsideInlineCode(line: string): string {
     .join("");
 }
 
-/**
- * "&nbsp;" (entidade HTML de espaço inseparável) colada de uma página vira
- * espaço REAL no preview — antes aparecia o texto literal "&nbsp;" porque o
- * react-markdown escapa HTML por segurança. Não tem conteúdo: significa
- * só espaço.
- * Blocos de código ficam intactos: ali "&nbsp;" é texto literal e importa.
+/** "&nbsp;" (entidade HTML de espaço inseparável) colada de uma página vira
+ *  espaço REAL no preview — antes aparecia o texto literal "&nbsp;" porque o
+ *  react-markdown escapa HTML por segurança. Não tem conteúdo: significa
+ *  só espaço.
+ *  Blocos de código ficam intactos: ali "&nbsp;" é texto literal e importa.
  */
 export function decodeNbspEntities(content: string): string {
   if (!content) return content;
