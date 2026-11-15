@@ -91,3 +91,25 @@ npm run db:rebuild
 # Gerar hash de senha
 node scripts/hash-password.mjs "senha"
 ```
+
+---
+
+## 🎓 Lições Críticas (leia antes de mexer em fluxo de mídia / autosave)
+
+A análise completa está em [`docs/LICOES-MIDIA-COFRE.md`](docs/LICOES-MIDIA-COFRE.md).
+Resumo dos contratos que **não** podem ser violados:
+
+1. **Nenhuma limpeza/descarte automático** (flushSave, AppState, BackHandler,
+   unmount) pode rodar enquanto houver **mídia em voo** no editor — usar
+   `mediaInFlightRef`. Abrir câmera/galeria/gravação SUSPENDE o app e dispara
+   esses efeitos.
+2. **Rejeição de promise nunca é engolida** — `void fn()` sem catch interno =
+   falha invisível ("nada acontece"). Toda ação do usuário termina em Alert.
+3. **Descarte de nota vazia confere `attachments` E `pending_attachments`**
+   (e nunca com mídia em voo).
+4. **Ids capturados no início do fluxo** — savedRef/estado podem ser zerados
+   por efeito colateral durante `await`.
+5. **`if (busy) return null` não é tratamento de erro** — serialize uploads,
+   nunca descarte em silêncio.
+6. As suítes E2E do cofre **fazem snapshot/restore do `vault_meta` real** —
+   nunca apagar o material do cofre do usuário em cleanup de teste.

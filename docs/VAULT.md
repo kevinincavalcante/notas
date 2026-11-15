@@ -83,6 +83,13 @@ pode ser guardada no SecureStore (`notas_vault_dek`); destravar pede
 - `duration_seconds` e `created_at` dos anexos ficam em claro.
 - Notas do cofre não têm auto-tags nem aparecem na busca global (proposital).
 
+> ⚠️ **Mídia do cofre — bug de corrida já resolvido (v19)**: o autosave em
+> background (AppState ao abrir câmera/galeria) descartava a nota vazia antes
+> do anexo terminar de ser cifrado. Regras de proteção (`mediaInFlightRef`,
+> descarte confere `pending_attachments`, erros nunca em silêncio) e a análise
+> completa estão em [`docs/LICOES-MIDIA-COFRE.md`](LICOES-MIDIA-COFRE.md) —
+> leia antes de mexer em fluxo de mídia/descarte no editor.
+
 ## Testes
 
 ```bash
