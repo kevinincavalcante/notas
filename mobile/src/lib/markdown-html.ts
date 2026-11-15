@@ -1,5 +1,5 @@
 import { marked } from "marked";
-import { autoFenceEnvBlocks } from "../../../lib/markdown-env";
+import { preprocessMarkdown } from "../../../lib/markdown-preprocess";
 
 /**
  * Markdown → HTML de leitura (modo preview, estilo desktop/Joplin).
@@ -23,8 +23,9 @@ function fileLikeText(text: string): boolean {
 
 export function bodyToHtml(body: string, imgUris: Record<string, string> = {}): string {
   // Blocos .env/ini ganham fence automático (o markdown engolia `# =====`
-  // como H1 e comentários como títulos) — igual ao preview do web/desktop
-  let content = marked.parse(autoFenceEnvBlocks(body || ""), { async: false }) as string;
+  // como H1 e comentários como títulos) e "&nbsp;" vira espaço real —
+  // igual ao preview do web/desktop
+  let content = marked.parse(preprocessMarkdown(body || ""), { async: false }) as string;
   // ARQUIVO anexado no corpo (.key, pdf, zip...): vira CHIP CLICÁVEL dentro
   // do corpo (efeito igual ao web) — o toque dispara notasfile://<id>, que
   // o editor intercepta no onShouldStartLoadWithRequest e abre o

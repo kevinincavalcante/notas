@@ -76,3 +76,49 @@ export function autoFenceEnvBlocks(content: string): string {
   flush();
   return out.join("\n");
 }
+
+const NBSP_RE = /&nbsp;|&#160;|&#xa0;/gi;
+
+/** Substitui trechos de código inline (entre crases) por eles mesmos. */
+function replaceOutsideInlineCode(line: string): string {
+  const parts = line.split(/(`[^`]*`)/g);
+  return parts
+    .map((part, i) => (i % 2 === 1 ? part : part.replace(NBSP_RE, "\u00A0")))
+    .join("");
+}
+
+/**
+ * "&nbsp;" (entidade HTML de espaço inseparável) colada de uma página vira
+ * espaço REAL no preview — antes aparecia o texto literal "&nbsp;" porque o
+ * react-markdown escapa HTML por segurança. Não tem conteúdo: significa
+ * só espaço.
+ * Blocos de código ficam intactos: ali "&nbsp;" é texto literal e importa.
+ */
+export function decodeNbspEntities(content: string): string {
+  if (!content) return content;
+  const lines = content.split("\n");
+  const out: string[] = [];
+  let inFence = false;
+  let fenceMarker = "```";
+  for (const line of lines) {
+    const trimmed = line.trimStart();
+    if (!inFence && (trimmed.startsWith("```") || trimmed.startsWith("~~~"))) {
+      inFence = true;
+      fenceMarker = trimmed.slice(0, 3);
+      out.push(line);
+      continue;
+    }
+    if (inFence) {
+      out.push(line);
+      if (trimmed.startsWith(fenceMarker)) inFence = false;
+      continue;
+    }
+    out.push(replaceOutsideInlineCode(line));
+  }
+  return out.join("\n");
+}
+
+/** Pipeline de pré-processamento do PREVIEW (web/desktop e APK). */
+export function preprocessMarkdown(content: string): string {
+  return decodeNbspEntities(autoFenceEnvBlocks(content));
+}
