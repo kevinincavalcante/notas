@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import Header from "@/components/Header";
 import NoteModal from "@/components/NoteModal";
 import Sidebar from "@/components/Sidebar";
@@ -30,6 +31,19 @@ import {
 export default function VaultPage() {
   const { confirm, showToast } = useUI();
   const vault = useVault();
+  const router = useRouter();
+
+  // Travar (botão ou auto-lock) enquanto ESTÁ no cofre → volta pra tela
+  // inicial com as notas comuns, em vez de ficar na página de digitar senha.
+  // Só em TRANSIÇÃO unlocked→locked: chegando ao /vault já travado, a tela
+  // de senha aparece normalmente (precisamos dela pra destravar).
+  const prevStatusRef = useRef(vault.status);
+  useEffect(() => {
+    if (prevStatusRef.current === "unlocked" && vault.status === "locked") {
+      router.push("/");
+    }
+    prevStatusRef.current = vault.status;
+  }, [vault.status, router]);
 
   const [notes, setNotes] = useState<Note[]>([]); // sempre descriptografadas na UI
   const [, setLoading] = useState(true);
