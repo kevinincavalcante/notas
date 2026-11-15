@@ -1,8 +1,8 @@
-# 🗒️ Notas — Gerenciador pessoal para desenvolvedores
+# 🗒️ Notas (Knotas) — Gerenciador pessoal para desenvolvedores
 
-Anotações estilo Google Keep com **editor Markdown de verdade**, reconhecimento de código, tags automáticas, abas, pré-visualização rica de links e **sync offline-first** em três plataformas (web, desktop e celular) — tudo custo zero.
+Anotações estilo Google Keep com **editor Markdown de verdade**, reconhecimento de código, tags automáticas, abas, **cofre criptografado ponta-a-ponta**, pré-visualização rica de links e **sync offline-first** em três plataformas (web, desktop e celular) — tudo custo zero.
 
-Feito pra quem vive no teclado: abrir uma aba, colar um screenshot, gravar um áudio, escrever um snippet com syntax highlighting e achar tudo depois em milissegundos.
+Feito pra quem vive no teclado: abrir uma aba, colar um screenshot, gravar um áudio, escrever um snippet com syntax highlighting, guardar uma chave de API no cofre e achar tudo depois em milissegundos.
 
 ---
 
@@ -33,6 +33,27 @@ Texto completo com **SQLite FTS5**, suporte a prefixos (`termo*`), ranking `bm25
 ### 🕘 Histórico de versões
 Cada atualização relevante gera uma versão da nota — restaure qualquer ponto anterior pelo modal de versões.
 
+### 🔐 Cofre — notas e arquivos criptografados ponta-a-ponta (AES-256-GCM)
+
+O lugar pra guardar o que um desenvolvedor **não pode vazar**: chaves de API e `.env`, senhas, tokens, certificados e chaves privadas (`.key`, `.pem`), PDFs e ZIPs sensíveis. A nota entra no cofre e vira ciphertext **no seu dispositivo** — nada legível sai da sua máquina.
+
+**Como funciona localmente (cifra 100% no cliente):**
+```
+senha do cofre ──PBKDF2-SHA256──▶ KEK ──desembrulha──▶ DEK ──AES-256-GCM──▶ conteúdo
+```
+- A **senha nunca sai do dispositivo** e não é armazenada em lugar nenhum — esqueceu, não há recuperação (por design)
+- A DEK (chave de conteúdo, aleatória) cifra de fato tudo: título, corpo, **versões do histórico** e os binários dos anexos
+- A chave destravada vive **só na memória RAM**, com **auto-lock por inatividade (10 min)**; no celular, a DEK pode ir para o SecureStore (Keystore do Android) liberada por **biometria**
+- **Trocar a senha re-embrulha a mesma DEK** — não re-criptografa nada, e o material sincroniza como entidade do protocolo: qualquer dispositivo destrava com a mesma senha
+
+**Como funciona na nuvem (o servidor nunca vê nada):**
+- **Turso**: guarda apenas ciphertext reconhecível (`enc1:<iv>:<ciphertext>`) — o banco remoto não tem como ler
+- **Cloudflare R2**: anexos sobem como `enc_<uuid>` com **key neutra**, sem extensão nem nome real; até `file_name` e `mime_type` viajam cifrados nas linhas do banco
+- **Busca blindada**: notas do cofre ficam **fora do índice FTS5** (os triggers excluem na hora) — a busca dentro do cofre roda em memória, sobre o texto já descriptografado. O índice de busca global nunca vê plaintext
+- O servidor **pula o `sharp`** e qualquer auto-tag no cofre: ele processa zero conteúdo
+
+> Detalhes completos do modelo, rotas e limitações: [`docs/VAULT.md`](docs/VAULT.md)
+
 ---
 
 ## 📱 Multiplataforma, offline-first
@@ -55,6 +76,7 @@ Cada atualização relevante gera uma versão da nota — restaure qualquer pont
 - **Rate limit no login**: 5 tentativas por IP a cada 15 minutos.
 - `proxy.ts` intercepta tudo e renova a sessão em 401.
 - Token do desktop cifrado com o cofre do SO (`safeStorage`).
+- **Cofre de notas**: criptografia AES-256-GCM no cliente, com senha que nunca sai do dispositivo — o servidor e os bancos veem só ciphertext (seção acima).
 
 ---
 
