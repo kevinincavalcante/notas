@@ -61,6 +61,9 @@ const GHOST_MEDIA_DATA_URI =
 interface NoteModalProps {
   note: Note;
   isOpen: boolean;
+  /** Renderiza embutido na página (editor por aba, como na tela inicial)
+   *  em vez de overlay centralizado — mesma UI, sem backdrop/histórico */
+  inline?: boolean;
   onClose: () => void;
   onUpdate: (updatedNote: Partial<Note> & { skipPatch?: boolean }) => Promise<void>;
   onDelete: () => Promise<void>;
@@ -75,6 +78,7 @@ interface NoteModalProps {
 export default function NoteModal({
   note,
   isOpen,
+  inline = false,
   onClose,
   onUpdate,
   onDelete,
@@ -165,7 +169,8 @@ export default function NoteModal({
 
   // Intercepta o botão "Voltar" do navegador/Android no celular para fechar a nota
   useEffect(() => {
-    if (!isOpen) return;
+    // Inline (editor por aba): não manipula o histórico do navegador
+    if (!isOpen || inline) return;
 
     window.history.pushState({ noteModalOpen: true }, "");
     historyPushedRef.current = true;
@@ -686,16 +691,22 @@ export default function NoteModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 md:p-6 bg-slate-950/70 backdrop-blur-md cursor-pointer animate-in fade-in duration-150"
-      onClick={handleManualClose}
+      className={
+        inline
+          ? "flex-1 flex min-h-0"
+          : "fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 md:p-6 bg-slate-950/70 backdrop-blur-md cursor-pointer animate-in fade-in duration-150"
+      }
+      onClick={inline ? undefined : handleManualClose}
       onPaste={handlePaste}
     >
       <div
         className={`w-full transition-all duration-200 ${
-          isFullscreen
-            ? "max-w-full h-[98vh] rounded-2xl"
-            : "max-w-5xl h-[88vh] rounded-2xl md:rounded-3xl"
-        } shadow-2xl border flex flex-col overflow-hidden cursor-default note-color-${color}`}
+          inline
+            ? "h-full"
+            : isFullscreen
+              ? "max-w-full h-[98vh] rounded-2xl shadow-2xl border"
+              : "max-w-5xl h-[88vh] rounded-2xl md:rounded-3xl shadow-2xl border"
+        } flex flex-col overflow-hidden cursor-default note-color-${color}`}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Barra Superior Estilo Caderno / Obsidian */}
@@ -774,14 +785,16 @@ export default function NoteModal({
               <Pin className={`w-4 h-4 ${isPinned ? "fill-amber-500" : ""}`} />
             </button>
 
-            <button
-              type="button"
-              onClick={() => setIsFullscreen(!isFullscreen)}
-              title={isFullscreen ? "Restaurar janela" : "Tela cheia"}
-              className="hidden sm:flex p-2 text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 rounded-xl transition"
-            >
-              {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-            </button>
+            {!inline && (
+              <button
+                type="button"
+                onClick={() => setIsFullscreen(!isFullscreen)}
+                title={isFullscreen ? "Restaurar janela" : "Tela cheia"}
+                className="hidden sm:flex p-2 text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 rounded-xl transition"
+              >
+                {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+              </button>
+            )}
 
             <button
               type="button"

@@ -48,7 +48,6 @@ export default function VaultPage() {
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [modalOpen, setModalOpen] = useState(false);
   const [showPwForm, setShowPwForm] = useState(false);
 
   // Desbloqueio direto na página
@@ -98,7 +97,6 @@ export default function VaultPage() {
 
   function openNote(note: Note) {
     setSelectedNote(note);
-    setModalOpen(true);
     setIsSidebarOpen(false);
     setOpenTabs((prev) => (prev.includes(note.id) ? prev : [...prev, note.id]));
     setActiveTabId(note.id);
@@ -109,7 +107,6 @@ export default function VaultPage() {
     if (!n) return;
     setActiveTabId(id);
     setSelectedNote(n);
-    setModalOpen(true);
   }
 
   function closeTab(tabId: string) {
@@ -121,7 +118,6 @@ export default function VaultPage() {
       const next = rest.length > 0 ? rest[Math.min(idx, rest.length - 1)] : null;
       setActiveTabId(next);
       setSelectedNote(next ? notes.find((n) => n.id === next) || null : null);
-      setModalOpen(false);
     }
   }
 
@@ -148,7 +144,6 @@ export default function VaultPage() {
       setActiveTabId(next);
       setSelectedNote(next ? notes.find((n) => n.id === next) || null : null);
     }
-    setModalOpen(false);
   }
 
   // blob URLs das mídias dos cards (imagens/áudio cifrados)
@@ -555,7 +550,59 @@ export default function VaultPage() {
         />
 
         <div className="flex-1 flex flex-col min-h-0">
-          {openTabs.length === 0 ? (
+          {/* Uma instância de editor por aba — escondidas com display:none
+              preservam scroll e cursor (mesmo padrão da tela inicial) */}
+          {openTabs.map((tabId) => {
+            const tabNote = notes.find((n) => n.id === tabId);
+            if (!tabNote) return null;
+            const isActive = tabId === activeTabId;
+            return (
+              <div key={tabId} className={isActive ? "flex-1 flex flex-col min-h-0" : "hidden"}>
+                <NoteModal
+                  inline
+                  note={tabNote}
+                  isOpen={true}
+                  attachmentSrcMap={cardMedia}
+                  onClose={() => closeTab(tabId)}
+                  onUpdate={handleUpdateNote}
+                  onDelete={() => handleDeleteNote(tabNote.id)}
+                  onAddAttachment={(att) => {
+                    setNotes((prev) =>
+                      prev.map((n) =>
+                        n.id === tabNote.id
+                          ? { ...n, attachments: [...(n.attachments || []), att] }
+                          : n
+                      )
+                    );
+                    if (selectedNote?.id === tabNote.id) {
+                      setSelectedNote((prev) =>
+                        prev ? { ...prev, attachments: [...(prev.attachments || []), att] } : null
+                      );
+                    }
+                  }}
+                  onRemoveAttachment={(attId) => {
+                    setNotes((prev) =>
+                      prev.map((n) =>
+                        n.id === tabNote.id
+                          ? { ...n, attachments: (n.attachments || []).filter((a) => a.id !== attId) }
+                          : n
+                      )
+                    );
+                    if (selectedNote?.id === tabNote.id) {
+                      setSelectedNote((prev) =>
+                        prev
+                          ? { ...prev, attachments: (prev.attachments || []).filter((a) => a.id !== attId) }
+                          : null
+                      );
+                    }
+                  }}
+                  onAfterAttachmentChange={() => void loadNotes()}
+                />
+              </div>
+            );
+          })}
+
+          {openTabs.length === 0 && (
             /* Nada aberto — mesmo padrão do estado vazio da tela inicial */
             <div className="flex-1 flex flex-col items-center justify-center p-6 text-center select-none">
               <div className="w-16 h-16 bg-amber-400/10 text-amber-500 rounded-2xl flex items-center justify-center mb-4 shadow-xs border border-amber-400/20">
@@ -599,66 +646,9 @@ export default function VaultPage() {
                 </>
               )}
             </div>
-          ) : (
-            /* Aba ativa com o modal fechado: retomar o editor */
-            <div className="flex-1 flex flex-col items-center justify-center p-6 text-center select-none">
-              <div className="w-16 h-16 bg-amber-400/10 text-amber-500 rounded-2xl flex items-center justify-center mb-4 shadow-xs border border-amber-400/20">
-                <Vault className="w-8 h-8" />
-              </div>
-              <h2 className="text-lg font-semibold text-slate-900 dark:text-white mb-1 max-w-md truncate">
-                {activeNote && activeNote.title.trim() ? activeNote.title : "Sem título"}
-              </h2>
-              <p className="text-sm text-slate-600 dark:text-slate-400 max-w-sm mb-6 leading-relaxed">
-                A nota está aberta na aba acima.
-              </p>
-              <button
-                type="button"
-                onClick={() => setModalOpen(true)}
-                className="flex items-center gap-2 px-4 py-2 bg-amber-400 hover:bg-amber-300 active:bg-amber-500 text-slate-950 font-semibold text-sm rounded-xl transition shadow-xs active:scale-95"
-              >
-                <LockOpen className="w-4 h-4" />
-                Abrir editor
-              </button>
-            </div>
           )}
         </div>
       </main>
-
-      {selectedNote && modalOpen && (
-        <NoteModal
-          note={selectedNote}
-          isOpen={true}
-          attachmentSrcMap={cardMedia}
-          onClose={() => setModalOpen(false)}
-          onUpdate={handleUpdateNote}
-          onDelete={() => handleDeleteNote(selectedNote.id)}
-          onAddAttachment={(att) => {
-            setSelectedNote((prev) =>
-              prev ? { ...prev, attachments: [...(prev.attachments || []), att] } : null
-            );
-            setNotes((prev) =>
-              prev.map((n) =>
-                n.id === selectedNote.id
-                  ? { ...n, attachments: [...(n.attachments || []), att] }
-                  : n
-              )
-            );
-          }}
-          onRemoveAttachment={(attId) => {
-            setSelectedNote((prev) =>
-              prev ? { ...prev, attachments: (prev.attachments || []).filter((a) => a.id !== attId) } : null
-            );
-            setNotes((prev) =>
-              prev.map((n) =>
-                n.id === selectedNote.id
-                  ? { ...n, attachments: (n.attachments || []).filter((a) => a.id !== attId) }
-                  : n
-              )
-            );
-          }}
-          onAfterAttachmentChange={() => void loadNotes()}
-        />
-      )}
     </div>
   );
 }
