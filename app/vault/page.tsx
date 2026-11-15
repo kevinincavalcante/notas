@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Header from "@/components/Header";
-import NoteCard from "@/components/NoteCard";
 import NoteModal from "@/components/NoteModal";
+import Sidebar from "@/components/Sidebar";
+import TabStrip from "@/components/TabStrip";
 import { Note } from "@/types/note";
 import { useUI } from "@/components/UIProvider";
 import { useVault } from "@/components/VaultProvider";
@@ -12,11 +13,13 @@ import {
   Lock,
   LockOpen,
   Loader2,
+  Menu,
   Plus,
   SearchX,
   Vault,
   KeyRound,
   Unlock,
+  X,
 } from "lucide-react";
 
 /**
@@ -38,6 +41,15 @@ export default function VaultPage() {
   const [newPw, setNewPw] = useState("");
   const [newPw2, setNewPw2] = useState("");
   const [pwError, setPwError] = useState<string | null>(null);
+
+  // ---- Casca idêntica à tela inicial (UI only) -------------------------------
+  // Abas estilo browser + Sidebar: NENHUMA lógica do cofre muda — o editor
+  // continua sendo o NoteModal (que cifra/decifra no cliente)
+  const [openTabs, setOpenTabs] = useState<string[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [showPwForm, setShowPwForm] = useState(false);
 
   // Desbloqueio direto na página
   const [unlockPw, setUnlockPw] = useState("");
@@ -74,6 +86,69 @@ export default function VaultPage() {
       setUnlockPw("");
       setUnlockError(null);
     }
+  }
+
+  // ---- Navegação estilo tela inicial (abas + modal) --------------------------
+  // Abrir nota = aba nova + modal do editor seguro. Fechar o modal mantém a
+  // aba (igual ao editor da tela inicial); fechar a aba ativa ativa a vizinha.
+  const activeNote = useMemo(
+    () => (activeTabId ? notes.find((n) => n.id === activeTabId) || null : null),
+    [notes, activeTabId]
+  );
+
+  function openNote(note: Note) {
+    setSelectedNote(note);
+    setModalOpen(true);
+    setIsSidebarOpen(false);
+    setOpenTabs((prev) => (prev.includes(note.id) ? prev : [...prev, note.id]));
+    setActiveTabId(note.id);
+  }
+
+  function selectTab(id: string) {
+    const n = notes.find((item) => item.id === id);
+    if (!n) return;
+    setActiveTabId(id);
+    setSelectedNote(n);
+    setModalOpen(true);
+  }
+
+  function closeTab(tabId: string) {
+    if (!openTabs.includes(tabId)) return;
+    const idx = openTabs.indexOf(tabId);
+    const rest = openTabs.filter((t) => t !== tabId);
+    setOpenTabs(rest);
+    if (activeTabId === tabId) {
+      const next = rest.length > 0 ? rest[Math.min(idx, rest.length - 1)] : null;
+      setActiveTabId(next);
+      setSelectedNote(next ? notes.find((n) => n.id === next) || null : null);
+      setModalOpen(false);
+    }
+  }
+
+  const tabsData = useMemo(
+    () =>
+      openTabs
+        // abas de notas que deixaram de existir (exclusão/sync) somem da faixa
+        .filter((id) => notes.some((n) => n.id === id))
+        .map((id) => {
+          const n = notes.find((item) => item.id === id);
+          return { id, title: n?.title || "", color: n?.color };
+        }),
+    [openTabs, notes]
+  );
+
+  /** Fecha a aba da nota removida/excluída e ativa a vizinha (UI only). */
+  function closeTabForRemoved(noteId: string) {
+    if (!openTabs.includes(noteId)) return;
+    const idx = openTabs.indexOf(noteId);
+    const rest = openTabs.filter((t) => t !== noteId);
+    setOpenTabs(rest);
+    if (activeTabId === noteId) {
+      const next = rest.length > 0 ? rest[Math.min(idx, rest.length - 1)] : null;
+      setActiveTabId(next);
+      setSelectedNote(next ? notes.find((n) => n.id === next) || null : null);
+    }
+    setModalOpen(false);
   }
 
   // blob URLs das mídias dos cards (imagens/áudio cifrados)
@@ -166,7 +241,7 @@ export default function VaultPage() {
       if (res.ok && data.note) {
         const plain = decryptNote(vault.dek, data.note);
         setNotes((prev) => [plain, ...prev]);
-        setSelectedNote(plain);
+        openNote(plain);
       } else {
         showToast("Falha ao criar nota no cofre.", "error");
       }
@@ -178,15 +253,18 @@ export default function VaultPage() {
     }
   }
 
-  async function handleUpdateNote(updatedFields: Partial<Note> & { skipPatch?: boolean }) {
-    if (!selectedNote) return;
-    const noteId = selectedNote.id;
+  async function handleUpdateNote(
+    updatedFields: Partial<Note> & { skipPatch?: boolean },
+    targetNoteId?: string | null
+  ) {
+    const noteId = targetNoteId || selectedNote?.id;
+    if (!noteId) return;
     const { skipPatch, ...fields } = updatedFields;
 
     setNotes((prev) =>
       prev.map((n) => (n.id === noteId ? { ...n, ...fields, updated_at: Date.now() } : n))
     );
-    if (selectedNote.id === noteId) {
+    if (selectedNote?.id === noteId) {
       setSelectedNote((n) => (n ? { ...n, ...fields } : n));
     }
 
@@ -218,7 +296,7 @@ export default function VaultPage() {
     if (!confirmed) return;
 
     setNotes((prev) => prev.filter((n) => n.id !== noteId));
-    if (selectedNote?.id === noteId) setSelectedNote(null);
+    closeTabForRemoved(noteId);
     await fetch(`/api/notes/${noteId}`, { method: "DELETE" });
     showToast("Nota excluída.", "info");
   }
@@ -238,7 +316,7 @@ export default function VaultPage() {
     const removed = await removeNoteFromVault(vault.dek, noteId);
     if (removed) {
       setNotes((prev) => prev.filter((n) => n.id !== noteId));
-      if (selectedNote?.id === noteId) setSelectedNote(null);
+      closeTabForRemoved(noteId);
       showToast("Nota movida para suas notas normais.", "success");
     } else {
       showToast("Falha ao remover a nota do cofre.", "error");
@@ -339,138 +417,219 @@ export default function VaultPage() {
   }
 
   // ---- Destravado ------------------------------------------------------------
+  // Casca idêntica à tela inicial: Sidebar + abas estilo browser. A lógica do
+  // cofre (unlock, cifração, mídia, modal) é exatamente a mesma de antes —
+  // o editor continua sendo o NoteModal, que cifra/decifra no cliente.
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col">
-      <Header searchQuery={searchQuery} onSearchChange={setSearchQuery} />
+    <div className="h-dvh w-full flex overflow-hidden bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
+      <Sidebar
+        notes={filteredNotes}
+        selectedNoteId={activeTabId}
+        onSelectNote={openNote}
+        onCreateNote={() => void handleCreateNote()}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
+        activeTagFilter={null}
+        onTagFilter={() => {}}
+        onTogglePin={(noteId) => {
+          const target = notes.find((n) => n.id === noteId);
+          if (target) void handleUpdateNote({ is_pinned: !target.is_pinned }, noteId);
+        }}
+        onToggleArchive={(noteId) => {
+          const target = notes.find((n) => n.id === noteId);
+          if (target) void handleUpdateNote({ is_archived: !target.is_archived }, noteId);
+        }}
+        onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
+        onRemoveFromVault={(noteId) => void handleRemoveFromVault(noteId)}
+      />
 
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
-        <div className="mb-4 flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2 text-slate-700 dark:text-slate-300 flex-1 min-w-0">
-            <Vault className="w-5 h-5 text-amber-500" />
-            <h1 className="text-xl font-bold">Cofre</h1>
-            <span className="text-xs text-slate-500 dark:text-slate-400 hidden sm:inline">
+      <main className="flex-1 h-full flex flex-col min-w-0 overflow-hidden">
+        {/* Barra do cofre: ações próprias no padrão visual do app */}
+        <div className="shrink-0 relative flex items-center justify-between gap-2 px-3 sm:px-4 py-2 bg-white/60 dark:bg-slate-900/40 border-b border-black/5 dark:border-white/5">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <button
+              type="button"
+              onClick={() => setIsSidebarOpen(true)}
+              className="p-1.5 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white rounded-lg transition md:hidden"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+            <div className="w-7 h-7 bg-amber-400/15 text-amber-500 border border-amber-400/20 rounded-lg flex items-center justify-center shrink-0">
+              <Vault className="w-4 h-4" />
+            </div>
+            <span className="font-bold text-sm shrink-0">Cofre</span>
+            <span className="hidden sm:inline text-[11px] text-slate-500 dark:text-slate-400 truncate">
               criptografado no dispositivo (AES-256-GCM)
             </span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
-              onClick={() => void handleCreateNote()}
-              disabled={creating}
-              className="flex items-center gap-2 px-3 py-1.5 bg-amber-400 hover:bg-amber-300 active:bg-amber-500 text-slate-950 font-semibold text-xs rounded-xl transition shadow-xs disabled:opacity-60"
+              onClick={() => setShowPwForm((v) => !v)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 dark:text-slate-300 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg transition"
             >
-              {creating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
-              Nova nota segura
+              <KeyRound className="w-3.5 h-3.5 text-amber-500" />
+              <span className="hidden sm:inline">Alterar senha</span>
             </button>
             <button
               type="button"
               onClick={() => vault.lock()}
-              className="flex items-center gap-2 px-3 py-1.5 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-medium text-xs rounded-xl border border-slate-200 dark:border-slate-700 transition"
               title="Travar o cofre agora"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 dark:text-slate-300 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg transition"
             >
               <LockOpen className="w-3.5 h-3.5" />
-              Travar
+              <span className="hidden sm:inline">Travar</span>
             </button>
-          </div>
-        </div>
-
-        {/* Troca de senha (opcional, retrátil) */}
-        <details className="mb-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl px-4 py-3">
-          <summary className="text-xs font-semibold text-slate-600 dark:text-slate-400 cursor-pointer select-none flex items-center gap-2">
-            <KeyRound className="w-3.5 h-3.5 text-amber-500" />
-            Alterar senha do cofre
-          </summary>
-          <div className="mt-3 grid gap-2 max-w-md">
-            <input
-              type="password"
-              placeholder="Senha atual"
-              value={currentPw}
-              onChange={(e) => setCurrentPw(e.target.value)}
-              className="px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400/60"
-            />
-            <input
-              type="password"
-              placeholder="Nova senha (mínimo 4 caracteres)"
-              value={newPw}
-              onChange={(e) => setNewPw(e.target.value)}
-              className="px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400/60"
-            />
-            <input
-              type="password"
-              placeholder="Repetir nova senha"
-              value={newPw2}
-              onChange={(e) => setNewPw2(e.target.value)}
-              className="px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400/60"
-            />
-            {pwError && <p className="text-xs text-red-600 dark:text-red-400">{pwError}</p>}
             <button
               type="button"
-              onClick={() => void handleChangePassword()}
-              className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-semibold text-xs rounded-xl transition w-fit"
+              onClick={() => void handleCreateNote()}
+              disabled={creating}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-amber-400 hover:bg-amber-300 active:bg-amber-500 text-slate-950 font-semibold text-[11px] rounded-lg transition shadow-xs disabled:opacity-60"
             >
-              Salvar nova senha
+              {creating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+              Nova nota segura
             </button>
           </div>
-        </details>
 
-        {filteredNotes.length === 0 ? (
-          <div className="text-center py-16 text-slate-400 select-none">
-            {searchQuery ? (
-              <div className="flex flex-col items-center gap-2">
-                <SearchX className="w-8 h-8 opacity-40" />
-                <p className="text-sm">Nenhuma nota encontrada no cofre para &ldquo;{searchQuery}&rdquo;</p>
-              </div>
-            ) : (
-              <div className="flex flex-col items-center gap-3">
-                <Vault className="w-10 h-10 opacity-30 text-amber-500" />
-                <p className="text-sm">Seu cofre está vazio.</p>
+          {/* Troca de senha: dropdown no padrão do app */}
+          {showPwForm && (
+            <>
+              <div className="fixed inset-0 z-20" onClick={() => setShowPwForm(false)} aria-hidden="true" />
+              <div className="absolute right-3 top-full mt-1 w-72 z-30 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl p-3 space-y-2 animate-in fade-in zoom-in-95 duration-100">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                    <KeyRound className="w-3.5 h-3.5 text-amber-500" />
+                    Alterar senha do cofre
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowPwForm(false)}
+                    className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <input
+                  type="password"
+                  placeholder="Senha atual"
+                  value={currentPw}
+                  onChange={(e) => setCurrentPw(e.target.value)}
+                  className="px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400/60"
+                />
+                <input
+                  type="password"
+                  placeholder="Nova senha (mínimo 4 caracteres)"
+                  value={newPw}
+                  onChange={(e) => setNewPw(e.target.value)}
+                  className="px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400/60"
+                />
+                <input
+                  type="password"
+                  placeholder="Repetir nova senha"
+                  value={newPw2}
+                  onChange={(e) => setNewPw2(e.target.value)}
+                  className="px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400/60"
+                />
+                {pwError && <p className="text-xs text-red-600 dark:text-red-400">{pwError}</p>}
                 <button
                   type="button"
-                  onClick={() => void handleCreateNote()}
-                  className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-semibold text-xs rounded-xl transition"
+                  onClick={() => void handleChangePassword()}
+                  className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-semibold text-xs rounded-lg transition w-fit"
                 >
-                  Criar primeira nota segura
+                  Salvar nova senha
                 </button>
               </div>
-            )}
-          </div>
-        ) : (
-          <div className="columns-1 sm:columns-2 lg:columns-3 xl:columns-4 gap-4 space-y-4">
-            {filteredNotes.map((note) => (
-              <div key={note.id} className="break-inside-avoid">
-                <NoteCard
-                  note={note}
-                  onClick={() => setSelectedNote(note)}
-                  onTogglePin={(e) => {
-                    e.stopPropagation();
-                    void handleUpdateNote({ is_pinned: !note.is_pinned });
-                  }}
-                  onToggleArchive={(e) => {
-                    e.stopPropagation();
-                    void handleUpdateNote({ is_archived: !note.is_archived });
-                  }}
-                  onDelete={(e) => {
-                    e.stopPropagation();
-                    void handleDeleteNote(note.id);
-                  }}
-                  onChangeColor={(color) => {
-                    void handleUpdateNote({ color });
-                  }}
-                  attachmentSrcMap={cardMedia}
-                />
+            </>
+          )}
+        </div>
+
+        <TabStrip
+          tabs={tabsData}
+          activeId={activeTabId}
+          onSelect={selectTab}
+          onClose={closeTab}
+          onNew={() => void handleCreateNote()}
+        />
+
+        <div className="flex-1 flex flex-col min-h-0">
+          {openTabs.length === 0 ? (
+            /* Nada aberto — mesmo padrão do estado vazio da tela inicial */
+            <div className="flex-1 flex flex-col items-center justify-center p-6 text-center select-none">
+              <div className="w-16 h-16 bg-amber-400/10 text-amber-500 rounded-2xl flex items-center justify-center mb-4 shadow-xs border border-amber-400/20">
+                <Vault className="w-8 h-8" />
               </div>
-            ))}
-          </div>
-        )}
+              {searchQuery.trim() ? (
+                <>
+                  <h2 className="text-lg font-semibold text-slate-900 dark:text-white mb-1">
+                    Nenhuma nota encontrada
+                  </h2>
+                  <p className="text-sm text-slate-600 dark:text-slate-400 max-w-sm mb-2 leading-relaxed">
+                    Nada no cofre para &ldquo;{searchQuery}&rdquo;.
+                  </p>
+                  <SearchX className="w-6 h-6 text-slate-300 dark:text-slate-600" />
+                </>
+              ) : notes.length === 0 ? (
+                <>
+                  <h2 className="text-lg font-semibold text-slate-900 dark:text-white mb-1">
+                    Seu cofre está vazio
+                  </h2>
+                  <p className="text-sm text-slate-600 dark:text-slate-400 max-w-sm mb-6 leading-relaxed">
+                    Crie a primeira nota segura — ela será criptografada no seu dispositivo antes de sair dele.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void handleCreateNote()}
+                    className="flex items-center gap-2 px-4 py-2 bg-amber-400 hover:bg-amber-300 active:bg-amber-500 text-slate-950 font-semibold text-sm rounded-xl transition shadow-xs active:scale-95"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Nova nota segura
+                  </button>
+                </>
+              ) : (
+                <>
+                  <h2 className="text-lg font-semibold text-slate-900 dark:text-white mb-1">
+                    Nenhuma nota aberta
+                  </h2>
+                  <p className="text-sm text-slate-600 dark:text-slate-400 max-w-sm leading-relaxed">
+                    Selecione uma nota na lista lateral para abrir o editor seguro.
+                  </p>
+                </>
+              )}
+            </div>
+          ) : (
+            /* Aba ativa com o modal fechado: retomar o editor */
+            <div className="flex-1 flex flex-col items-center justify-center p-6 text-center select-none">
+              <div className="w-16 h-16 bg-amber-400/10 text-amber-500 rounded-2xl flex items-center justify-center mb-4 shadow-xs border border-amber-400/20">
+                <Vault className="w-8 h-8" />
+              </div>
+              <h2 className="text-lg font-semibold text-slate-900 dark:text-white mb-1 max-w-md truncate">
+                {activeNote && activeNote.title.trim() ? activeNote.title : "Sem título"}
+              </h2>
+              <p className="text-sm text-slate-600 dark:text-slate-400 max-w-sm mb-6 leading-relaxed">
+                A nota está aberta na aba acima.
+              </p>
+              <button
+                type="button"
+                onClick={() => setModalOpen(true)}
+                className="flex items-center gap-2 px-4 py-2 bg-amber-400 hover:bg-amber-300 active:bg-amber-500 text-slate-950 font-semibold text-sm rounded-xl transition shadow-xs active:scale-95"
+              >
+                <LockOpen className="w-4 h-4" />
+                Abrir editor
+              </button>
+            </div>
+          )}
+        </div>
       </main>
 
-      {selectedNote && (
+      {selectedNote && modalOpen && (
         <NoteModal
           note={selectedNote}
           isOpen={true}
           attachmentSrcMap={cardMedia}
-          onClose={() => setSelectedNote(null)}
+          onClose={() => setModalOpen(false)}
           onUpdate={handleUpdateNote}
           onDelete={() => handleDeleteNote(selectedNote.id)}
           onAddAttachment={(att) => {

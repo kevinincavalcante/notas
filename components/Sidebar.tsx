@@ -18,6 +18,7 @@ import {
   ListTodo,
   Vault,
   Lock,
+  Unlock,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -38,6 +39,8 @@ interface SidebarProps {
   onDeleteNote?: (noteId: string) => void;
   /** Move a nota pro cofre (cifra título/corpo/anexos/versões no cliente) */
   onMoveToVault?: (noteId: string) => void;
+  /** Tira a nota do cofre (descriptografa tudo de volta) — só notas is_vault */
+  onRemoveFromVault?: (noteId: string) => void;
 }
 
 interface ContextMenuState {
@@ -101,6 +104,7 @@ export default function Sidebar({
   onToggleArchive,
   onDeleteNote,
   onMoveToVault,
+  onRemoveFromVault,
 }: SidebarProps) {
   const [localQuery, setLocalQuery] = useState(searchQuery);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -196,7 +200,7 @@ export default function Sidebar({
       e.stopPropagation();
 
       const menuWidth = 190;
-      const menuHeight = 135;
+      const menuHeight = 175;
       const x = Math.min(e.clientX, window.innerWidth - menuWidth - 8);
       const y = Math.min(e.clientY, window.innerHeight - menuHeight - 8);
 
@@ -463,22 +467,32 @@ export default function Sidebar({
 
           <div className="h-px bg-slate-200 dark:bg-slate-700 my-1" />
 
-          <button
-            type="button"
-            onClick={() => {
-              if (!contextMenu.note.is_vault && onMoveToVault) {
+          {!contextMenu.note.is_vault && onMoveToVault ? (
+            <button
+              type="button"
+              onClick={() => {
                 setContextMenu((cm) => (cm ? { ...cm, busy: true } : cm));
                 onMoveToVault(contextMenu.note.id);
-              } else {
+              }}
+              disabled={contextMenu.busy}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-slate-700 dark:text-slate-200 hover:bg-amber-50 dark:hover:bg-amber-950/30 transition text-left disabled:opacity-60"
+            >
+              <Lock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+              <span>{contextMenu.busy ? "Criptografando…" : "Mover para o cofre"}</span>
+            </button>
+          ) : contextMenu.note.is_vault && onRemoveFromVault ? (
+            <button
+              type="button"
+              onClick={() => {
+                onRemoveFromVault(contextMenu.note.id);
                 setContextMenu(null);
-              }
-            }}
-            disabled={contextMenu.busy}
-            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-slate-700 dark:text-slate-200 hover:bg-amber-50 dark:hover:bg-amber-950/30 transition text-left disabled:opacity-60"
-          >
-            <Lock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-            <span>{contextMenu.busy ? "Criptografando…" : "Mover para o cofre"}</span>
-          </button>
+              }}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-slate-700 dark:text-slate-200 hover:bg-amber-50 dark:hover:bg-amber-950/30 transition text-left"
+            >
+              <Unlock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+              <span>Remover do cofre</span>
+            </button>
+          ) : null}
 
           <div className="h-px bg-slate-200 dark:bg-slate-700 my-1" />
 
