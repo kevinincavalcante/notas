@@ -11,10 +11,12 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
+import ActionSheet, { type ActionItem } from "../components/ActionSheet";
 import { getSyncApi } from "../lib/api";
-import { onSynced, scheduleQuietSync } from "../lib/sync";
+import { notifyLocalChange, onSynced, scheduleQuietSync } from "../lib/sync";
 import {
   createNote,
+  deleteNote,
   getDb,
   setNoteVault,
   updateNote,
@@ -81,6 +83,13 @@ export default function VaultScreen() {
   const [newPass2, setNewPass2] = useState("");
   const [changeBusy, setChangeBusy] = useState(false);
   const [changeError, setChangeError] = useState<string | null>(null);
+
+  // Seleção múltipla (igual às notas comuns): long-press → "Selecionar" →
+  // círculos nos cards → barra inferior com excluir em massa
+  const [sheetNote, setSheetNote] = useState<NoteRow | null>(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deletingSel, setDeletingSel] = useState(false);
 
   function scheduleSync() {
     void getSyncApi().then((cfg) => {
@@ -248,6 +257,79 @@ export default function VaultScreen() {
       ]
     );
   }
+
+  /** Exclui todas as notas do cofre selecionadas (com confirmação). */
+  async function handleDeleteSelected() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    Alert.alert(
+      "Excluir notas",
+      `${ids.length} nota${ids.length === 1 ? "" : "s"} será${ids.length === 1 ? "" : "ão"} excluída${ids.length === 1 ? "" : "s"} do cofre em todos os dispositivos.`,
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Excluir",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              setDeletingSel(true);
+              try {
+                const { client } = await getDb();
+                for (const id of ids) {
+                  await deleteNote(client, id);
+                }
+                notifyLocalChange();
+                scheduleSync();
+                void reload();
+                setSelectionMode(false);
+                setSelectedIds(new Set());
+              } catch (e) {
+                console.warn("Falha ao excluir selecionadas:", e);
+                Alert.alert("Excluir", "Não foi possível excluir todas as notas selecionadas.");
+              } finally {
+                setDeletingSel(false);
+              }
+            })();
+          },
+        },
+      ]
+    );
+  }
+
+  // Menu do long-press (igual às notas comuns)
+  const sheetItems: ActionItem[] = sheetNote
+    ? [
+        {
+          label: "Selecionar",
+          onPress: () => {
+            setSheetNote(null);
+            setSelectionMode(true);
+            setSelectedIds(new Set([sheetNote.id]));
+          },
+        },
+        {
+          label: "Remover do cofre",
+          onPress: () => {
+            setSheetNote(null);
+            removeFromVault(sheetNote);
+          },
+        },
+        {
+          label: "Excluir",
+          destructive: true,
+          onPress: () => {
+            setSheetNote(null);
+            void (async () => {
+              const { client } = await getDb();
+              await deleteNote(client, sheetNote.id);
+              notifyLocalChange();
+              scheduleSync();
+              void reload();
+            })();
+          },
+        },
+      ]
+    : [];
 
   // ---- Troca de senha: re-embrulha a MESMA DEK (nada é re-cifrado) ----
   async function handleChangePassword() {
@@ -432,13 +514,36 @@ export default function VaultScreen() {
         }
         renderItem={({ item }) => (
           <Pressable
-            style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
-            onPress={() => router.push(`/note/${item.id}`)}
-            onLongPress={() => removeFromVault(item)}
+            style={({ pressed }) => [
+              styles.card,
+              selectedIds.has(item.id) && styles.cardSelected,
+              pressed && styles.cardPressed,
+            ]}
+            onPress={() => {
+              if (selectionMode) {
+                setSelectedIds((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(item.id)) next.delete(item.id);
+                  else next.add(item.id);
+                  return next;
+                });
+              } else {
+                router.push(`/note/${item.id}`);
+              }
+            }}
+            onLongPress={selectionMode ? undefined : () => setSheetNote(item)}
+            delayLongPress={350}
           >
-            <Text style={styles.cardTitle} numberOfLines={1}>
-              {item.title || "Sem título"}
-            </Text>
+            <View style={styles.cardTitleRow}>
+              {selectionMode && (
+                <View style={[styles.checkCircle, selectedIds.has(item.id) && styles.checkCircleOn]}>
+                  {selectedIds.has(item.id) && <Text style={styles.checkIcon}>✓</Text>}
+                </View>
+              )}
+              <Text style={[styles.cardTitle, styles.cardTitleFlex]} numberOfLines={1}>
+                {item.title || "Sem título"}
+              </Text>
+            </View>
             {Boolean(item.body) && (
               <Text style={styles.cardPreview} numberOfLines={2}>
                 {item.body.replace(/[#*`_~[\]()]/g, "").trim()}
@@ -519,6 +624,42 @@ export default function VaultScreen() {
           </View>
         }
       />
+
+      {/* Modo seleção: barra de ações em massa (igual às notas comuns) */}
+      {selectionMode && (
+        <View style={[styles.selectionBar, { bottom: 24 + insets.bottom }]}>
+          <Text style={styles.selectionCount}>
+            {selectedIds.size} selecionada{selectedIds.size === 1 ? "" : "s"}
+          </Text>
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <Pressable
+              style={({ pressed }) => [styles.selBtn, pressed && { opacity: 0.8 }]}
+              onPress={() => {
+                setSelectionMode(false);
+                setSelectedIds(new Set());
+              }}
+              disabled={deletingSel}
+            >
+              <Text style={styles.selBtnText}>✕</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [
+                styles.selBtn,
+                styles.selDelete,
+                pressed && { opacity: 0.8 },
+              ]}
+              onPress={() => void handleDeleteSelected()}
+              disabled={deletingSel || selectedIds.size === 0}
+            >
+              <Text style={[styles.selBtnText, styles.selDeleteText]}>
+                🗑 {deletingSel ? "…" : "Excluir"}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+
+      <ActionSheet visible={Boolean(sheetNote)} items={sheetItems} onClose={() => setSheetNote(null)} />
     </View>
   );
 }
@@ -664,6 +805,78 @@ const styles = StyleSheet.create({
   },
   cardPressed: {
     opacity: 0.85,
+  },
+  cardSelected: {
+    borderColor: "#fbbf24",
+    borderWidth: 2,
+  },
+  cardTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  cardTitleFlex: {
+    flex: 1,
+  },
+  checkCircle: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: "#71717a",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  checkCircleOn: {
+    backgroundColor: "#fbbf24",
+    borderColor: "#fbbf24",
+  },
+  checkIcon: {
+    color: "#18181b",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  selectionBar: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#1f1f23",
+    borderWidth: 1,
+    borderColor: "#2c2c31",
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    shadowColor: "#000",
+    shadowOpacity: 0.4,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+  selectionCount: {
+    color: "#e4e4e7",
+    fontSize: 14,
+  },
+  selBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: "#27272a",
+  },
+  selDelete: {
+    backgroundColor: "#450a0a",
+    borderWidth: 1,
+    borderColor: "#ef4444",
+  },
+  selBtnText: {
+    color: "#e4e4e7",
+    fontSize: 14,
+  },
+  selDeleteText: {
+    color: "#f87171",
+    fontWeight: "600",
   },
   cardTitle: {
     color: "#fafafa",
