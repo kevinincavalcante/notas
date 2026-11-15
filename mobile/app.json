@@ -20,13 +20,69 @@
       },
       "predictiveBackGestureEnabled": false,
       "intentFilters": [
-        { "action": "SEND", "category": ["DEFAULT"], "data": { "mimeType": "text/plain" } },
-        { "action": "SEND", "category": ["DEFAULT"], "data": { "mimeType": "image/*" } },
-        { "action": "SEND", "category": ["DEFAULT"], "data": { "mimeType": "audio/*" } },
-        { "action": "SEND", "category": ["DEFAULT"], "data": { "mimeType": "video/*" } },
-        { "action": "SEND_MULTIPLE", "category": ["DEFAULT"], "data": { "mimeType": "image/*" } },
-        { "action": "SEND_MULTIPLE", "category": ["DEFAULT"], "data": { "mimeType": "audio/*" } },
-        { "action": "SEND_MULTIPLE", "category": ["DEFAULT"], "data": { "mimeType": "video/*" } }
+        {
+          "action": "SEND",
+          "category": [
+            "DEFAULT"
+          ],
+          "data": {
+            "mimeType": "text/plain"
+          }
+        },
+        {
+          "action": "SEND",
+          "category": [
+            "DEFAULT"
+          ],
+          "data": {
+            "mimeType": "image/*"
+          }
+        },
+        {
+          "action": "SEND",
+          "category": [
+            "DEFAULT"
+          ],
+          "data": {
+            "mimeType": "audio/*"
+          }
+        },
+        {
+          "action": "SEND",
+          "category": [
+            "DEFAULT"
+          ],
+          "data": {
+            "mimeType": "video/*"
+          }
+        },
+        {
+          "action": "SEND_MULTIPLE",
+          "category": [
+            "DEFAULT"
+          ],
+          "data": {
+            "mimeType": "image/*"
+          }
+        },
+        {
+          "action": "SEND_MULTIPLE",
+          "category": [
+            "DEFAULT"
+          ],
+          "data": {
+            "mimeType": "audio/*"
+          }
+        },
+        {
+          "action": "SEND_MULTIPLE",
+          "category": [
+            "DEFAULT"
+          ],
+          "data": {
+            "mimeType": "video/*"
+          }
+        }
       ]
     },
     "web": {
@@ -51,7 +107,8 @@
           "photosPermission": "O app precisa de acesso às fotos para anexar às notas.",
           "cameraPermission": "O app precisa de acesso à câmera para tirar fotos das notas."
         }
-      ]
+      ],
+      "expo-sharing"
     ],
     "experiments": {
       "typedRoutes": true,
