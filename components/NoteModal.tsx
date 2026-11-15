@@ -640,27 +640,25 @@ export default function NoteModal({
   // Cofre: corpo de EXIBIÇÃO com as URLs de anexos trocadas por blob URLs
   // descriptografados — o estado `body` continua canônico (/api/attachments/...)
   const vaultDisplayBody = useMemo(() => {
-    if (!isVaultNote || Object.keys(vaultMedia).length === 0) return body;
+    if (!isVaultNote) return body;
     let out = body;
     for (const [id, url] of Object.entries(vaultMedia)) {
       out = out.split(`/api/attachments/${id}`).join(url);
     }
-    // Anexos citados no corpo que NÃO resolvem (id perdido por edição manual,
-    // upload que nunca completou, binário apagado): aviso VISUAL claro no
-    // preview + log de diagnóstico com o id — nunca mais imagem quebrada muda
+    // Anexos citados no corpo que NÃO existem no banco (id perdido por edição
+    // manual ou upload que nunca completou): aviso VISUAL explícito + log de
+    // diagnóstico. Independente do vaultMedia (que pode estar vazio se o
+    // download/decifração falhou) — fantasma se o id não está em
+    // note.attachments; id conhecido sem blob = ainda carregando/falhou fetch.
     const knownIds = new Set(
       (note.attachments || []).map((a) => a.id).filter(Boolean) as string[]
     );
     const ghosts = new Set<string>();
     for (const m of out.matchAll(/\/api\/attachments\/([0-9a-fA-F-]{36})/g)) {
-      if (!vaultMedia[m[1]]) ghosts.add(m[1]);
+      if (!vaultMedia[m[1]] && !knownIds.has(m[1])) ghosts.add(m[1]);
     }
     for (const id of ghosts) {
-      console.warn(
-        knownIds.has(id)
-          ? `[cofre] anexo existe no banco mas a mídia não resolveu: ${id}`
-          : `[cofre] corpo referencia anexo INEXISTENTE (id perdido): ${id}`
-      );
+      console.warn(`[cofre] corpo referencia anexo INEXISTENTE (id perdido): ${id}`);
       const re = new RegExp(`(!\\[[^\\]]*\\]\\()/api/attachments/${id}[^)]*\\)`, "g");
       out = out.replace(re, (_m, pre: string) => `${pre}${GHOST_MEDIA_DATA_URI})`);
     }
