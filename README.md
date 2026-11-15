@@ -107,11 +107,26 @@ node scripts/hash-password.mjs "sua_senha"
 ```
 (O script já imprime a linha com o escape de `\$` pronto pro parser do Next.)
 
-### 3. Banco
+### 3. Banco (Turso — conta gratuita, primeira vez)
 ```bash
+# Instalar o CLI do Turso e criar a conta (grátis, sem cartão)
+curl -sSL https://get.turso.tech/install.sh | bash
+turso auth signup
+
+# Criar SEU banco e pegar as credenciais (cada pessoa usa a própria —
+# o app é single-user, não compartilhe a instância de outra pessoa)
+turso db create knotas
+turso db show knotas --url        # → TURSO_LINK (libsql://...)
+turso db tokens create knotas     # → TURSO_TOKEN
+
+# Criar as tabelas + índice FTS5 no banco que você acabou de criar
 npm run db:init      # cria tabelas + FTS5 no Turso
 npm run db:rebuild   # reconstrói o índice FTS5 se a busca voltar vazia
 ```
+> **Sem terminal no celular/desktop:** o APK e o desktop não tocam no Turso
+> direto (zero credenciais neles) — apontam pra **sua API** na tela de login.
+> Ou seja: preciso de um servidor Knotas rodando em algum lugar (Vercel,
+> PC, VPS) e os dispositivos apontam pra ele.
 
 ### 4. Mobile (APK Android)
 O APK é compilado pelo **GitHub Actions** (`.github/workflows/android.yml`) a cada mudança em `mobile/` e publicado nas Releases — sem margem de erro local. Para build manual:
