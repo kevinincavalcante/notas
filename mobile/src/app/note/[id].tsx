@@ -248,6 +248,12 @@ export default function NoteScreen() {
   const [recording, setRecording] = useState(false);
   const [busyAtt, setBusyAtt] = useState(false);
   const recordStartRef = useRef(0);
+  // Mídia "em voo" (câmera/galeria abertas, gravando ou cifrando/upload).
+  // O autosave em background (AppState) não pode descartar a nota como
+  // "vazia" nesse período: abrir a câmera levava o app pro fundo, o flush
+  // apagava a nota nova antes do anexo do cofre terminar de ser cifrado/salvo
+  // e o fluxo morria em silêncio (savedRef nulo) — "nada acontece".
+  const mediaInFlightRef = useRef(0);
 
   const savedRef = useRef<NoteRow | null>(null); // snapshot do que já foi gravado
   const bodyRef = useRef<TextInputInstance | null>(null);
@@ -269,14 +275,31 @@ export default function NoteScreen() {
     }
 
     // Nota vazia (título e corpo em branco, sem anexo) → descarta,
-    // igual o desktop (sem lixo "Sem título" no banco nem no sync)
-    if (latest.title.trim() === "" && latest.body.trim() === "") {
+    // igual o desktop (sem lixo "Sem título" no banco nem no sync).
+    // NUNCA descarta com mídia em voo (mediaInFlightRef) nem com pendências
+    // na fila de uploads — era o que apagava a nota nova no intervalo entre
+    // abrir a câmera e o anexo do cofre terminar de ser cifrado/salvo.
+    if (
+      latest.title.trim() === "" &&
+      latest.body.trim() === "" &&
+      mediaInFlightRef.current === 0
+    ) {
       const { client } = await getDb();
       const atts = await client.execute({
         sql: `SELECT COUNT(*) AS c FROM attachments WHERE note_id = ?`,
         args: [saved.id],
       });
-      if (Number(atts.rows[0]?.c ?? 0) === 0) {
+      let pendingCount = 0;
+      try {
+        const pend = await client.execute({
+          sql: `SELECT COUNT(*) AS c FROM pending_attachments WHERE note_id = ?`,
+          args: [saved.id],
+        });
+        pendingCount = Number(pend.rows[0]?.c ?? 0);
+      } catch {
+        // tabela da fila pode ainda não existir
+      }
+      if (Number(atts.rows[0]?.c ?? 0) === 0 && pendingCount === 0) {
         await deleteNote(client, saved.id);
         savedRef.current = null;
         notifyLocalChange();
@@ -611,22 +634,30 @@ export default function NoteScreen() {
 
   /* ---- Anexos: câmera, galeria e áudio ---- */
 
+  // Uploads serializados: o guard antigo "busyAtt → return null" DESCARTAVA
+  // o anexo em silêncio quando dois fluxos se cruzavam (foto + áudio)
+  const uploadChainRef = useRef<Promise<unknown>>(Promise.resolve());
+
   async function runUpload(input: UploadInput): Promise<AttachmentRow | null> {
-    if (busyAtt) return null;
-    setBusyAtt(true);
-    try {
-      const att = await uploadAttachment(input);
-      // Reflete na hora no editor + pré-aquece o cache de exibição do anexo
-      // novo (o chip/foto aparece sem esperar o próximo sync)
-      loadAtts();
-      if (att) void displayUriFor(att);
-      return att;
-    } catch (e) {
-      Alert.alert("Anexo", e instanceof Error ? e.message : String(e));
-      return null;
-    } finally {
-      setBusyAtt(false);
-    }
+    const run = async (): Promise<AttachmentRow | null> => {
+      setBusyAtt(true);
+      try {
+        const att = await uploadAttachment(input);
+        // Reflete na hora no editor + pré-aquece o cache de exibição do anexo
+        // novo (o chip/foto aparece sem esperar o próximo sync)
+        loadAtts();
+        if (att) void displayUriFor(att);
+        return att;
+      } catch (e) {
+        Alert.alert("Anexo", e instanceof Error ? e.message : String(e));
+        return null;
+      } finally {
+        setBusyAtt(false);
+      }
+    };
+    const next = uploadChainRef.current.then(run, run);
+    uploadChainRef.current = next.catch(() => {});
+    return next;
   }
 
   async function handleRemoveAttachment(att: AttachmentRow) {
@@ -648,6 +679,9 @@ export default function NoteScreen() {
 
   async function pickImage(useCamera: boolean) {
     if (!savedRef.current) return;
+    // Captura o id AGORA: abrir a câmera/galeria joga o app pro fundo e o
+    // autosave roda — não depender de savedRef depois desse ponto.
+    const noteId = savedRef.current.id;
     // Cofre: DEK tem que estar em memória ANTES de abrir a câmera — a Activity
     // do Android suspende o app e, se o auto-lock tiver zerado a chave, o
     // upload falharia silencioso lá na frente. Falha cedo, mensagem clara.
@@ -672,64 +706,79 @@ export default function NoteScreen() {
         return;
       }
     }
-    const result = useCamera
-      ? await ImagePicker.launchCameraAsync({ quality: 0.9 })
-      : await ImagePicker.launchImageLibraryAsync({ quality: 0.9, selectionLimit: 5 });
-    if (result.canceled || result.assets.length === 0) return;
+    // A partir daqui a câmera/galeria abre e o app vai pro fundo: o
+    // mediaInFlightRef mantém a nota viva até o anexo estar registrado
+    mediaInFlightRef.current += 1;
+    try {
+      const result = useCamera
+        ? await ImagePicker.launchCameraAsync({ quality: 0.9 })
+        : await ImagePicker.launchImageLibraryAsync({ quality: 0.9, selectionLimit: 5 });
+      if (result.canceled || result.assets.length === 0) return;
 
-    for (const asset of result.assets) {
-      // Compressão no cliente (1600px/webp) — sobe pequeno, sharp afina no servidor
-      let uri = asset.uri;
-      let fileName = asset.fileName || `foto-${Date.now()}.jpg`;
-      let mimeType = asset.mimeType || "image/jpeg";
-      if (mimeType.startsWith("image/")) {
-        try {
-          const out = await ImageManipulator.manipulateAsync(
-            asset.uri,
-            [{ resize: { width: 1600 } }],
-            { compress: 0.8, format: ImageManipulator.SaveFormat.WEBP }
-          );
-          uri = out.uri;
-          fileName = fileName.replace(/\.[^.]+$/, "") + ".webp";
-          mimeType = "image/webp";
-        } catch (e) {
-          console.warn("Compressão falhou, enviando original:", e);
+      for (const asset of result.assets) {
+        // Compressão no cliente (1600px/webp) — sobe pequeno, sharp afina no servidor
+        let uri = asset.uri;
+        let fileName = asset.fileName || `foto-${Date.now()}.jpg`;
+        let mimeType = asset.mimeType || "image/jpeg";
+        if (mimeType.startsWith("image/")) {
+          try {
+            const out = await ImageManipulator.manipulateAsync(
+              asset.uri,
+              [{ resize: { width: 1600 } }],
+              { compress: 0.8, format: ImageManipulator.SaveFormat.WEBP }
+            );
+            uri = out.uri;
+            fileName = fileName.replace(/\.[^.]+$/, "") + ".webp";
+            mimeType = "image/webp";
+          } catch (e) {
+            console.warn("Compressão falhou, enviando original:", e);
+          }
+        }
+        const att = await runUpload({
+          uri,
+          fileName,
+          mimeType,
+          noteId,
+          // Nota do cofre: bytes/nome/mime saem cifrados (runUpload só repassa)
+          encrypted: vaultRef.current || Boolean(savedRef.current?.is_vault) || undefined,
+        });
+        if (att) {
+          // O file_name do anexo cifrado volta encriptado — o markdown do corpo
+          // mantém o nome legível (a troca de uri é só na exibição, via displayUriFor)
+          const dek = getVaultDek();
+          const displayName =
+            dek && isEncrypted(att.file_name)
+              ? (() => {
+                  try {
+                    return decryptString(dek, att.file_name);
+                  } catch {
+                    return "arquivo";
+                  }
+                })()
+              : att.file_name;
+          // Insere a foto no corpo da nota como Markdown estilo Keep/Joplin
+          const imgMarkdown = `\n\n![${displayName}](/api/attachments/${att.id})\n\n`;
+          const currentBody = latestRef.current.body || "";
+          const nextBody = currentBody ? `${currentBody.trimEnd()}${imgMarkdown}` : imgMarkdown.trim();
+          touch("body", nextBody);
+          loadAtts();
         }
       }
-      const att = await runUpload({
-        uri,
-        fileName,
-        mimeType,
-        noteId: savedRef.current!.id,
-        // Nota do cofre: bytes/nome/mime saem cifrados (runUpload só repassa)
-        encrypted: vaultRef.current || Boolean(savedRef.current?.is_vault) || undefined,
-      });
-      if (att) {
-        // O file_name do anexo cifrado volta encriptado — o markdown do corpo
-        // mantém o nome legível (a troca de uri é só na exibição, via displayUriFor)
-        const dek = getVaultDek();
-        const displayName =
-          dek && isEncrypted(att.file_name)
-            ? (() => {
-                try {
-                  return decryptString(dek, att.file_name);
-                } catch {
-                  return "arquivo";
-                }
-              })()
-            : att.file_name;
-        // Insere a foto no corpo da nota como Markdown estilo Keep/Joplin
-        const imgMarkdown = `\n\n![${displayName}](/api/attachments/${att.id})\n\n`;
-        const currentBody = latestRef.current.body || "";
-        const nextBody = currentBody ? `${currentBody.trimEnd()}${imgMarkdown}` : imgMarkdown.trim();
-        touch("body", nextBody);
-        loadAtts();
-      }
+    } catch (e) {
+      // Nunca em silêncio: o `void pickImage()` engolia rejeições e o usuário
+      // só via "nada acontece" — qualquer falha inesperada vira alerta.
+      console.warn("Falha ao anexar mídia:", e);
+      Alert.alert("Anexo", e instanceof Error ? e.message : String(e));
+    } finally {
+      mediaInFlightRef.current -= 1;
     }
   }
 
   async function toggleRecording() {
     if (!savedRef.current) return;
+    // Captura o id AGORA: o autosave em background pode rodar durante a
+    // gravação/criptografia e não depender de savedRef depois desse ponto.
+    const noteId = savedRef.current.id;
     if (recording) {
       setRecording(false);
       try {
@@ -740,7 +789,7 @@ export default function NoteScreen() {
             uri,
             fileName: `audio-${Date.now()}.m4a`,
             mimeType: "audio/mp4",
-            noteId: savedRef.current.id,
+            noteId,
             durationSeconds: (Date.now() - recordStartRef.current) / 1000,
             // Nota do cofre: áudio também sai cifrado
             encrypted: vaultRef.current || Boolean(savedRef.current?.is_vault) || undefined,
@@ -749,6 +798,10 @@ export default function NoteScreen() {
       } catch (e) {
         console.warn("Falha ao salvar gravação:", e);
         Alert.alert("Erro ao salvar áudio", e instanceof Error ? e.message : String(e));
+      } finally {
+        // Só solta a nota "em voo" depois do anexo registrado (fim da
+        // criptografia/upload local) — o descarte de nota vazia espera
+        mediaInFlightRef.current = Math.max(0, mediaInFlightRef.current - 1);
       }
       return;
     }
@@ -761,6 +814,10 @@ export default function NoteScreen() {
       );
       return;
     }
+    // A gravação segura a nota "em voo" desde o início (o teclado fecha ao
+    // tocar no 🎙 e o autosave disparava o descarte da nota vazia no meio)
+    mediaInFlightRef.current += 1;
+    let started = false;
     try {
       const perm = await requestRecordingPermissionsAsync();
       if (!perm.granted) {
@@ -776,9 +833,12 @@ export default function NoteScreen() {
       recorder.record();
       recordStartRef.current = Date.now();
       setRecording(true);
+      started = true;
     } catch (e) {
       console.warn("Falha ao gravar:", e);
       Alert.alert("Erro ao gravar áudio", e instanceof Error ? e.message : String(e));
+    } finally {
+      if (!started) mediaInFlightRef.current = Math.max(0, mediaInFlightRef.current - 1);
     }
   }
 
