@@ -68,6 +68,8 @@ interface NoteModalProps {
   onRemoveAttachment: (attachmentId: string) => void;
   /** Ação opcional após remover anexo (ex.: re-sincronizar a lista do cofre) */
   onAfterAttachmentChange?: () => void;
+  /** Mapa de blob URLs já descriptografados (ex: vindos da lista do cofre) */
+  attachmentSrcMap?: Record<string, string>;
 }
 
 export default function NoteModal({
@@ -79,6 +81,7 @@ export default function NoteModal({
   onAddAttachment,
   onRemoveAttachment,
   onAfterAttachmentChange,
+  attachmentSrcMap,
 }: NoteModalProps) {
   const { confirm, showToast } = useUI();
   const vault = useVault();
@@ -132,17 +135,20 @@ export default function NoteModal({
 
   // Cofre: blob URLs descriptografados dos anexos (imagens/áudio não podem
   // ser servidos direto pela rota — os bytes estão cifrados no storage)
-  const [vaultMedia, setVaultMedia] = useState<Record<string, string>>({});
+  const [vaultMedia, setVaultMedia] = useState<Record<string, string>>(() => attachmentSrcMap || {});
   useEffect(() => {
     let cancelled = false;
     if (!isVaultNote || !vault.dek) {
       setVaultMedia({});
       return;
     }
+    if (attachmentSrcMap && Object.keys(attachmentSrcMap).length > 0) {
+      setVaultMedia((prev) => ({ ...attachmentSrcMap, ...prev }));
+    }
     (async () => {
-      const map: Record<string, string> = {};
+      const map: Record<string, string> = { ...(attachmentSrcMap || {}) };
       for (const att of note.attachments || []) {
-        if (!att.id) continue;
+        if (!att.id || map[att.id]) continue;
         // No cofre TODOS os binários de anexo estão cifrados no storage —
         // tenta descriptografar sempre; se falhar (anexo antigo em claro),
         // o src cai de volta na rota normal.
@@ -155,7 +161,7 @@ export default function NoteModal({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [note.id, note.attachments, vault.dek, isVaultNote]);
+  }, [note.id, note.attachments, vault.dek, isVaultNote, attachmentSrcMap]);
 
   // Intercepta o botão "Voltar" do navegador/Android no celular para fechar a nota
   useEffect(() => {
@@ -436,8 +442,17 @@ export default function NoteModal({
   }
 
   function setImageWidth(src: string, percent: number) {
-    const escapedSrc = src.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const regex = new RegExp(`(!\\[[^\\]]*\\]\\(${escapedSrc})(?:\\s+"?\\d{1,3}%?"?)?\\)`, "g");
+    let targetSrc = src;
+    if (isVaultNote) {
+      for (const [id, blobUrl] of Object.entries(vaultMedia)) {
+        if (blobUrl === src) {
+          targetSrc = `/api/attachments/${id}`;
+          break;
+        }
+      }
+    }
+    const escapedSrc = targetSrc.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(`(!\\[[^\\]]*\\]\\(${escapedSrc})(?:\\s+\"?\\d{1,3}%?\"?)?\\)`, "g");
     const replacement = `$1 "${percent}")`;
 
     const nextBody = body.replace(regex, replacement);

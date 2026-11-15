@@ -469,6 +469,7 @@ export default function VaultPage() {
         <NoteModal
           note={selectedNote}
           isOpen={true}
+          attachmentSrcMap={cardMedia}
           onClose={() => setSelectedNote(null)}
           onUpdate={handleUpdateNote}
           onDelete={() => handleDeleteNote(selectedNote.id)}

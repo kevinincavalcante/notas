@@ -249,6 +249,35 @@ function preserveExtraNewlines(text: string): string {
     .join("");
 }
 
+const SAFE_PROTOCOL_REGEX = /^(https?|ircs?|mailto|xmpp|blob|data)$/i;
+
+/**
+ * Sanitiza URLs do markdown permitindo protocolos seguros além de blob: e data:image/.
+ * O defaultUrlTransform do react-markdown bloqueia blob: e data: por padrão, o que
+ * quebrava a renderização de anexos do cofre (blob URLs) e placeholders SVG.
+ */
+function customUrlTransform(url: string): string {
+  const colon = url.indexOf(":");
+  const questionMark = url.indexOf("?");
+  const numberSign = url.indexOf("#");
+  const slash = url.indexOf("/");
+
+  if (
+    colon === -1 ||
+    (slash !== -1 && colon > slash) ||
+    (questionMark !== -1 && colon > questionMark) ||
+    (numberSign !== -1 && colon > numberSign) ||
+    SAFE_PROTOCOL_REGEX.test(url.slice(0, colon))
+  ) {
+    if (url.startsWith("data:") && !url.startsWith("data:image/")) {
+      return "";
+    }
+    return url;
+  }
+
+  return "";
+}
+
 /**
  * Preview Markdown somente-leitura (estilo Joplin: a coluna direita onde
  * se seleciona e copia sem risco de editar).
@@ -284,6 +313,7 @@ export default function MarkdownView({ content, placeholder, onSetImageWidth }: 
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkBreaks]}
+        urlTransform={customUrlTransform}
         components={{
           pre: ({ children }) => <>{children}</>,
           code: ({ className, children, node, ...props }) => {
