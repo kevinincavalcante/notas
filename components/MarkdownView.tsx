@@ -6,7 +6,7 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import hljs from "highlight.js";
 import { Copy, Check } from "lucide-react";
-import { preprocessMarkdown } from "@/lib/markdown-preprocess";
+import { preprocessMarkdown, preserveExtraNewlines } from "@/lib/markdown-preprocess";
 
 interface MarkdownViewProps {
   content: string;
@@ -227,50 +227,6 @@ function autoDetectCodeBlocks(text: string): string {
       }
 
       return part;
-    })
-    .join("");
-}
-
-/**
- * Preserva quebras de linha e Enters extras no Markdown.
- */
-function preserveExtraNewlines(text: string): string {
-  if (!text) return "";
-  const normalized = text.replace(/\r\n/g, "\n");
-
-  const codeBlockRegex = /(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$))/g;
-  const parts = normalized.split(codeBlockRegex);
-
-  return parts
-    .map((part, i) => {
-      if (i % 2 === 1) return part;
-
-      let res = part;
-
-      // 1. Linhas vazias no início do texto
-      res = res.replace(/^(?:[ \t]*\n)+/, (match) => {
-        const count = match.split("\n").length - 1;
-        if (count <= 0) return "";
-        return Array(count).fill("&nbsp;").join("\n") + "\n\n";
-      });
-
-      // 2. Linhas vazias no final do texto
-      res = res.replace(/(?:\n[ \t]*)+$/, (match) => {
-        const count = match.split("\n").length - 1;
-        if (count <= 0) return "";
-        return "\n\n" + Array(count).fill("&nbsp;").join("\n");
-      });
-
-      // 3. Múltiplos Enters consecutivos entre blocos
-      res = res.replace(/(?:\n[ \t]*){3,}/g, (match) => {
-        const lines = match.split("\n").length - 1;
-        const extraCount = lines - 2;
-        if (extraCount <= 0) return "\n\n";
-        const nbsps = Array(extraCount).fill("&nbsp;").join("\n");
-        return "\n\n" + nbsps + "\n\n";
-      });
-
-      return res;
     })
     .join("");
 }

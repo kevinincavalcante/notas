@@ -134,3 +134,55 @@ export function decodeNbspEntities(content: string): string {
 export function preprocessMarkdown(content: string): string {
   return decodeNbspEntities(autoFenceEnvBlocks(content));
 }
+
+/**
+ * Preserva quebras de linha e Enters extras no Markdown.
+ *
+ * As linhas em branco extras viram ESPAÇO REAL (U+00A0), não o texto
+ * "&nbsp;" — do contrário o react-markdown mostrava a palavra "&nbsp;"
+ * literal (dentro de bloco de código a entidade não é decodificada) e,
+ * pior, a injeção sem quebra de linha GRUDA o fence seguinte
+ * ("&nbsp;```env"), fazendo o fence não abrir o bloco e engolindo o
+ * resto da nota num bloco de código gigante.
+ */
+export function preserveExtraNewlines(text: string): string {
+  if (!text) return "";
+  const normalized = text.replace(/\r\n/g, "\n");
+
+  const codeBlockRegex = /(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$))/g;
+  const parts = normalized.split(codeBlockRegex);
+
+  return parts
+    .map((part, i) => {
+      if (i % 2 === 1) return part;
+
+      let res = part;
+
+      // 1. Linhas vazias no início do texto
+      res = res.replace(/^(?:[ \t]*\n)+/, (match) => {
+        const count = match.split("\n").length - 1;
+        if (count <= 0) return "";
+        return Array(count).fill("\u00A0").join("\n") + "\n\n";
+      });
+
+      // 2. Linhas vazias no final do texto (sempre com quebra no fim: o
+      //    próximo bloco de código não pode ficar grudado)
+      res = res.replace(/(?:\n[ \t]*)+$/, (match) => {
+        const count = match.split("\n").length - 1;
+        if (count <= 0) return "";
+        return "\n\n" + Array(count).fill("\u00A0").join("\n") + "\n";
+      });
+
+      // 3. Múltiplos Enters consecutivos entre blocos
+      res = res.replace(/(?:\n[ \t]*){3,}/g, (match) => {
+        const lines = match.split("\n").length - 1;
+        const extraCount = lines - 2;
+        if (extraCount <= 0) return "\n\n";
+        const nbsps = Array(extraCount).fill("\u00A0").join("\n");
+        return "\n\n" + nbsps + "\n\n";
+      });
+
+      return res;
+    })
+    .join("");
+}
