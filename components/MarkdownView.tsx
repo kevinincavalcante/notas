@@ -6,7 +6,11 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import hljs from "highlight.js";
 import { Copy, Check } from "lucide-react";
-import { preprocessMarkdown, preserveExtraNewlines } from "@/lib/markdown-preprocess";
+import {
+  autoDetectCodeBlocks,
+  preserveExtraNewlines,
+  preprocessMarkdown,
+} from "@/lib/markdown-preprocess";
 
 interface MarkdownViewProps {
   content: string;
@@ -136,100 +140,6 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
   );
 }
 
-/**
- * Detecta se um bloco de texto parece ser código puro (JSON, HTML/XML, SQL, JS/TS, Python)
- * para possibilitar syntax highlighting automático mesmo quando o usuário não insere crases.
- */
-function isLikelyCode(text: string): string | null {
-  const trimmed = text.trim();
-  const lines = trimmed.split("\n");
-
-  // 1. JSON: inicia com { ou [ e termina com } ou ] e valida via JSON.parse
-  if (
-    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
-    (trimmed.startsWith("[") && trimmed.endsWith("]"))
-  ) {
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (typeof parsed === "object" && parsed !== null) {
-        return "json";
-      }
-    } catch {}
-  }
-
-  if (lines.length < 3) return null;
-
-  // 2. HTML / XML / SVG
-  if (trimmed.startsWith("<") && (trimmed.endsWith(">") || trimmed.endsWith("/>"))) {
-    if (
-      trimmed.startsWith("<!DOCTYPE") ||
-      trimmed.startsWith("<?xml") ||
-      trimmed.startsWith("<html") ||
-      trimmed.startsWith("<svg") ||
-      trimmed.startsWith("<div") ||
-      trimmed.startsWith("<script")
-    ) {
-      return "html";
-    }
-  }
-
-  // 3. SQL
-  if (/^(SELECT\s[\s\S]+FROM|INSERT\s+INTO|CREATE\s+TABLE|ALTER\s+TABLE|UPDATE\s+\w+\s+SET)\b/i.test(trimmed)) {
-    return "sql";
-  }
-
-  // 4. JS / TS
-  if (/^(import\s.+from\s|export\s+(default\s+)?|const\s+\w+\s*=|let\s+\w+\s*=|function\s+\w+\s*\(|class\s+\w+\s*\{)/m.test(trimmed)) {
-    if (trimmed.includes("{") && trimmed.includes("}")) {
-      return "javascript";
-    }
-  }
-
-  // 5. Python
-  if (/^(def\s+\w+\s*\(.*\)\s*:|class\s+\w+(\(.*\))?\s*:)/m.test(trimmed)) {
-    return "python";
-  }
-
-  return null;
-}
-
-/**
- * Envolve blocos de código/JSON detectados automaticamente em blocos Markdown com crases.
- */
-function autoDetectCodeBlocks(text: string): string {
-  if (!text) return "";
-  const codeBlockRegex = /(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$))/g;
-  const parts = text.split(codeBlockRegex);
-
-  return parts
-    .map((part, i) => {
-      if (i % 2 === 1) return part; // já dentro de bloco de código
-
-      const trimmed = part.trim();
-      if (!trimmed) return part;
-
-      const fullLang = isLikelyCode(trimmed);
-      if (fullLang) {
-        return "```" + fullLang + "\n" + trimmed + "\n```";
-      }
-
-      const sections = part.split(/\n{2,}/);
-      if (sections.length > 1) {
-        const converted = sections.map((s) => {
-          const sTrimmed = s.trim();
-          const sLang = isLikelyCode(sTrimmed);
-          if (sLang) {
-            return "```" + sLang + "\n" + sTrimmed + "\n```";
-          }
-          return s;
-        });
-        return converted.join("\n\n");
-      }
-
-      return part;
-    })
-    .join("");
-}
 
 const SAFE_PROTOCOL_REGEX = /^(https?|ircs?|mailto|xmpp|blob|data)$/i;
 

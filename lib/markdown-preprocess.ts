@@ -45,27 +45,44 @@ export function autoFenceEnvBlocks(content: string): string {
   if (!content) return content;
   const lines = content.split("\n");
   const out: string[] = [];
-  let buffer: string[] = [];
+  let run: string[] = [];
+  let runHasAssignment = false;
   let inFence = false;
   let fenceMarker = "```";
 
-  const flush = () => {
-    if (buffer.length === 0) return;
-    if (isEnvLikeBlock(buffer)) {
-      // Bloco de config gerado por NÓS: o "&nbsp;" colado de HTML é lixo de
-      // formatação (vira espaço), diferente de código do usuário (que fica
-      // literal)
-      out.push("```env", ...buffer.map((l) => l.replace(NBSP_RE, " ")), "```");
+  /**
+   * Fecha a "região" atual de config. Uma região é uma sequência de linhas
+   * de comentário/atribuição (linhas em branco são absorvidas depois que
+   * entrou a primeira atribuição) — assim um arquivo .env inteiro vira UM
+   * bloco de código, com os cabeçalhos de seção (# ====) dentro dele.
+   * Região sem nenhuma atribuição NÃO é fenceada: "# Título" isolado
+   * continua heading de verdade.
+   */
+  const flushRun = () => {
+    if (run.length === 0) return;
+    const filled = run.filter((l) => !isBlankLike(l));
+    const allEnv = filled.every(
+      (l) => ENV_ASSIGNMENT_RE.test(l) || ENV_COMMENT_RE.test(l)
+    );
+    if (runHasAssignment && allEnv && filled.length > 0) {
+      // Dentro do fence gerado por nós, "&nbsp;" vira espaço e linhas
+      // só-nbsp viram linha vazia (separadores de seção)
+      out.push(
+        "```env",
+        ...run.map((l) => (isBlankLike(l) ? "" : l.replace(NBSP_RE, " "))),
+        "```"
+      );
     } else {
-      out.push(...buffer);
+      out.push(...run);
     }
-    buffer = [];
+    run = [];
+    runHasAssignment = false;
   };
 
   for (const line of lines) {
     const trimmed = line.trimStart();
     if (!inFence && (trimmed.startsWith("```") || trimmed.startsWith("~~~"))) {
-      flush();
+      flushRun();
       inFence = true;
       fenceMarker = trimmed.slice(0, 3);
       out.push(line);
@@ -77,16 +94,27 @@ export function autoFenceEnvBlocks(content: string): string {
       continue;
     }
     if (isBlankLike(line)) {
-      flush();
-      // Linha só-"&nbsp;" é lixo de HTML: some do preview. Linha em branco
-      // de verdade continua (respiro entre as seções).
-      if (line.trim() !== "") continue;
-      out.push(line);
+      // Linha em branco: se a região já tem atribuição, é separador interno
+      // (absorve); senão encerra o preâmbulo de comentários.
+      if (runHasAssignment) {
+        run.push(line);
+      } else {
+        flushRun();
+        if (line.trim() !== "") continue; // linha só-"&nbsp;" é lixo
+        out.push(line);
+      }
       continue;
     }
-    buffer.push(line);
+    if (ENV_ASSIGNMENT_RE.test(line) || ENV_COMMENT_RE.test(line)) {
+      if (ENV_ASSIGNMENT_RE.test(line)) runHasAssignment = true;
+      run.push(line);
+      continue;
+    }
+    // Linha de markdown/prosa: fecha a região e segue como texto normal
+    flushRun();
+    out.push(line);
   }
-  flush();
+  flushRun();
   return out.join("\n");
 }
 
@@ -183,6 +211,101 @@ export function preserveExtraNewlines(text: string): string {
       });
 
       return res;
+    })
+    .join("");
+}
+
+/**
+ * Detecta se um bloco de texto parece ser código puro (JSON, HTML/XML, SQL, JS/TS, Python)
+ * para possibilitar syntax highlighting automático mesmo quando o usuário não insere crases.
+ */
+export function isLikelyCode(text: string): string | null {
+  const trimmed = text.trim();
+  const lines = trimmed.split("\n");
+
+  // 1. JSON: inicia com { ou [ e termina com } ou ] e valida via JSON.parse
+  if (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  ) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed === "object" && parsed !== null) {
+        return "json";
+      }
+    } catch {}
+  }
+
+  if (lines.length < 3) return null;
+
+  // 2. HTML / XML / SVG
+  if (trimmed.startsWith("<") && (trimmed.endsWith(">") || trimmed.endsWith("/>"))) {
+    if (
+      trimmed.startsWith("<!DOCTYPE") ||
+      trimmed.startsWith("<?xml") ||
+      trimmed.startsWith("<html") ||
+      trimmed.startsWith("<svg") ||
+      trimmed.startsWith("<div") ||
+      trimmed.startsWith("<script")
+    ) {
+      return "html";
+    }
+  }
+
+  // 3. SQL
+  if (/^(SELECT\s[\s\S]+FROM|INSERT\s+INTO|CREATE\s+TABLE|ALTER\s+TABLE|UPDATE\s+\w+\s+SET)\b/i.test(trimmed)) {
+    return "sql";
+  }
+
+  // 4. JS / TS
+  if (/^(import\s.+from\s|export\s+(default\s+)?|const\s+\w+\s*=|let\s+\w+\s*=|function\s+\w+\s*\(|class\s+\w+\s*\{)/m.test(trimmed)) {
+    if (trimmed.includes("{") && trimmed.includes("}")) {
+      return "javascript";
+    }
+  }
+
+  // 5. Python
+  if (/^(def\s+\w+\s*\(.*\)\s*:|class\s+\w+(\(.*\))?\s*:)/m.test(trimmed)) {
+    return "python";
+  }
+
+  return null;
+}
+
+/**
+ * Envolve blocos de código/JSON detectados automaticamente em blocos Markdown com crases.
+ */
+export function autoDetectCodeBlocks(text: string): string {
+  if (!text) return "";
+  const codeBlockRegex = /(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$))/g;
+  const parts = text.split(codeBlockRegex);
+
+  return parts
+    .map((part, i) => {
+      if (i % 2 === 1) return part; // já dentro de bloco de código
+
+      const trimmed = part.trim();
+      if (!trimmed) return part;
+
+      const fullLang = isLikelyCode(trimmed);
+      if (fullLang) {
+        return "```" + fullLang + "\n" + trimmed + "\n```";
+      }
+
+      const sections = part.split(/\n{2,}/);
+      if (sections.length > 1) {
+        const converted = sections.map((s) => {
+          const sTrimmed = s.trim();
+          const sLang = isLikelyCode(sTrimmed);
+          if (sLang) {
+            return "```" + sLang + "\n" + sTrimmed + "\n```";
+          }
+          return s;
+        });
+        return converted.join("\n\n");
+      }
+
+      return part;
     })
     .join("");
 }
