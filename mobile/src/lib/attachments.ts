@@ -124,9 +124,25 @@ export async function saveAttachmentLocally(input: UploadInput): Promise<Attachm
 
     // Anexo de nota do COFRE: nada trafega em claro — os bytes viram
     // iv‖ciphertext (AES-256-GCM) e nome/mime são cifrados como texto.
-    const b64 = await FileSystem.readAsStringAsync(input.uri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
+    let b64: string;
+    try {
+      b64 = await FileSystem.readAsStringAsync(input.uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+    } catch (readErr) {
+      // Arquivos recém-gerados (expo-audio / ImageManipulator) podem ainda
+      // estar sendo gravados em disco: uma nova tentativa costuma bastar.
+      try {
+        b64 = await FileSystem.readAsStringAsync(input.uri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+      } catch {
+        throw new Error(
+          `Não foi possível ler o arquivo (${readErr instanceof Error ? readErr.message : String(readErr)}). Tente anexar de novo.`,
+          { cause: readErr }
+        );
+      }
+    }
     const enc = encryptBytes(dek, base64ToBytes(b64));
     await FileSystem.writeAsStringAsync(dest, bytesToBase64(enc), {
       encoding: FileSystem.EncodingType.Base64,

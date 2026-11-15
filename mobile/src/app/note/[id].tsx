@@ -2,7 +2,7 @@ import { Alert, AppState, Image, KeyboardAvoidingView, Pressable, ScrollView, St
 import { WebView } from "react-native-webview";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ActionSheet, { type ActionItem } from "../../components/ActionSheet";
 import { AudioBar, FileChip } from "../../components/AttachmentStrip";
 import VersionHistorySheet from "../../components/VersionHistorySheet";
@@ -164,15 +164,27 @@ export default function NoteScreen() {
   // (a WebView não tem JWT pra autenticar contra a API remota)
   const [bodyImgUris, setBodyImgUris] = useState<Record<string, string>>({});
 
+  // IDs de imagem no corpo — captura URL RELATIVA (/api/attachments/<uuid>)
+  // e ABSOLUTA (nota criada no web: https://host/api/attachments/<uuid>)
+  const bodyImgIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const m of body.matchAll(/\/api\/attachments\/([0-9a-fA-F-]+)/g)) {
+      ids.add(m[1]);
+    }
+    return Array.from(ids);
+  }, [body]);
+
+  // Mídias do corpo cuja uri local ainda NÃO resolveu (baixando/decifrando)
+  const bodyUrisPending = useMemo(
+    () => bodyImgIds.filter((id) => attachments.some((a) => a.id === id) && !bodyImgUris[id]),
+    [bodyImgIds, attachments, bodyImgUris]
+  );
+
   useEffect(() => {
     let active = true;
     (async () => {
-      const ids = new Set<string>();
-      for (const m of body.matchAll(/\/api\/attachments\/([0-9a-fA-F-]+)/g)) {
-        ids.add(m[1]);
-      }
       const map: Record<string, string> = {};
-      for (const id of ids) {
+      for (const id of bodyImgIds) {
         const att = attachments.find((a) => a.id === id);
         if (!att) continue;
         // displayUriFor decifra anexos do cofre na hora (o resto é o cache de sempre)
@@ -184,7 +196,14 @@ export default function NoteScreen() {
     return () => {
       active = false;
     };
-  }, [body, attachments]);
+  }, [bodyImgIds, attachments]);
+
+  // Assinatura das uris resolvidas: muda → a WebView RECARREGA o HTML
+  // (senão ela ficava com o HTML inicial de srcs quebrados pra sempre)
+  const bodyUrisSignature = useMemo(
+    () => bodyImgIds.map((id) => bodyImgUris[id] || "pending").join("|"),
+    [bodyImgIds, bodyImgUris]
+  );
 
   // Filtros por tipo: com nota do cofre, mime chega cifrado — a "vista"
   // decifra os metadados em memória (as linhas guardadas continuam cruas)
@@ -597,7 +616,10 @@ export default function NoteScreen() {
     setBusyAtt(true);
     try {
       const att = await uploadAttachment(input);
+      // Reflete na hora no editor + pré-aquece o cache de exibição do anexo
+      // novo (o chip/foto aparece sem esperar o próximo sync)
       loadAtts();
+      if (att) void displayUriFor(att);
       return att;
     } catch (e) {
       Alert.alert("Anexo", e instanceof Error ? e.message : String(e));
@@ -626,6 +648,30 @@ export default function NoteScreen() {
 
   async function pickImage(useCamera: boolean) {
     if (!savedRef.current) return;
+    // Cofre: DEK tem que estar em memória ANTES de abrir a câmera — a Activity
+    // do Android suspende o app e, se o auto-lock tiver zerado a chave, o
+    // upload falharia silencioso lá na frente. Falha cedo, mensagem clara.
+    if (vaultRef.current && !getVaultDek()) {
+      Alert.alert(
+        "Cofre travado",
+        "O cofre foi travado (auto-lock). Saia da nota e destrave o cofre para anexar mídia.",
+        [{ text: "OK" }]
+      );
+      return;
+    }
+    // Permissões ANTES de abrir a câmera/galeria — negação sem mensagem
+    // confunde o usuário com "mídia não salva".
+    if (useCamera) {
+      const cam = await ImagePicker.requestCameraPermissionsAsync();
+      if (!cam.granted) {
+        Alert.alert(
+          "Permissão de câmera",
+          "O app não tem permissão para usar a câmera. Libere em Ajustes → Apps → Notas → Permissões.",
+          [{ text: "OK" }]
+        );
+        return;
+      }
+    }
     const result = useCamera
       ? await ImagePicker.launchCameraAsync({ quality: 0.9 })
       : await ImagePicker.launchImageLibraryAsync({ quality: 0.9, selectionLimit: 5 });
@@ -702,13 +748,27 @@ export default function NoteScreen() {
         }
       } catch (e) {
         console.warn("Falha ao salvar gravação:", e);
+        Alert.alert("Erro ao salvar áudio", e instanceof Error ? e.message : String(e));
       }
+      return;
+    }
+    // Cofre: DEK em memória ANTES de gravar (mesma proteção do pickImage)
+    if (vaultRef.current && !getVaultDek()) {
+      Alert.alert(
+        "Cofre travado",
+        "O cofre foi travado (auto-lock). Saia da nota e destrave o cofre para gravar áudio.",
+        [{ text: "OK" }]
+      );
       return;
     }
     try {
       const perm = await requestRecordingPermissionsAsync();
       if (!perm.granted) {
-        Alert.alert("Permissão", "Permissão de microfone necessária para gravar notas de voz.");
+        Alert.alert(
+          "Permissão de microfone",
+          "O app não tem permissão para usar o microfone. Libere em Ajustes → Apps → Notas → Permissões para gravar notas de voz.",
+          [{ text: "OK" }]
+        );
         return;
       }
       await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
@@ -854,7 +914,25 @@ export default function NoteScreen() {
               ))}
             </View>
           )}
+          {/* Mídias do corpo ainda baixando/decifrando: indicador + previews
+              NATIVOS no lugar da WebView (instantâneos, sem depender dela) */}
+          {bodyUrisPending.length > 0 ? (
+            <View style={{ flex: 1 }}>
+              <View style={styles.decryptingRow}>
+                <ActivityIndicator size="small" color="#fbbf24" />
+                <Text style={styles.decryptingText}>
+                  Descriptografando mídias… ({Math.max(0, imageAttachments.length - bodyUrisPending.length)}/{imageAttachments.length})
+                </Text>
+              </View>
+              <ScrollView contentContainerStyle={{ paddingHorizontal: 0 }}>
+                {imageAttachments.map((img) => (
+                  <KeepTopImage key={img.id} att={img} onRemove={() => {}} />
+                ))}
+              </ScrollView>
+            </View>
+          ) : (
           <WebView
+            key={`read-${bodyUrisSignature}`}
             source={{ html: bodyToHtml(body, bodyImgUris), baseUrl: "file:///" }}
             style={styles.readBody}
             backgroundColor="transparent"
@@ -871,6 +949,7 @@ export default function NoteScreen() {
               return true;
             }}
           />
+          )}
         </View>
       ) : (
         /* ---- MODO EDIÇÃO: o editor de sempre ---- */
@@ -1065,6 +1144,16 @@ const styles = StyleSheet.create({
   readBody: {
     flex: 1,
     backgroundColor: "transparent",
+  },
+  decryptingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 10,
+  },
+  decryptingText: {
+    color: "#a1a1aa",
+    fontSize: 13,
   },
   status: {
     color: "#71717a",

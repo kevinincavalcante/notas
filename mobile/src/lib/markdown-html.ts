@@ -17,9 +17,11 @@ export function bodyToHtml(body: string, imgUris: Record<string, string> = {}): 
   // Imagens do corpo: resolve do cache LOCAL (file://). A WebView do modo
   // leitura não tem cookie nem header Bearer pra pedir /api/attachments na
   // API remota — o proxy devolvia 401 e a foto aparecia quebrada (alt text).
+  // Captura tanto URL RELATIVA (mobile) quanto ABSOLUTA (nota criada no web:
+  // marked gera src="https://host/api/attachments/<uuid>").
   if (Object.keys(imgUris).length > 0) {
     content = content.replace(
-      /(<img[^>]+src=")\/api\/attachments\/([0-9a-fA-F-]+)(")/g,
+      /(<img[^>]+src=")(?:https?:\/\/[^"]*?)?\/api\/attachments\/([0-9a-fA-F-]+)(")/g,
       (m, pre: string, id: string, pos: string) =>
         imgUris[id] ? `${pre}${imgUris[id]}${pos}` : m
     );
