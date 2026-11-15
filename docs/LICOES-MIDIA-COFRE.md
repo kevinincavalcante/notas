@@ -117,7 +117,36 @@ Quando "funciona na máquina, não funciona no APK, e sem erro nenhum":
 5. Pergunte ao usuário **o relato do timing** ("a nota some?", "aparece e
    some?") — o usuário percebeu o que 5 versões de código não mostraram.
 
-## 7. Comandos úteis da época
+## 7. Segunda lição (15/11, desktop/cofre): anexo FANTASMA no markdown
+
+**Sintoma**: no desktop, a nota do cofre mostra a imagem no **card** mas a
+imagem fica **quebrada dentro do modal** (só o alt text).
+
+**Diagnóstico pelo servidor** (Turso + HEAD na rota do anexo):
+
+- O binário do anexo existia e estava **vivo** (HTTP 200) — nada foi perdido.
+- O markdown do corpo referenciava `/api/attachments/<id>` com **um id que não
+  existe no servidor** (diferia do id real por 1 caractere). Id citado +
+  anexo inexistente = "anexo fantasma".
+
+**Como diagnosticar**:
+
+1. Ache o id citado no corpo (`/api/attachments/<uuid>`) e compare com
+   `SELECT id, storage_key FROM attachments` no servidor.
+2. `storage_key` começando com `enc_` + HEAD 200 = binário vivo.
+3. Id no corpo ≠ id no banco = link quebrado (edição manual, corrupção de
+   texto ou upload que nunca completou deixando a referência no corpo).
+
+**Correção no app** (`NoteModal`): o preview do cofre agora detecta ids citados
+no corpo que não resolvem e renderiza um **placeholder amarelo explícito**
+("Imagem não encontrada — reanexe a mídia") + `console.warn` com o id, em vez
+da imagem quebrada muda.
+
+**Regra**: o corpo é canônico; o preview NUNCA altera o estado `body` — só a
+string de exibição. E mídia "não aparece" ≠ mídia "foi perdida": confira o
+anexo no banco antes de concluir.
+
+## 8. Comandos úteis da época
 
 ```bash
 # Conferir padrão upsert→delete no hub (trocar LIMIT conforme precisar)

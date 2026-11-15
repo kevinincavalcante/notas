@@ -48,6 +48,16 @@ import {
   uploadEncryptedFile,
 } from "@/lib/vault-client";
 
+/** Placeholder pra anexo CITADO no corpo mas inexistente (id perdido por
+ * edição ou upload que nunca completou). Mostra um aviso explícito no
+ * preview em vez da imagem quebrada muda (só alt text) — o usuário entende
+ * na hora que o LINK quebrou, e que a mídia precisa ser reanexada. */
+const GHOST_MEDIA_DATA_URI =
+  "data:image/svg+xml;charset=utf-8," +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="340" height="160"><rect width="100%" height="100%" fill="#fef3c7"/><rect x="4" y="4" width="332" height="152" rx="12" fill="none" stroke="#f59e0b" stroke-width="3" stroke-dasharray="8 6"/><text x="170" y="72" text-anchor="middle" font-family="sans-serif" font-size="16" fill="#92400e" font-weight="bold">Imagem não encontrada</text><text x="170" y="98" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#b45309">anexo referenciado não existe — reanexe a mídia</text></svg>`
+  );
+
 interface NoteModalProps {
   note: Note;
   isOpen: boolean;
@@ -635,8 +645,27 @@ export default function NoteModal({
     for (const [id, url] of Object.entries(vaultMedia)) {
       out = out.split(`/api/attachments/${id}`).join(url);
     }
+    // Anexos citados no corpo que NÃO resolvem (id perdido por edição manual,
+    // upload que nunca completou, binário apagado): aviso VISUAL claro no
+    // preview + log de diagnóstico com o id — nunca mais imagem quebrada muda
+    const knownIds = new Set(
+      (note.attachments || []).map((a) => a.id).filter(Boolean) as string[]
+    );
+    const ghosts = new Set<string>();
+    for (const m of out.matchAll(/\/api\/attachments\/([0-9a-fA-F-]{36})/g)) {
+      if (!vaultMedia[m[1]]) ghosts.add(m[1]);
+    }
+    for (const id of ghosts) {
+      console.warn(
+        knownIds.has(id)
+          ? `[cofre] anexo existe no banco mas a mídia não resolveu: ${id}`
+          : `[cofre] corpo referencia anexo INEXISTENTE (id perdido): ${id}`
+      );
+      const re = new RegExp(`(!\\[[^\\]]*\\]\\()/api/attachments/${id}[^)]*\\)`, "g");
+      out = out.replace(re, (_m, pre: string) => `${pre}${GHOST_MEDIA_DATA_URI})`);
+    }
     return out;
-  }, [body, vaultMedia, isVaultNote]);
+  }, [body, vaultMedia, isVaultNote, note.attachments]);
 
   // Contagem rápida de palavras e caracteres para visualização profissional
   const wordCount = body.trim() ? body.trim().split(/\s+/).length : 0;
