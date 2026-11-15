@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import hljs from "highlight.js";
 import { Copy, Check } from "lucide-react";
+import { autoFenceEnvBlocks } from "@/lib/markdown-env";
 
 interface MarkdownViewProps {
   content: string;
@@ -308,7 +309,10 @@ export default function MarkdownView({
   const [activeImage, setActiveImage] = useState<{ src: string; percent: number } | null>(null);
 
   const processedContent = useMemo(() => {
-    const withCode = autoDetectCodeBlocks(content);
+    // Blocos .env/ini ganham fence automático (o markdown engolia `# =====`
+    // como H1 e comentários como títulos) — só na exibição, o corpo não muda
+    const withEnv = autoFenceEnvBlocks(content);
+    const withCode = autoDetectCodeBlocks(withEnv);
     return preserveExtraNewlines(withCode);
   }, [content]);
 
