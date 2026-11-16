@@ -56,6 +56,45 @@ const isInstagram = (h: string) => /(^|\.)(instagram\.com|instagr\.am)$/.test(h)
 const isTikTok = (h: string) => /(^|\.)tiktok\.com$/.test(h);
 const isVimeo = (h: string) => /(^|\.)vimeo\.com$/.test(h);
 
+/**
+ * Encurtadores que valem um hop extra: 1 requisição HEAD com redirect
+ * manual, só para ler o header Location — barato, quase nunca bloqueado
+ * (mesmo em IP de datacenter) e dá a URL canônica (@usuario/video/id).
+ * Revalida SSRF a cada hop: o destino do redirect é arbitrário.
+ */
+const SHORTENER_HOSTS = new Set([
+  "vt.tiktok.com",
+  "vm.tiktok.com",
+  "fb.watch",
+  "fb.me",
+  "t.co",
+  "redd.it",
+]);
+
+async function resolveShortLink(url: string, maxHops = 3): Promise<string> {
+  let current = url;
+  try {
+    for (let hop = 0; hop < maxHops; hop++) {
+      const host = new URL(current).hostname.toLowerCase();
+      if (!SHORTENER_HOSTS.has(host)) break;
+      const res = await fetch(current, {
+        method: "HEAD",
+        redirect: "manual",
+        signal: AbortSignal.timeout(4000),
+        headers: { "User-Agent": BROWSER_FETCH_HEADERS["User-Agent"] },
+      });
+      const location = res.headers.get("location");
+      if (!location) break;
+      const next = new URL(location, current).href;
+      if (!isAllowedPublicUrl(next)) break; // redirect p/ rede interna etc.
+      current = next;
+    }
+  } catch {
+    // HEAD falhou (rede/bloqueio): seguimos com a URL como está
+  }
+  return current;
+}
+
 /** Link é de vídeo social? (o card ganha botão play estilo WhatsApp) */
 function isSocialVideo(hostname: string, pathname: string): boolean {
   const h = hostname.replace(/^www\./, "");
@@ -213,19 +252,29 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // 2. TikTok (oEmbed público, sem chave) — cobre também vm.tiktok.com
+    // 2. TikTok (oEmbed público, sem chave). Link curto (vt/vm.tiktok.com)
+    // é resolvido pra URL canônica antes — caminho oficial recomendado — e o
+    // @usuario da canônica serve de fallback quando o oEmbed vem esvaziado
+    // (TikTok corta title/thumbnail por reputação de IP, não por UA).
     if (isTikTok(hostname)) {
+      const canonicalUrl = await resolveShortLink(targetUrl);
+      const canonicalPath = new URL(canonicalUrl).pathname;
+      const handle = canonicalPath.match(/^\/@([^/]+)/)?.[1] || null;
       try {
         const res = await fetch(
-          `https://www.tiktok.com/oembed?url=${encodeURIComponent(targetUrl)}`,
+          `https://www.tiktok.com/oembed?url=${encodeURIComponent(canonicalUrl)}`,
           { signal: AbortSignal.timeout(5000) }
         );
         if (res.ok) {
           const data = await res.json();
           return metaResponse({
-            url: targetUrl,
+            url: canonicalUrl,
             title: data.title || "Vídeo no TikTok",
-            description: data.author_name ? `@${data.author_name} no TikTok` : null,
+            description: data.author_name
+              ? `@${data.author_name} no TikTok`
+              : handle
+                ? `@${handle} no TikTok`
+                : null,
             image: data.thumbnail_url || null,
             siteName: "TikTok",
             favicon: "https://www.tiktok.com/favicon.ico",
@@ -233,8 +282,18 @@ export async function GET(request: NextRequest) {
           });
         }
       } catch (ttErr) {
-        console.warn("Falha no oembed do TikTok, tentando parser padrão:", ttErr);
+        console.warn("Falha no oembed do TikTok:", ttErr);
       }
+      // oEmbed indisponível: card degradado com o handle da URL canônica
+      return metaResponse({
+        url: canonicalUrl,
+        title: "Vídeo no TikTok",
+        description: handle ? `@${handle} no TikTok` : null,
+        image: null,
+        siteName: "TikTok",
+        favicon: "https://www.tiktok.com/favicon.ico",
+        isVideo: true,
+      });
     }
 
     // 3. Vimeo (oEmbed público, sem chave)
