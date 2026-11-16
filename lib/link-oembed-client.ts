@@ -80,7 +80,17 @@ export async function fetchClientOEmbed(url: string): Promise<ClientOEmbedMeta |
   try {
     const res = await fetch(
       `https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`,
-      { signal: AbortSignal.timeout(6000) }
+      {
+        signal: AbortSignal.timeout(6000),
+        // RN (okhttp) manda "okhttp/4.x" como UA por padrão — sozinho já
+        // pode triggerar o filtro do WAF. UA de navegador não muda o TLS
+        // fingerprint, mas é a variável mais barata de eliminar.
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+          Accept: "application/json",
+        },
+      }
     );
     if (res.ok) {
       const data = (await res.json()) as Record<string, unknown>;
