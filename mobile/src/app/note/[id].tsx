@@ -8,6 +8,8 @@ import { AudioBar, FileChip, shareAttachmentFile } from "../../components/Attach
 import VersionHistorySheet from "../../components/VersionHistorySheet";
 import { autoList } from "../../lib/auto-list";
 import { bodyToHtml } from "../../lib/markdown-html";
+import { fetchLinkMeta, isCardWorthy, type LinkMeta } from "../../lib/link-meta";
+import { extractUrls } from "../../../../lib/extract-urls";
 import {
   deleteNote,
   getDb,
@@ -248,6 +250,38 @@ export default function NoteScreen() {
   // Modo Joplin: existentes abrem em LEITURA (preview markdown, texto
   // selecionável); ✏️ entra em edição. Nota nova abre direto editando.
   const [mode, setMode] = useState<"read" | "edit">("read");
+
+  // ---- Cards de link estilo WhatsApp (modo leitura) ----
+  // Metadados das URLs do corpo (Facebook, Instagram, TikTok...), buscados
+  // uma vez por URL (cache em sessão) e injetados como card estático na
+  // WebView. Notas do COFRE ficam de fora: buscar preview revelaria a URL
+  // do corpo cifrado ao servidor.
+  const [linkMetaMap, setLinkMetaMap] = useState<Record<string, LinkMeta>>({});
+  const resolvedLinksRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (mode !== "read" || vaultRef.current) return;
+    const urls = extractUrls(body).slice(0, 4);
+    const pending = urls.filter((u) => !resolvedLinksRef.current.has(u));
+    if (pending.length === 0) return;
+    let active = true;
+    (async () => {
+      const results = await Promise.all(pending.map((u) => fetchLinkMeta(u)));
+      if (!active) return;
+      const map: Record<string, LinkMeta> = {};
+      pending.forEach((u, i) => {
+        const meta = results[i];
+        if (meta && isCardWorthy(meta)) {
+          resolvedLinksRef.current.add(u);
+          map[u] = meta;
+        }
+      });
+      if (Object.keys(map).length > 0) setLinkMetaMap((prev) => ({ ...prev, ...map }));
+    })();
+    return () => {
+      active = false;
+    };
+  }, [body, mode]);
 
   // lista numerada automática: texto anterior + flag do Enter
   const prevBodyRef = useRef("");
@@ -1006,8 +1040,8 @@ export default function NoteScreen() {
             </View>
           ) : (
           <WebView
-            key={`read-${bodyUrisSignature}`}
-            source={{ html: bodyToHtml(body, bodyImgUris), baseUrl: "file:///" }}
+            key={`read-${bodyUrisSignature}-${Object.keys(linkMetaMap).length}`}
+            source={{ html: bodyToHtml(body, bodyImgUris, linkMetaMap), baseUrl: "file:///" }}
             style={styles.readBody}
             backgroundColor="transparent"
             javaScriptEnabled={false}

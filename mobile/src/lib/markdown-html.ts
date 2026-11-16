@@ -1,5 +1,6 @@
 import { marked } from "marked";
 import { preprocessMarkdown } from "../../../lib/markdown-preprocess";
+import { isCardWorthy, type LinkMeta } from "./link-meta";
 
 /**
  * Markdown → HTML de leitura (modo preview, estilo desktop/Joplin).
@@ -9,6 +10,8 @@ import { preprocessMarkdown } from "../../../lib/markdown-preprocess";
  * - GFM + quebra de linha simples = <br> (as notas são texto corrido)
  * - Listas numeradas do Keep ("33. item") viram <ol start=33>
  * - Tema escuro embutido; texto selecionável; sem JS (segurança)
+ * - URLs de redes sociais/vídeos com metadados viram CARD estilo WhatsApp
+ *   (thumbnail + play + título + site) — o card inteiro é o link
  */
 
 marked.use({ gfm: true, breaks: true });
@@ -21,11 +24,83 @@ function fileLikeText(text: string): boolean {
   return Boolean(m && !IMAGE_HTML_EXT.has(m[1].toLowerCase()));
 }
 
-export function bodyToHtml(body: string, imgUris: Record<string, string> = {}): string {
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** Card de link estilo WhatsApp (thumbnail + play se vídeo + título + site). */
+function linkCardHtml(url: string, meta: LinkMeta): string {
+  let host = meta.siteName || "";
+  try {
+    host = host || new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    host = host || url;
+  }
+  const title = escapeHtml(meta.title || host);
+  const thumb = meta.image
+    ? `<span style="display:block;position:relative;height:200px;background:#000;">` +
+      `<img src="${escapeHtml(meta.image)}" alt="" style="width:100%;height:200px;object-fit:cover;display:block;">` +
+      (meta.isVideo
+        ? `<span style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:52px;height:52px;border-radius:50%;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;">` +
+          `<span style="width:0;height:0;border-left:17px solid #fff;border-top:10px solid transparent;border-bottom:10px solid transparent;margin-left:5px;"></span></span>`
+        : "") +
+      `</span>`
+    : "";
+  return (
+    `<a href="${escapeHtml(url)}" style="display:block;margin:2px 0 14px;border:1px solid #2c2c31;border-radius:12px;overflow:hidden;background:#1c1c1f;text-decoration:none;">` +
+    thumb +
+    `<span style="display:block;padding:10px 12px;">` +
+    `<span style="display:block;color:#fafafa;font-size:13.5px;font-weight:600;line-height:1.35;">${title}</span>` +
+    `<span style="display:block;color:#a1a1aa;font-size:11px;margin-top:4px;text-transform:uppercase;letter-spacing:0.5px;">${escapeHtml(host)}</span>` +
+    `</span></a>`
+  );
+}
+
+/**
+ * Substitui o <a> da URL pura pelo card; link com texto próprio do usuário
+ * ganha o card ACIMA e mantém o texto. Sem metadados, o link fica como está.
+ */
+function injectLinkCards(html: string, linkMeta: Record<string, LinkMeta>): string {
+  let content = html;
+  for (const [url, meta] of Object.entries(linkMeta)) {
+    if (!meta || !isCardWorthy(meta)) continue;
+    // href no HTML chega com & escapado (&amp;) — aceita as duas formas
+    const hrefPattern = escapeRegExp(url).replace(/&/g, "&amp;");
+    const anchorRe = new RegExp(
+      `<a href="(?:${hrefPattern}|${escapeRegExp(url)})">([\\s\\S]*?)</a>`,
+      "g"
+    );
+    const card = linkCardHtml(url, meta);
+    content = content.replace(anchorRe, (m, inner: string) => {
+      const innerText = inner
+        .replace(/<[^>]+>/g, "")
+        .replace(/&amp;/g, "&")
+        .trim();
+      return innerText === url ? card : card + m;
+    });
+  }
+  return content;
+}
+
+export function bodyToHtml(
+  body: string,
+  imgUris: Record<string, string> = {},
+  linkMeta: Record<string, LinkMeta> = {}
+): string {
   // Blocos .env/ini ganham fence automático (o markdown engolia `# =====`
   // como H1 e comentários como títulos) e "&nbsp;" vira espaço real —
   // igual ao preview do web/desktop
   let content = marked.parse(preprocessMarkdown(body || ""), { async: false }) as string;
+  // Cards de link estilo WhatsApp (Facebook, Instagram, TikTok, YouTube...)
+  content = injectLinkCards(content, linkMeta);
   // ARQUIVO anexado no corpo (.key, pdf, zip...): vira CHIP CLICÁVEL dentro
   // do corpo (efeito igual ao web) — o toque dispara notasfile://<id>, que
   // o editor intercepta no onShouldStartLoadWithRequest e abre o

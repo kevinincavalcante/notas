@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { ExternalLink, Globe } from "lucide-react";
+import { ExternalLink, Globe, Play } from "lucide-react";
 import { extractUrls } from "@/lib/extract-urls";
 
 interface LinkMetadata {
@@ -11,6 +11,8 @@ interface LinkMetadata {
   image?: string | null;
   siteName: string;
   favicon?: string;
+  /** Link de vídeo social (Reels, TikTok, YouTube...) → botão play na capa */
+  isVideo?: boolean;
 }
 
 // Cache local em memória para evitar requisições repetidas na mesma sessão
@@ -82,6 +84,14 @@ export default function LinkPreview({ url }: { url: string }) {
               (e.target as HTMLElement).style.display = "none";
             }}
           />
+          {/* Botão play estilo WhatsApp em links de vídeo */}
+          {data.isVideo && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <span className="flex items-center justify-center w-11 h-11 rounded-full bg-black/50 ring-1 ring-white/25 backdrop-blur-[2px] transition-transform duration-200 group-hover/link:scale-110">
+                <Play className="w-5 h-5 text-white fill-white translate-x-[1px]" />
+              </span>
+            </div>
+          )}
         </div>
       )}
 

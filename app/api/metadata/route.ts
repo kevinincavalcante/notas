@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isAllowedPublicUrl } from "@/lib/url-safety";
+import { isAllowedPublicUrl, BROWSER_FETCH_HEADERS } from "@/lib/url-safety";
 
 function decodeHtml(html: string): string {
   return html
+    // Entidades numéricas primeiro (&#xa0;, &#8212; — Facebook usa bastante);
+    // rodar antes das nomeadas evita dupla decodificação de "&amp;#..."
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) =>
+      String.fromCodePoint(parseInt(hex, 16))
+    )
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)))
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
@@ -14,10 +20,161 @@ function decodeHtml(html: string): string {
 }
 
 /**
+ * UA do crawler de preview do Meta. O Facebook só entrega os metadados de
+ * reels/vídeos (thumbnail em HD + "X visualizações · Y reações") para esse
+ * UA — com UA de navegador comum a requisição leva HTTP 400. É o mesmo
+ * mecanismo que faz o WhatsApp montar o preview de links do Facebook.
+ */
+const CRAWLER_UA =
+  "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)";
+
+const CACHE_HEADERS = { "Cache-Control": "public, max-age=86400, s-maxage=86400" };
+
+function metaResponse(payload: Record<string, unknown>, status = 200) {
+  return NextResponse.json(payload, { status, headers: CACHE_HEADERS });
+}
+
+function faviconFor(hostname: string) {
+  return `https://www.google.com/s2/favicons?domain=${hostname}&sz=32`;
+}
+
+function fallbackMeta(targetUrl: string, hostname: string) {
+  return {
+    url: targetUrl,
+    title: hostname,
+    description: null as string | null,
+    image: null as string | null,
+    siteName: hostname,
+    favicon: faviconFor(hostname),
+    isVideo: false,
+  };
+}
+
+const isYouTube = (h: string) => h.includes("youtube.com") || h.includes("youtu.be");
+const isFacebook = (h: string) => /(^|\.)(facebook\.com|fb\.watch|fb\.me)$/.test(h);
+const isInstagram = (h: string) => /(^|\.)(instagram\.com|instagr\.am)$/.test(h);
+const isTikTok = (h: string) => /(^|\.)tiktok\.com$/.test(h);
+const isVimeo = (h: string) => /(^|\.)vimeo\.com$/.test(h);
+
+/** Link é de vídeo social? (o card ganha botão play estilo WhatsApp) */
+function isSocialVideo(hostname: string, pathname: string): boolean {
+  const h = hostname.replace(/^www\./, "");
+  if (isYouTube(h) || isTikTok(h) || isVimeo(h)) return true;
+  if (isFacebook(h)) {
+    return (
+      h === "fb.watch" ||
+      /^\/(reel|reels|watch|video|videos)\b/.test(pathname) ||
+      /^\/share\/[vr]\//.test(pathname)
+    );
+  }
+  if (isInstagram(h)) return /^\/(reel|reels|tv)\//.test(pathname);
+  return false;
+}
+
+/** GET HTML externo com User-Agent específico; null em qualquer falha. */
+async function fetchText(url: string, userAgent: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": userAgent, Accept: "text/html,application/xhtml+xml" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    return await res.text();
+  } catch {
+    return null;
+  }
+}
+
+/** Parser OpenGraph/Twitter Card comum a todos os hosts. */
+function parseOgFromHtml(html: string, targetUrl: string, hostname: string) {
+  const getMeta = (prop: string): string | null => {
+    const regex1 = new RegExp(
+      `<meta[^>]+(?:property|name)=["']${prop}["'][^>]+content=["']([^"']+)["']`,
+      "i"
+    );
+    const regex2 = new RegExp(
+      `<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${prop}["']`,
+      "i"
+    );
+    const match = html.match(regex1) || html.match(regex2);
+    return match ? decodeHtml(match[1].trim()) : null;
+  };
+
+  const rawTitle =
+    getMeta("og:title") ||
+    getMeta("twitter:title") ||
+    html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1] ||
+    hostname;
+
+  const rawDesc =
+    getMeta("og:description") ||
+    getMeta("twitter:description") ||
+    getMeta("description") ||
+    "";
+
+  let rawImage =
+    getMeta("og:image") ||
+    getMeta("twitter:image") ||
+    getMeta("twitter:image:src");
+
+  // Resolve URL relativa de imagem se necessário
+  if (rawImage && !rawImage.startsWith("http")) {
+    try {
+      rawImage = new URL(rawImage, targetUrl).href;
+    } catch {
+      rawImage = null;
+    }
+  }
+
+  return {
+    title: decodeHtml(rawTitle.slice(0, 150)),
+    description: rawDesc ? decodeHtml(rawDesc.slice(0, 220)) : null,
+    image: rawImage,
+    siteName: getMeta("og:site_name") || hostname,
+  };
+}
+
+async function fetchAndParse(targetUrl: string, userAgent: string) {
+  const hostname = new URL(targetUrl).hostname.replace(/^www\./, "");
+  const html = await fetchText(targetUrl, userAgent);
+  if (!html) return fallbackMeta(targetUrl, hostname);
+  return parseOgFromHtml(html, targetUrl, hostname);
+}
+
+/**
+ * Última cartada do Instagram: a página de embed pública (o /reel/ direto
+ * costuma devolver login wall para requisições de servidor).
+ */
+async function tryInstagramEmbed(
+  targetUrl: string
+): Promise<{ title: string | null; image: string | null } | null> {
+  try {
+    const parsed = new URL(targetUrl);
+    const embedUrl = `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}/embed/captioned/`;
+    const html = await fetchText(embedUrl, BROWSER_FETCH_HEADERS["User-Agent"]);
+    if (!html) return null;
+
+    const image =
+      html.match(/class="EmbeddedMediaImage"[^>]*src="([^"]+)"/)?.[1] || null;
+
+    // Legenda do embed (best effort): primeiro bloco Caption, sem tags
+    const captionHtml = html.match(/<div class="Caption"[^>]*>([\s\S]*?)<\/div>/)?.[1];
+    const caption = captionHtml
+      ? decodeHtml(captionHtml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()).slice(0, 120)
+      : null;
+
+    if (!image && !caption) return null;
+    return { title: caption, image };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Proteção contra SSRF: implementada em lib/url-safety.ts (compartilhada
  * com a detecção de auto-tags por URL).
  */
-
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -29,9 +186,11 @@ export async function GET(request: NextRequest) {
 
     const parsedUrl = new URL(targetUrl);
     const hostname = parsedUrl.hostname.replace(/^www\./, "");
+    const favicon = faviconFor(hostname);
+    const isVideo = isSocialVideo(hostname, parsedUrl.pathname);
 
     // 1. Tratamento Especial para YouTube (usando API oficial oEmbed sem chave)
-    if (hostname.includes("youtube.com") || hostname.includes("youtu.be")) {
+    if (isYouTube(hostname)) {
       try {
         const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(targetUrl)}&format=json`;
         const ytRes = await fetch(oembedUrl, {
@@ -39,111 +198,125 @@ export async function GET(request: NextRequest) {
         });
         if (ytRes.ok) {
           const ytData = await ytRes.json();
-          return NextResponse.json(
-            {
-              url: targetUrl,
-              title: ytData.title || "Vídeo no YouTube",
-              description: `Canal: ${ytData.author_name || "YouTube"}`,
-              image: ytData.thumbnail_url || null,
-              siteName: "YouTube",
-              favicon: "https://www.youtube.com/s/desktop/f6c4bbbf/img/favicon.ico",
-            },
-            {
-              headers: {
-                "Cache-Control": "public, max-age=86400, s-maxage=86400",
-              },
-            }
-          );
+          return metaResponse({
+            url: targetUrl,
+            title: ytData.title || "Vídeo no YouTube",
+            description: `Canal: ${ytData.author_name || "YouTube"}`,
+            image: ytData.thumbnail_url || null,
+            siteName: "YouTube",
+            favicon: "https://www.youtube.com/s/desktop/f6c4bbbf/img/favicon.ico",
+            isVideo: true,
+          });
         }
       } catch (ytErr) {
         console.warn("Falha no oembed do YouTube, tentando parser padrão:", ytErr);
       }
     }
 
-    // 2. Parser Genérico OpenGraph / HTML
-    const response = await fetch(targetUrl, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept: "text/html,application/xhtml+xml",
-      },
-      signal: AbortSignal.timeout(5000),
-    });
-
-    if (!response.ok) {
-      return NextResponse.json(
-        {
-          url: targetUrl,
-          title: hostname,
-          description: null,
-          image: null,
-          siteName: hostname,
-          favicon: `https://www.google.com/s2/favicons?domain=${hostname}&sz=32`,
-        },
-        { status: 200 }
-      );
-    }
-
-    const html = await response.text();
-
-    const getMeta = (prop: string): string | null => {
-      const regex1 = new RegExp(
-        `<meta[^>]+(?:property|name)=["']${prop}["'][^>]+content=["']([^"']+)["']`,
-        "i"
-      );
-      const regex2 = new RegExp(
-        `<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${prop}["']`,
-        "i"
-      );
-      const match = html.match(regex1) || html.match(regex2);
-      return match ? decodeHtml(match[1].trim()) : null;
-    };
-
-    const rawTitle =
-      getMeta("og:title") ||
-      getMeta("twitter:title") ||
-      html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1] ||
-      hostname;
-
-    const rawDesc =
-      getMeta("og:description") ||
-      getMeta("twitter:description") ||
-      getMeta("description") ||
-      "";
-
-    let rawImage =
-      getMeta("og:image") ||
-      getMeta("twitter:image") ||
-      getMeta("twitter:image:src");
-
-    // Resolve URL relativa de imagem se necessário
-    if (rawImage && !rawImage.startsWith("http")) {
+    // 2. TikTok (oEmbed público, sem chave) — cobre também vm.tiktok.com
+    if (isTikTok(hostname)) {
       try {
-        rawImage = new URL(rawImage, targetUrl).href;
-      } catch {
-        rawImage = null;
+        const res = await fetch(
+          `https://www.tiktok.com/oembed?url=${encodeURIComponent(targetUrl)}`,
+          { signal: AbortSignal.timeout(5000) }
+        );
+        if (res.ok) {
+          const data = await res.json();
+          return metaResponse({
+            url: targetUrl,
+            title: data.title || "Vídeo no TikTok",
+            description: data.author_name ? `@${data.author_name} no TikTok` : null,
+            image: data.thumbnail_url || null,
+            siteName: "TikTok",
+            favicon: "https://www.tiktok.com/favicon.ico",
+            isVideo: true,
+          });
+        }
+      } catch (ttErr) {
+        console.warn("Falha no oembed do TikTok, tentando parser padrão:", ttErr);
       }
     }
 
-    const siteName =
-      getMeta("og:site_name") ||
-      hostname;
-
-    return NextResponse.json(
-      {
-        url: targetUrl,
-        title: decodeHtml(rawTitle.slice(0, 150)),
-        description: rawDesc ? decodeHtml(rawDesc.slice(0, 220)) : null,
-        image: rawImage,
-        siteName,
-        favicon: `https://www.google.com/s2/favicons?domain=${hostname}&sz=32`,
-      },
-      {
-        headers: {
-          "Cache-Control": "public, max-age=86400, s-maxage=86400",
-        },
+    // 3. Vimeo (oEmbed público, sem chave)
+    if (isVimeo(hostname)) {
+      try {
+        const res = await fetch(
+          `https://vimeo.com/api/oembed.json?url=${encodeURIComponent(targetUrl)}`,
+          { signal: AbortSignal.timeout(5000) }
+        );
+        if (res.ok) {
+          const data = await res.json();
+          return metaResponse({
+            url: targetUrl,
+            title: data.title || "Vídeo no Vimeo",
+            description: data.author_name ? `Canal: ${data.author_name}` : null,
+            image: data.thumbnail_url || null,
+            siteName: "Vimeo",
+            favicon,
+            isVideo: true,
+          });
+        }
+      } catch (vmErr) {
+        console.warn("Falha no oembed do Vimeo, tentando parser padrão:", vmErr);
       }
-    );
+    }
+
+    // 4. Facebook: só serve metadados de vídeos/reels para o crawler de
+    // preview do Meta (ver CRAWLER_UA) — com UA de navegador leva 400.
+    if (isFacebook(hostname)) {
+      const meta = await fetchAndParse(targetUrl, CRAWLER_UA);
+      return metaResponse({ url: targetUrl, ...meta, favicon, isVideo });
+    }
+
+    // 5. Instagram: bloqueia servidores com login wall. Tenta o UA de
+    // crawler, depois a página de embed pública; sem sucesso, devolve um
+    // card degradado (o cliente mantém o link simples).
+    if (isInstagram(hostname)) {
+      const viaCrawler = await fetchAndParse(targetUrl, CRAWLER_UA);
+      const logoPlaceholder = "static.cdninstagram.com";
+      if (viaCrawler.image && !viaCrawler.image.includes(logoPlaceholder)) {
+        return metaResponse({ url: targetUrl, ...viaCrawler, favicon, isVideo });
+      }
+
+      const viaEmbed = await tryInstagramEmbed(targetUrl);
+      if (viaEmbed) {
+        return metaResponse({
+          url: targetUrl,
+          title: viaEmbed.title || "Post do Instagram",
+          description: null,
+          image: viaEmbed.image,
+          siteName: "Instagram",
+          favicon,
+          isVideo,
+        });
+      }
+
+      return metaResponse({
+        url: targetUrl,
+        title: "Post do Instagram",
+        description: null,
+        image: null,
+        siteName: "Instagram",
+        favicon,
+        isVideo,
+      });
+    }
+
+    // 6. Parser Genérico OpenGraph / HTML
+    const html = await fetchText(targetUrl, BROWSER_FETCH_HEADERS["User-Agent"]);
+
+    if (!html) {
+      return metaResponse(fallbackMeta(targetUrl, hostname));
+    }
+
+    const meta = parseOgFromHtml(html, targetUrl, hostname);
+
+    return metaResponse({
+      url: targetUrl,
+      ...meta,
+      favicon,
+      isVideo,
+    });
   } catch (error) {
     console.error("Erro ao obter metadados do link:", error);
     return NextResponse.json(
