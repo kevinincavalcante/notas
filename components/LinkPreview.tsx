@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { ExternalLink, Globe, Play } from "lucide-react";
 import { extractUrls } from "@/lib/extract-urls";
+import { fetchClientOEmbed, mergeClientOEmbed } from "@/lib/link-oembed-client";
 
 interface LinkMetadata {
   url: string;
@@ -36,8 +37,15 @@ export default function LinkPreview({ url }: { url: string }) {
 
     fetch(`/api/metadata?url=${encodeURIComponent(url)}`)
       .then((res) => (res.ok ? res.json() : null))
-      .then((meta) => {
+      .then(async (meta) => {
         if (isMounted && meta && meta.title) {
+          // Servidor sem capa (TikTok bloqueado por IP de datacenter)?
+          // O navegador tenta o oEmbed direto — o oEmbed tem CORS *
+          if (!meta.image) {
+            const direct = await fetchClientOEmbed(url);
+            if (isMounted) meta = mergeClientOEmbed(meta, direct);
+          }
+          if (!isMounted) return;
           metadataCache.set(url, meta);
           setData(meta);
         }

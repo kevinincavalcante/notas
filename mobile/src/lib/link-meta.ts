@@ -1,4 +1,5 @@
 import { getSyncApi } from "./api";
+import { fetchClientOEmbed, mergeClientOEmbed } from "../../../lib/link-oembed-client";
 
 /**
  * Metadados de link (OpenGraph via /api/metadata) para os cards estilo
@@ -46,8 +47,15 @@ export async function fetchLinkMeta(url: string): Promise<LinkMeta | null> {
     if (!res.ok) return null;
     const data = (await res.json()) as LinkMeta;
     if (!data || typeof data.title !== "string" || !data.title) return null;
-    cache.set(url, data);
-    return data;
+    let meta: LinkMeta = { ...data };
+    // Servidor voltou sem capa (TikTok bloqueia por IP de datacenter)?
+    // O dispositivo tenta o oEmbed direto — rede residencial/4G não é bloqueada
+    if (!meta.image) {
+      const direct = await fetchClientOEmbed(url);
+      meta = mergeClientOEmbed(meta, direct);
+    }
+    cache.set(url, meta);
+    return meta;
   } catch (e) {
     console.warn("Metadados do link falharam:", e);
     return null;
