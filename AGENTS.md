@@ -94,6 +94,19 @@ node scripts/hash-password.mjs "senha"
 
 ---
 
+## 🧹 Higiene de Código — Aviso de Arquivos Grandes
+
+- **Regra para o agente**: ao abrir ou editar um arquivo com mais de **~800
+  linhas**, avisar o usuário e **sugerir extrair** componentes/funções/módulos
+  (`mobile/src/app/note/[id].tsx` e `components/NoteModal.tsx` já passaram
+  desse ponto). Sugerir, não refatorar por conta própria sem aprovação.
+- O gatilho confiável é o arquivo **em edição** (checar `wc -l` é barato);
+  varreduras completas do repo só sob pedido.
+- Motivo: arquivos gigantes ficam difíceis de manter, revisar e navegar —
+  para humanos e para agentes (contexto limitado, edits mais frágeis).
+
+---
+
 ## 🎓 Lições Críticas (leia antes de mexer em fluxo de mídia / autosave)
 
 A análise completa está em [`docs/LICOES-MIDIA-COFRE.md`](docs/LICOES-MIDIA-COFRE.md).
