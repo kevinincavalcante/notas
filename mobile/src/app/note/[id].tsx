@@ -1,13 +1,16 @@
-import { Alert, AppState, Image, KeyboardAvoidingView, Pressable, ScrollView, StyleSheet, Text, TextInput, View, BackHandler, type TextInputInstance } from "react-native";
-import { WebView } from "react-native-webview";
+import { AppState, KeyboardAvoidingView, Pressable, ScrollView, StyleSheet, Text, TextInput, View, BackHandler, type TextInputInstance } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ActionSheet, { type ActionItem } from "../../components/ActionSheet";
-import { AudioBar, FileChip, shareAttachmentFile } from "../../components/AttachmentStrip";
 import VersionHistorySheet from "../../components/VersionHistorySheet";
+import KeepTopImage from "../../components/note/KeepTopImage";
+import VaultUnlockGate from "../../components/note/VaultUnlockGate";
+import NoteReadMode from "../../components/note/NoteReadMode";
+import NoteEditToolbar, { RecordingBanner } from "../../components/note/NoteEditToolbar";
+import AttachmentChips from "../../components/note/AttachmentChips";
+import { useNoteMedia } from "../../hooks/useNoteMedia";
 import { autoList } from "../../lib/auto-list";
-import { bodyToHtml } from "../../lib/markdown-html";
 import { fetchLinkMeta, isCardWorthy, type LinkMeta } from "../../lib/link-meta";
 import { extractUrls } from "../../../../lib/extract-urls";
 import {
@@ -20,76 +23,18 @@ import {
   type NotePatch,
   type NoteRow,
 } from "../../lib/db";
-import { NOTE_COLOR_IDS, NOTE_COLOR_SWATCH } from "../../lib/colors";
 import { notifyLocalChange, onSynced, scheduleQuietSync, type SyncApiConfig } from "../../lib/sync";
 import { getSyncApi } from "../../lib/api";
-import {
-  displayUriFor,
-  uploadAttachment,
-  deleteAttachment,
-  listAttachments,
-  type UploadInput,
-} from "../../lib/attachments";
-import {
-  decryptAttachmentRow,
-  decryptNoteRow,
-  getVaultDek,
-  isBiometricEnabled,
-  unlockVault,
-  unlockWithBiometric,
-  resetVault,
-} from "../../lib/vault";
-import { decryptString, encryptString, isEncrypted } from "../../../../lib/vault-crypto";
+import { displayUriFor, listAttachments } from "../../lib/attachments";
+import { decryptAttachmentRow, decryptNoteRow, getVaultDek } from "../../lib/vault";
+import { encryptString } from "../../../../lib/vault-crypto";
 import type { AttachmentRow } from "../../lib/db";
-import * as ImagePicker from "expo-image-picker";
-import * as ImageManipulator from "expo-image-manipulator";
-import { useAudioRecorder, RecordingPresets, requestRecordingPermissionsAsync, setAudioModeAsync } from "expo-audio";
-import { ActivityIndicator } from "react-native";
 
 /**
  * Editor da nota: título + corpo markdown com autosave com debounce
  * e flush no sair da tela (o gesto de voltar do Android fecha e salva,
  * igual no desktop).
  */
-/** Preview amplo de imagem no topo estilo Google Keep (Print 2) */
-function KeepTopImage({
-  att,
-  onRemove,
-}: {
-  att: AttachmentRow;
-  onRemove: () => void;
-}) {
-  const [uri, setUri] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    // displayUriFor resolve o cache local e, pro anexo do cofre, decifra
-    // antes de mostrar (dek em memória)
-    void displayUriFor(att).then((resolved) => {
-      if (active) setUri(resolved);
-    });
-    return () => {
-      active = false;
-    };
-  }, [att.id, att.storage_key]);
-
-  if (!uri) {
-    return (
-      <View style={[styles.topImage, styles.topImageLoading]}>
-        <ActivityIndicator size="small" color="#fbbf24" />
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.topImageWrap}>
-      <Image source={{ uri }} style={styles.topImage} resizeMode="cover" />
-      <Pressable style={styles.topImageRemove} onPress={onRemove} hitSlop={8}>
-        <Text style={styles.topImageRemoveText}>✕</Text>
-      </Pressable>
-    </View>
-  );
-}
 
 export default function NoteScreen() {
   const router = useRouter();
@@ -110,12 +55,9 @@ export default function NoteScreen() {
   const [attachments, setAttachments] = useState<AttachmentRow[]>([]);
 
   // ---- Cofre: nota cifrada exige DEK em memória antes de qualquer leitura ----
+  // (senha/busy/erro/biometria vivem no VaultUnlockGate)
   const vaultRef = useRef(false); // a nota em edição é do cofre?
   const [vaultLocked, setVaultLocked] = useState(false);
-  const [vaultPass, setVaultPass] = useState("");
-  const [vaultError, setVaultError] = useState<string | null>(null);
-  const [vaultBusy, setVaultBusy] = useState(false);
-  const [vaultBiometric, setVaultBiometric] = useState(false);
 
   const attsKeyRef = useRef("");
   const loadAtts = useCallback(() => {
@@ -287,23 +229,31 @@ export default function NoteScreen() {
   const prevBodyRef = useRef("");
   const enterRef = useRef(false);
 
-  // anexos: gravação de áudio
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
-  const [recording, setRecording] = useState(false);
-  const [busyAtt, setBusyAtt] = useState(false);
-  const recordStartRef = useRef(0);
-  // Mídia "em voo" (câmera/galeria abertas, gravando ou cifrando/upload).
-  // O autosave em background (AppState) não pode descartar a nota como
-  // "vazia" nesse período: abrir a câmera levava o app pro fundo, o flush
-  // apagava a nota nova antes do anexo do cofre terminar de ser cifrado/salvo
-  // e o fluxo morria em silêncio (savedRef nulo) — "nada acontece".
-  const mediaInFlightRef = useRef(0);
-
   const savedRef = useRef<NoteRow | null>(null); // snapshot do que já foi gravado
   const bodyRef = useRef<TextInputInstance | null>(null);
   const latestRef = useRef({ title: "", body: "", color: "default" });
   const apiRef = useRef<SyncApiConfig | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Câmera/galeria/áudio/uploads/remoção — hook dedicado. O mediaInFlight
+  // RETORNADO é o mesmo ref lido pelo flushSave abaixo (contrato das
+  // Lições Críticas: nada de descarte com mídia em voo).
+  const {
+    recording,
+    busyAtt,
+    mediaInFlightRef,
+    pickImage,
+    toggleRecording,
+    handleRemoveAttachment,
+  } = useNoteMedia({
+    savedRef,
+    vaultRef,
+    latestRef,
+    touch,
+    loadAtts,
+    scheduleQuiet,
+    setAttachments,
+  });
 
   const flushSave = useCallback(async () => {
     const saved = savedRef.current;
@@ -426,8 +376,6 @@ export default function NoteScreen() {
     if (vaultRef.current && !dek) {
       // 🔒 Cofre travado: tela de senha e nada é lido/decifrado
       setVaultLocked(true);
-      setVaultError(null);
-      setVaultBiometric(await isBiometricEnabled());
       setLoaded(true);
       return;
     }
@@ -461,66 +409,6 @@ export default function NoteScreen() {
   useEffect(() => {
     void loadNote();
   }, [loadNote]);
-
-  // ---- Destravar o cofre de dentro da nota ----
-  function handleResetVaultPrompt() {
-    Alert.alert(
-      "Redefinir cofre",
-      "Isso apagará todas as notas do cofre e permitirá cadastrar uma nova senha. Deseja continuar?",
-      [
-        { text: "Cancelar", style: "cancel" },
-        {
-          text: "Redefinir",
-          style: "destructive",
-          onPress: () => {
-            void (async () => {
-              await resetVault();
-              setVaultError(null);
-              setVaultPass("");
-              router.back();
-            })();
-          },
-        },
-      ]
-    );
-  }
-
-  async function handleVaultUnlock() {
-    if (vaultBusy) return;
-    setVaultError(null);
-    setVaultBusy(true);
-    try {
-      const ok = await unlockVault(vaultPass);
-      if (!ok) {
-        setVaultError("Senha incorreta.");
-        return;
-      }
-      setVaultPass("");
-      await loadNote();
-    } catch (e) {
-      setVaultError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setVaultBusy(false);
-    }
-  }
-
-  async function handleVaultUnlockBiometric() {
-    if (vaultBusy) return;
-    setVaultError(null);
-    setVaultBusy(true);
-    try {
-      const ok = await unlockWithBiometric();
-      if (!ok) {
-        setVaultError("Biometria falhou — use a senha.");
-        return;
-      }
-      await loadNote();
-    } catch (e) {
-      setVaultError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setVaultBusy(false);
-    }
-  }
 
   // Gesto ou botão de voltar do Android: salva imediatamente e sai da tela
   useEffect(() => {
@@ -676,215 +564,7 @@ export default function NoteScreen() {
     loadAtts();
   }
 
-  /* ---- Anexos: câmera, galeria e áudio ---- */
-
-  // Uploads serializados: o guard antigo "busyAtt → return null" DESCARTAVA
-  // o anexo em silêncio quando dois fluxos se cruzavam (foto + áudio)
-  const uploadChainRef = useRef<Promise<unknown>>(Promise.resolve());
-
-  async function runUpload(input: UploadInput): Promise<AttachmentRow | null> {
-    const run = async (): Promise<AttachmentRow | null> => {
-      setBusyAtt(true);
-      try {
-        const att = await uploadAttachment(input);
-        // Reflete na hora no editor + pré-aquece o cache de exibição do anexo
-        // novo (o chip/foto aparece sem esperar o próximo sync)
-        loadAtts();
-        if (att) void displayUriFor(att);
-        return att;
-      } catch (e) {
-        Alert.alert("Anexo", e instanceof Error ? e.message : String(e));
-        return null;
-      } finally {
-        setBusyAtt(false);
-      }
-    };
-    const next = uploadChainRef.current.then(run, run);
-    uploadChainRef.current = next.catch(() => {});
-    return next;
-  }
-
-  async function handleRemoveAttachment(att: AttachmentRow) {
-    try {
-      await deleteAttachment(att);
-      setAttachments((prev) => prev.filter((a) => a.id !== att.id));
-      const regex = new RegExp(`!?\\[[^\\]]*\\]\\(/api/attachments/${att.id}\\)\\n*`, "g");
-      const current = latestRef.current.body || "";
-      const nextBody = current.replace(regex, "").trim();
-      if (nextBody !== current) {
-        touch("body", nextBody);
-      }
-      notifyLocalChange();
-      scheduleQuiet();
-    } catch (e) {
-      console.warn("Falha ao remover anexo:", e);
-    }
-  }
-
-  async function pickImage(useCamera: boolean) {
-    if (!savedRef.current) return;
-    // Captura o id AGORA: abrir a câmera/galeria joga o app pro fundo e o
-    // autosave roda — não depender de savedRef depois desse ponto.
-    const noteId = savedRef.current.id;
-    // Cofre: DEK tem que estar em memória ANTES de abrir a câmera — a Activity
-    // do Android suspende o app e, se o auto-lock tiver zerado a chave, o
-    // upload falharia silencioso lá na frente. Falha cedo, mensagem clara.
-    if (vaultRef.current && !getVaultDek()) {
-      Alert.alert(
-        "Cofre travado",
-        "O cofre foi travado (auto-lock). Saia da nota e destrave o cofre para anexar mídia.",
-        [{ text: "OK" }]
-      );
-      return;
-    }
-    // Permissões ANTES de abrir a câmera/galeria — negação sem mensagem
-    // confunde o usuário com "mídia não salva".
-    if (useCamera) {
-      const cam = await ImagePicker.requestCameraPermissionsAsync();
-      if (!cam.granted) {
-        Alert.alert(
-          "Permissão de câmera",
-          "O app não tem permissão para usar a câmera. Libere em Ajustes → Apps → Notas → Permissões.",
-          [{ text: "OK" }]
-        );
-        return;
-      }
-    }
-    // A partir daqui a câmera/galeria abre e o app vai pro fundo: o
-    // mediaInFlightRef mantém a nota viva até o anexo estar registrado
-    mediaInFlightRef.current += 1;
-    try {
-      const result = useCamera
-        ? await ImagePicker.launchCameraAsync({ quality: 0.9 })
-        : await ImagePicker.launchImageLibraryAsync({ quality: 0.9, selectionLimit: 5 });
-      if (result.canceled || result.assets.length === 0) return;
-
-      for (const asset of result.assets) {
-        // Compressão no cliente (1600px/webp) — sobe pequeno, sharp afina no servidor
-        let uri = asset.uri;
-        let fileName = asset.fileName || `foto-${Date.now()}.jpg`;
-        let mimeType = asset.mimeType || "image/jpeg";
-        if (mimeType.startsWith("image/")) {
-          try {
-            const out = await ImageManipulator.manipulateAsync(
-              asset.uri,
-              [{ resize: { width: 1600 } }],
-              { compress: 0.8, format: ImageManipulator.SaveFormat.WEBP }
-            );
-            uri = out.uri;
-            fileName = fileName.replace(/\.[^.]+$/, "") + ".webp";
-            mimeType = "image/webp";
-          } catch (e) {
-            console.warn("Compressão falhou, enviando original:", e);
-          }
-        }
-        const att = await runUpload({
-          uri,
-          fileName,
-          mimeType,
-          noteId,
-          // Nota do cofre: bytes/nome/mime saem cifrados (runUpload só repassa)
-          encrypted: vaultRef.current || Boolean(savedRef.current?.is_vault) || undefined,
-        });
-        if (att) {
-          // O file_name do anexo cifrado volta encriptado — o markdown do corpo
-          // mantém o nome legível (a troca de uri é só na exibição, via displayUriFor)
-          const dek = getVaultDek();
-          const displayName =
-            dek && isEncrypted(att.file_name)
-              ? (() => {
-                  try {
-                    return decryptString(dek, att.file_name);
-                  } catch {
-                    return "arquivo";
-                  }
-                })()
-              : att.file_name;
-          // Insere a foto no corpo da nota como Markdown estilo Keep/Joplin
-          const imgMarkdown = `\n\n![${displayName}](/api/attachments/${att.id})\n\n`;
-          const currentBody = latestRef.current.body || "";
-          const nextBody = currentBody ? `${currentBody.trimEnd()}${imgMarkdown}` : imgMarkdown.trim();
-          touch("body", nextBody);
-          loadAtts();
-        }
-      }
-    } catch (e) {
-      // Nunca em silêncio: o `void pickImage()` engolia rejeições e o usuário
-      // só via "nada acontece" — qualquer falha inesperada vira alerta.
-      console.warn("Falha ao anexar mídia:", e);
-      Alert.alert("Anexo", e instanceof Error ? e.message : String(e));
-    } finally {
-      mediaInFlightRef.current -= 1;
-    }
-  }
-
-  async function toggleRecording() {
-    if (!savedRef.current) return;
-    // Captura o id AGORA: o autosave em background pode rodar durante a
-    // gravação/criptografia e não depender de savedRef depois desse ponto.
-    const noteId = savedRef.current.id;
-    if (recording) {
-      setRecording(false);
-      try {
-        await recorder.stop();
-        const uri = recorder.uri;
-        if (uri) {
-          await runUpload({
-            uri,
-            fileName: `audio-${Date.now()}.m4a`,
-            mimeType: "audio/mp4",
-            noteId,
-            durationSeconds: (Date.now() - recordStartRef.current) / 1000,
-            // Nota do cofre: áudio também sai cifrado
-            encrypted: vaultRef.current || Boolean(savedRef.current?.is_vault) || undefined,
-          });
-        }
-      } catch (e) {
-        console.warn("Falha ao salvar gravação:", e);
-        Alert.alert("Erro ao salvar áudio", e instanceof Error ? e.message : String(e));
-      } finally {
-        // Só solta a nota "em voo" depois do anexo registrado (fim da
-        // criptografia/upload local) — o descarte de nota vazia espera
-        mediaInFlightRef.current = Math.max(0, mediaInFlightRef.current - 1);
-      }
-      return;
-    }
-    // Cofre: DEK em memória ANTES de gravar (mesma proteção do pickImage)
-    if (vaultRef.current && !getVaultDek()) {
-      Alert.alert(
-        "Cofre travado",
-        "O cofre foi travado (auto-lock). Saia da nota e destrave o cofre para gravar áudio.",
-        [{ text: "OK" }]
-      );
-      return;
-    }
-    // A gravação segura a nota "em voo" desde o início (o teclado fecha ao
-    // tocar no 🎙 e o autosave disparava o descarte da nota vazia no meio)
-    mediaInFlightRef.current += 1;
-    let started = false;
-    try {
-      const perm = await requestRecordingPermissionsAsync();
-      if (!perm.granted) {
-        Alert.alert(
-          "Permissão de microfone",
-          "O app não tem permissão para usar o microfone. Libere em Ajustes → Apps → Notas → Permissões para gravar notas de voz.",
-          [{ text: "OK" }]
-        );
-        return;
-      }
-      await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
-      await recorder.prepareToRecordAsync();
-      recorder.record();
-      recordStartRef.current = Date.now();
-      setRecording(true);
-      started = true;
-    } catch (e) {
-      console.warn("Falha ao gravar:", e);
-      Alert.alert("Erro ao gravar áudio", e instanceof Error ? e.message : String(e));
-    } finally {
-      if (!started) mediaInFlightRef.current = Math.max(0, mediaInFlightRef.current - 1);
-    }
-  }
+  /* ---- Anexos: câmera, galeria e áudio → hook useNoteMedia ---- */
 
   if (missing) {
     return (
@@ -908,56 +588,7 @@ export default function NoteScreen() {
   // 🔒 Cofre travado: nenhuma nota cifrada é lida antes da senha
   if (vaultLocked) {
     return (
-      <View style={[styles.root, styles.center, styles.lockWrap]}>
-        <Text style={styles.lockTitle}>🔒 Cofre travado</Text>
-        <Text style={styles.lockHint}>
-          Esta nota está no cofre. Digite a senha para ler.
-        </Text>
-
-        <TextInput
-          style={styles.input}
-          placeholder="Senha do cofre"
-          placeholderTextColor="#71717a"
-          secureTextEntry
-          value={vaultPass}
-          onChangeText={setVaultPass}
-          editable={!vaultBusy}
-          onSubmitEditing={() => void handleVaultUnlock()}
-        />
-
-        <Pressable
-          style={[styles.button, vaultBusy && { opacity: 0.7 }]}
-          onPress={() => void handleVaultUnlock()}
-          disabled={vaultBusy}
-        >
-          {vaultBusy ? (
-            <ActivityIndicator size="small" color="#18181b" />
-          ) : (
-            <Text style={styles.buttonText}>Destravar</Text>
-          )}
-        </Pressable>
-
-        {vaultBiometric && !vaultBusy && (
-          <Pressable style={styles.ghostButton} onPress={() => void handleVaultUnlockBiometric()}>
-            <Text style={styles.ghostButtonText}>🔓 Desbloquear com biometria</Text>
-          </Pressable>
-        )}
-
-        {vaultError && (
-          <View style={{ alignItems: "center", marginTop: 8 }}>
-            <Text style={styles.error}>{vaultError}</Text>
-            <Pressable onPress={handleResetVaultPrompt} style={{ marginTop: 10 }} hitSlop={8}>
-              <Text style={{ color: "#ef4444", fontSize: 13, textDecorationLine: "underline" }}>
-                Esqueceu a senha? Redefinir cofre
-              </Text>
-            </Pressable>
-          </View>
-        )}
-
-        <Pressable onPress={() => router.back()} hitSlop={8}>
-          <Text style={styles.link}>Voltar</Text>
-        </Pressable>
-      </View>
+      <VaultUnlockGate onUnlocked={loadNote} onBack={() => router.back()} />
     );
   }
 
@@ -1001,88 +632,25 @@ export default function NoteScreen() {
           cima do teclado, e o ScrollView encolhe em vez de cobrir o texto. */}
       <KeyboardAvoidingView behavior="padding" style={styles.kavAvoid}>
       {mode === "read" ? (
-        /* ---- MODO LEITURA: preview markdown selecionável (estilo desktop) ----
-           WebView rola POR DENTRO — dentro de ScrollView ela colapsa a zero */
-        <View style={{ flex: 1, paddingHorizontal: 20 }}>
-          <Text selectable style={styles.readTitle}>
-            {title || "Sem título"}
-          </Text>
-          {/* Áudio e arquivos no corpo da leitura (igual fotos inline) */}
-          {(audioAttachments.length > 0 || fileAttachments.length > 0) && (
-            <View style={styles.audioChipsContainer}>
-              {audioAttachments.map((audio) => (
-                <AudioBar key={audio.id} att={audio} />
-              ))}
-              {/* Arquivos REFERENCIADOS no corpo viram chip DENTRO do
-                  WebView (notasfile://) — aqui só os avulsos */}
-              {fileAttachments
-                .filter((file) => !bodyImgIds.includes(file.id))
-                .map((file) => (
-                  <FileChip key={file.id} att={file} />
-                ))}
-            </View>
-          )}
-          {/* Mídias do corpo ainda baixando/decifrando: indicador + previews
-              NATIVOS no lugar da WebView (instantâneos, sem depender dela) */}
-          {bodyUrisPending.length > 0 ? (
-            <View style={{ flex: 1 }}>
-              <View style={styles.decryptingRow}>
-                <ActivityIndicator size="small" color="#fbbf24" />
-                <Text style={styles.decryptingText}>
-                  Descriptografando mídias… ({Math.max(0, imageAttachments.length - bodyUrisPending.length)}/{imageAttachments.length})
-                </Text>
-              </View>
-              <ScrollView contentContainerStyle={{ paddingHorizontal: 0 }}>
-                {imageAttachments.map((img) => (
-                  <KeepTopImage key={img.id} att={img} onRemove={() => {}} />
-                ))}
-              </ScrollView>
-            </View>
-          ) : (
-          <WebView
-            key={`read-${bodyUrisSignature}-${Object.keys(linkMetaMap).length}`}
-            source={{ html: bodyToHtml(body, bodyImgUris, linkMetaMap), baseUrl: "file:///" }}
-            style={styles.readBody}
-            backgroundColor="transparent"
-            javaScriptEnabled={false}
-            originWhitelist={["*"]}
-            allowFileAccess={true}
-            setSupportMultipleWindows={false}
-            onShouldStartLoadWithRequest={(req) => {
-              // Chip de ARQUIVO no corpo: decifra em memória e abre o
-              // compartilhar do Android (salvar em Arquivos, enviar...)
-              if (req.url.startsWith("notasfile://")) {
-                const id = req.url.replace("notasfile://", "").split("?")[0];
-                const att = attachments.find((a) => a.id === id);
-                if (att) void shareAttachmentFile(att);
-                return false;
-              }
-              // Links do markdown abrem no navegador do sistema
-              if (req.url.startsWith("http")) {
-                import("react-native").then(({ Linking }) => void Linking.openURL(req.url));
-                return false;
-              }
-              return true;
-            }}
-          />
-          )}
-        </View>
+        /* ---- MODO LEITURA: preview markdown selecionável (estilo desktop) ---- */
+        <NoteReadMode
+          title={title}
+          body={body}
+          bodyImgUris={bodyImgUris}
+          linkMetaMap={linkMetaMap}
+          bodyUrisSignature={bodyUrisSignature}
+          bodyUrisPending={bodyUrisPending}
+          imageAttachments={imageAttachments}
+          audioAttachments={audioAttachments}
+          fileAttachments={fileAttachments}
+          attachments={attachments}
+          bodyImgIds={bodyImgIds}
+        />
       ) : (
         /* ---- MODO EDIÇÃO: o editor de sempre ---- */
         <>
           {/* Banner visual durante a gravacao */}
-          {recording && (
-            <View style={styles.recordingBanner}>
-              <View style={styles.recordingDot} />
-              <Text style={styles.recordingText}>Gravando nota de voz...</Text>
-              <Pressable
-                style={styles.recordingStopBtn}
-                onPress={() => void toggleRecording()}
-              >
-                <Text style={styles.recordingStopText}>Parar</Text>
-              </Pressable>
-            </View>
-          )}
+          {recording && <RecordingBanner onStop={() => void toggleRecording()} />}
 
           <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
             {/* Fotos em destaque amplo estilo Google Keep (Print 2) */}
@@ -1099,24 +667,11 @@ export default function NoteScreen() {
             )}
 
             {/* Áudio e arquivos no corpo — barras largas estilo fotos */}
-            {audioAttachments.length + fileAttachments.length > 0 && (
-              <View style={styles.audioChipsContainer}>
-                {audioAttachments.map((audio) => (
-                  <AudioBar
-                    key={audio.id}
-                    att={audio}
-                    onRemove={(a) => void handleRemoveAttachment(a)}
-                  />
-                ))}
-                {fileAttachments.map((file) => (
-                  <FileChip
-                    key={file.id}
-                    att={file}
-                    onRemove={(a) => void handleRemoveAttachment(a)}
-                  />
-                ))}
-              </View>
-            )}
+            <AttachmentChips
+              audioAttachments={audioAttachments}
+              fileAttachments={fileAttachments}
+              onRemove={(a) => void handleRemoveAttachment(a)}
+            />
 
             <TextInput
               style={styles.titleInput}
@@ -1145,59 +700,18 @@ export default function NoteScreen() {
           </ScrollView>
 
           {/* Barra inferior estilo Keep: mídia + 🎨 paleta + ⋯ menu */}
-          <View style={[styles.toolbar, { paddingBottom: insets.bottom + 8 }]}>
-            {showColors && (
-              <View style={styles.swatches}>
-                {NOTE_COLOR_IDS.map((id) => (
-                  <Pressable
-                    key={id}
-                    onPress={() => pickColor(id)}
-                    style={[
-                      styles.swatch,
-                      { backgroundColor: NOTE_COLOR_SWATCH[id] },
-                      color === id && styles.swatchActive,
-                    ]}
-                  />
-                ))}
-              </View>
-            )}
-            <View style={styles.toolbarRow}>
-              <View style={styles.toolGroup}>
-                {busyAtt ? (
-                  <View style={styles.toolBtn}>
-                    <ActivityIndicator size="small" color="#fbbf24" />
-                  </View>
-                ) : (
-                  <>
-                    <Pressable onPress={() => void pickImage(true)} hitSlop={6} style={({ pressed }) => [styles.toolBtn, pressed && { opacity: 0.8 }]}>
-                      <Text style={styles.toolIcon}>📷</Text>
-                    </Pressable>
-                    <Pressable onPress={() => void pickImage(false)} hitSlop={6} style={({ pressed }) => [styles.toolBtn, pressed && { opacity: 0.8 }]}>
-                      <Text style={styles.toolIcon}>🖼️</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => void toggleRecording()}
-                      hitSlop={6}
-                      style={({ pressed }) => [styles.toolBtn, recording && styles.recordingBtn, pressed && { opacity: 0.8 }]}
-                    >
-                      <Text style={styles.toolIcon}>{recording ? "⏹" : "🎙"}</Text>
-                    </Pressable>
-                    <Pressable onPress={() => setShowColors((v) => !v)} hitSlop={6} style={({ pressed }) => [styles.toolBtn, pressed && { opacity: 0.8 }]}>
-                      <Text style={styles.toolIcon}>🎨</Text>
-                      <View style={[styles.toolDot, { backgroundColor: NOTE_COLOR_SWATCH[color] }]} />
-                    </Pressable>
-                  </>
-                )}
-              </View>
-              <Pressable
-                onPress={() => setSheetOpen(true)}
-                hitSlop={6}
-                style={({ pressed }) => [styles.toolBtn, pressed && { opacity: 0.8 }]}
-              >
-                <Text style={styles.toolIcon}>⋯</Text>
-              </Pressable>
-            </View>
-          </View>
+          <NoteEditToolbar
+            showColors={showColors}
+            onToggleColors={() => setShowColors((v) => !v)}
+            busyAtt={busyAtt}
+            recording={recording}
+            onPickImage={(useCamera) => void pickImage(useCamera)}
+            onToggleRecording={() => void toggleRecording()}
+            onPickColor={pickColor}
+            onOpenSheet={() => setSheetOpen(true)}
+            color={color}
+            bottomInset={insets.bottom}
+          />
         </>
       )}
       </KeyboardAvoidingView>
@@ -1250,27 +764,6 @@ const styles = StyleSheet.create({
   modeIcon: {
     fontSize: 18,
   },
-  readTitle: {
-    color: "#fafafa",
-    fontSize: 26,
-    fontWeight: "700",
-    marginBottom: 8,
-    paddingHorizontal: 0,
-  },
-  readBody: {
-    flex: 1,
-    backgroundColor: "transparent",
-  },
-  decryptingRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingVertical: 10,
-  },
-  decryptingText: {
-    color: "#a1a1aa",
-    fontSize: 13,
-  },
   status: {
     color: "#71717a",
     fontSize: 12.5,
@@ -1291,66 +784,6 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     minHeight: 52,
   },
-  swatches: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-    paddingVertical: 12,
-  },
-  swatch: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-  },
-  swatchActive: {
-    borderWidth: 2,
-    borderColor: "#fbbf24",
-  },
-  toolbar: {
-    backgroundColor: "#18181b",
-    borderTopWidth: 1,
-    borderTopColor: "#26262a",
-    paddingTop: 8,
-    paddingHorizontal: 14,
-  },
-  toolbarRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  toolGroup: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  recordingBtn: {
-    backgroundColor: "#450a0a",
-    borderColor: "#ef4444",
-  },
-  toolBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: "#1c1c1f",
-    borderWidth: 1,
-    borderColor: "#2c2c31",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  toolIcon: {
-    fontSize: 17,
-    color: "#d4d4d8",
-  },
-  toolDot: {
-    position: "absolute",
-    right: 6,
-    bottom: 6,
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    borderWidth: 1,
-    borderColor: "#101012",
-  },
   bodyInput: {
     color: "#e4e4e7",
     fontSize: 15.5,
@@ -1365,145 +798,9 @@ const styles = StyleSheet.create({
     color: "#60a5fa",
     fontSize: 14,
   },
-  // ---- Cofre travado (estilos reaproveitados do login do index) ----
-  lockWrap: {
-    padding: 28,
-    alignSelf: "stretch",
-    maxWidth: 440,
-    width: "100%",
-    marginHorizontal: "auto",
-  },
-  lockTitle: {
-    color: "#fafafa",
-    fontSize: 24,
-    fontWeight: "800",
-  },
-  lockHint: {
-    color: "#71717a",
-    fontSize: 13.5,
-    textAlign: "center",
-    marginBottom: 6,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: "#2c2c31",
-    borderRadius: 12,
-    backgroundColor: "#1c1c1f",
-    color: "#fafafa",
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 15,
-    alignSelf: "stretch",
-  },
-  button: {
-    backgroundColor: "#fbbf24",
-    borderRadius: 12,
-    paddingVertical: 14,
-    alignItems: "center",
-    alignSelf: "stretch",
-    marginTop: 6,
-  },
-  buttonText: {
-    color: "#1c1917",
-    fontWeight: "700",
-    fontSize: 16,
-  },
-  ghostButton: {
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#2c2c31",
-    backgroundColor: "#1c1c1f",
-    paddingVertical: 13,
-    alignItems: "center",
-    alignSelf: "stretch",
-  },
-  ghostButtonText: {
-    color: "#e4e4e7",
-    fontWeight: "600",
-    fontSize: 14.5,
-  },
-  error: {
-    color: "#f87171",
-    fontSize: 13,
-  },
   topImagesContainer: {
     gap: 12,
     marginBottom: 14,
     marginTop: 6,
-  },
-  topImageWrap: {
-    position: "relative",
-    borderRadius: 16,
-    overflow: "hidden",
-    backgroundColor: "#1c1c1f",
-    borderWidth: 1,
-    borderColor: "#27272a",
-  },
-  topImage: {
-    width: "100%",
-    height: 250,
-    borderRadius: 16,
-  },
-  topImageLoading: {
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  topImageRemove: {
-    position: "absolute",
-    top: 10,
-    right: 10,
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: "rgba(0,0,0,0.65)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  topImageRemoveText: {
-    color: "#fff",
-    fontSize: 13,
-    fontWeight: "700",
-  },
-  audioChipsContainer: {
-    flexDirection: "column",
-    gap: 8,
-    marginBottom: 12,
-  },
-  recordingBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: "#450a0a",
-    borderWidth: 1,
-    borderColor: "#ef4444",
-    borderRadius: 12,
-    marginHorizontal: 16,
-    marginBottom: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-  },
-  recordingDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: "#ef4444",
-    marginRight: 8,
-  },
-  recordingText: {
-    color: "#fecaca",
-    fontSize: 13,
-    fontWeight: "600",
-    flex: 1,
-  },
-  recordingStopBtn: {
-    backgroundColor: "#ef4444",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  recordingStopText: {
-    color: "#fff",
-    fontSize: 12,
-    fontWeight: "700",
   },
 });
