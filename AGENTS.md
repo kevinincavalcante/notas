@@ -57,6 +57,8 @@ O script já gera a linha com os escapes necessários pronta para ser copiada e 
 - Rota `/api/metadata?url=...` com detecção automática de links em tempo real.
 - **YouTube**: Extração automática via oEmbed oficial com thumbnail em alta definição, nome do canal e ícone oficial.
 - **Sites / Artigos**: Extração de `og:image`, `og:title`, descrição e favicon do domínio.
+- **Redes sociais / Vídeos**: Facebook via UA de crawler do Meta (`facebookexternalhit` — UA de navegador leva HTTP 400), TikTok/Vimeo via oEmbed público, Instagram com fallback em 3 tentativas (crawler → embed → card degradado). Cards com botão play (`isVideo`) no web e no APK (modo leitura).
+- **Auto-tags por URL** (`lib/url-autotag.ts`, no salvar): YouTube/Vimeo → "Vídeos"; redes sociais (Facebook, Instagram, TikTok, X/Twitter, Threads, Reddit, Bluesky, WhatsApp, LinkedIn) → "Social"; demais sites via JSON-LD/og:type. Notas do cofre ficam de fora (o servidor nunca vê plaintext).
 - Os cards são clicáveis e abrem em nova aba sem acionar a abertura do modal da nota.
 
 ### 5. Experiência de Usuário (Desktop & Mobile)

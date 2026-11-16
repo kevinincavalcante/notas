@@ -6,10 +6,12 @@ import type { Client } from "@libsql/client";
 
 /**
  * Marcadores automáticos por URL: detecta o tipo de conteúdo (produto,
- * vídeo, notícia, artigo...) via JSON-LD/schema.org da página e vincula
- * as tags à nota no salvar.
+ * vídeo, notícia, artigo, rede social...) e vincula as tags à nota no
+ * salvar.
  *
  * - Detecção no servidor (funciona igual no web, desktop e mobile)
+ * - Hosts conhecidos (YouTube/Vimeo → "Vídeos", redes sociais → "Social")
+ *   são detectados direto, sem fetch; demais sites via JSON-LD/schema.org
  * - Cache em memória (10 min) para não refazer fetch a cada salvamento
  * - Falha silenciosa: nunca bloqueia o salvamento da nota
  * - Também sincroniza o marcador "Códigos" (source='code') pelo corpo
@@ -36,6 +38,42 @@ function isVideoHost(url: string): boolean {
       hostname === "vimeo.com" ||
       hostname.endsWith(".vimeo.com")
     );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Redes sociais → tag "Social" direto, sem fetch: a detecção por host é
+ * instantânea e determinística (o Facebook ainda bloqueia fetch de servidor
+ * com HTTP 400, então JSON-LD nunca viria).
+ */
+const SOCIAL_TAG_NAME = "Social";
+
+const SOCIAL_HOSTS = [
+  "facebook.com",
+  "fb.watch",
+  "fb.me",
+  "instagram.com",
+  "instagr.am",
+  "tiktok.com",
+  "twitter.com",
+  "x.com",
+  "t.co",
+  "threads.net",
+  "threads.com",
+  "reddit.com",
+  "redd.it",
+  "bsky.app",
+  "wa.me",
+  "chat.whatsapp.com",
+  "linkedin.com",
+];
+
+function isSocialHost(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+    return SOCIAL_HOSTS.some((h) => hostname === h || hostname.endsWith(`.${h}`));
   } catch {
     return false;
   }
@@ -98,6 +136,8 @@ export async function detectTagsForUrl(url: string): Promise<string[]> {
   try {
     if (!isAllowedPublicUrl(url)) {
       tags = [];
+    } else if (isSocialHost(url)) {
+      tags = [SOCIAL_TAG_NAME];
     } else if (isVideoHost(url)) {
       tags = ["Vídeos"];
     } else {
