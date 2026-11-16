@@ -16,12 +16,25 @@ interface LinkMetadata {
   isVideo?: boolean;
 }
 
-// Cache local em memória para evitar requisições repetidas na mesma sessão
+/** Cache local em memória para evitar requisições repetidas na mesma sessão */
 const metadataCache = new Map<string, LinkMetadata>();
 
 export { extractUrls };
 
-export default function LinkPreview({ url }: { url: string }) {
+/**
+ * `allowReport`: quando o cliente resolve no dispositivo o que o servidor
+ * não conseguiu (TikTok bloqueia por IP), reporta via POST para o cache
+ * persistente — serve web/desktop e outros aparelhos. PADRÃO FALSE: o
+ * NoteModal passa `!isVaultNote` (URL de nota do cofre jamais pode ser
+ * persistida em texto plano no servidor).
+ */
+export default function LinkPreview({
+  url,
+  allowReport = false,
+}: {
+  url: string;
+  allowReport?: boolean;
+}) {
   const [data, setData] = useState<LinkMetadata | null>(metadataCache.get(url) || null);
   const [loading, setLoading] = useState(!metadataCache.has(url));
 
@@ -43,7 +56,25 @@ export default function LinkPreview({ url }: { url: string }) {
           // O navegador tenta o oEmbed direto — o oEmbed tem CORS *
           if (!meta.image) {
             const direct = await fetchClientOEmbed(url);
-            if (isMounted) meta = mergeClientOEmbed(meta, direct);
+            if (isMounted && direct) {
+              meta = mergeClientOEmbed(meta, direct);
+              // Reporta ao servidor o que o navegador resolveu (o cache
+              // persistente serve o APK e as próximas sessões) — nunca
+              // para nota do cofre (allowReport=false)
+              if (allowReport && meta.image) {
+                void fetch("/api/metadata", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    url,
+                    title: meta.title,
+                    description: meta.description,
+                    image: meta.image,
+                    siteName: meta.siteName,
+                  }),
+                }).catch(() => {});
+              }
+            }
           }
           if (!isMounted) return;
           metadataCache.set(url, meta);

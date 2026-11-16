@@ -45,6 +45,7 @@ function linkCardHtml(url: string, meta: LinkMeta): string {
     host = host || url;
   }
   const title = escapeHtml(meta.title || host);
+  const desc = meta.description ? escapeHtml(meta.description.slice(0, 160)) : null;
   const thumb = meta.image
     ? `<span style="display:block;position:relative;height:200px;background:#000;">` +
       `<img src="${escapeHtml(meta.image)}" alt="" style="width:100%;height:200px;object-fit:cover;display:block;">` +
@@ -59,6 +60,9 @@ function linkCardHtml(url: string, meta: LinkMeta): string {
     thumb +
     `<span style="display:block;padding:10px 12px;">` +
     `<span style="display:block;color:#fafafa;font-size:13.5px;font-weight:600;line-height:1.35;">${title}</span>` +
+    (desc
+      ? `<span style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:#a1a1aa;font-size:12px;line-height:1.4;margin-top:3px;">${desc}</span>`
+      : "") +
     `<span style="display:block;color:#a1a1aa;font-size:11px;margin-top:4px;text-transform:uppercase;letter-spacing:0.5px;">${escapeHtml(host)}</span>` +
     `</span></a>`
   );

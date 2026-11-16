@@ -27,6 +27,54 @@ function isTikTokUrl(url: string): boolean {
   }
 }
 
+function decodeBasic(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function metaContent(html: string, prop: string): string | null {
+  return (
+    html.match(
+      new RegExp(`<meta[^>]+(?:property|name)=["']${prop}["'][^>]+content=["']([^"']+)["']`, "i")
+    )?.[1] ?? null
+  );
+}
+
+/**
+ * 2ª tentativa: og:tags do HTML direto. No React Native não existe CORS —
+ * funciona quando o TikTok serve o HTML real (IP residencial, sem VPN).
+ * No navegador o fetch morre no CORS e cai no catch (silencioso).
+ */
+async function fetchTikTokOgTags(url: string): Promise<ClientOEmbedMeta | null> {
+  try {
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+        Accept: "text/html,application/xhtml+xml",
+      },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    const title = metaContent(html, "og:title") || metaContent(html, "twitter:title");
+    const image = metaContent(html, "og:image") || metaContent(html, "twitter:image");
+    const description = metaContent(html, "og:description");
+    if (!title && !image) return null;
+    return {
+      title: title ? decodeBasic(title).slice(0, 200) : null,
+      description: description ? decodeBasic(description).slice(0, 200) : null,
+      image: image ? decodeBasic(image) : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchClientOEmbed(url: string): Promise<ClientOEmbedMeta | null> {
   if (!isTikTokUrl(url)) return null;
   try {
@@ -34,21 +82,24 @@ export async function fetchClientOEmbed(url: string): Promise<ClientOEmbedMeta |
       `https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`,
       { signal: AbortSignal.timeout(6000) }
     );
-    if (!res.ok) return null;
-    const data = (await res.json()) as Record<string, unknown>;
-    const title = typeof data.title === "string" ? data.title : null;
-    const image = typeof data.thumbnail_url === "string" ? data.thumbnail_url : null;
-    // Sem título E sem capa não há nada a melhorar no card do servidor
-    if (!title && !image) return null;
-    const author = typeof data.author_name === "string" ? data.author_name : null;
-    return {
-      title,
-      description: author ? `@${author} no TikTok` : null,
-      image,
-    };
+    if (res.ok) {
+      const data = (await res.json()) as Record<string, unknown>;
+      const title = typeof data.title === "string" ? data.title : null;
+      const image = typeof data.thumbnail_url === "string" ? data.thumbnail_url : null;
+      // Com título OU capa já há o que melhorar no card do servidor
+      if (title || image) {
+        const author = typeof data.author_name === "string" ? data.author_name : null;
+        return {
+          title,
+          description: author ? `@${author} no TikTok` : null,
+          image,
+        };
+      }
+    }
   } catch {
-    return null;
+    // oEmbed falhou: tenta og:tags do HTML (só rende fora do navegador)
   }
+  return await fetchTikTokOgTags(url);
 }
 
 /** Mescla o resultado do oEmbed do cliente sobre os metadados do servidor. */
