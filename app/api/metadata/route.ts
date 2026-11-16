@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAllowedPublicUrl, BROWSER_FETCH_HEADERS } from "@/lib/url-safety";
+import { getStoredPreview, storePreview } from "@/lib/link-previews";
 
 function decodeHtml(html: string): string {
   return html
@@ -253,9 +254,10 @@ export async function GET(request: NextRequest) {
     }
 
     // 2. TikTok (oEmbed público, sem chave). Link curto (vt/vm.tiktok.com)
-    // é resolvido pra URL canônica antes — caminho oficial recomendado — e o
-    // @usuario da canônica serve de fallback quando o oEmbed vem esvaziado
-    // (TikTok corta title/thumbnail por reputação de IP, não por UA).
+    // é resolvido pra URL canônica antes — caminho oficial recomendado. O
+    // TikTok corta title/thumbnail do oEmbed por reputação de IP (datacenter):
+    // nesse caso o cache persistente (preenchido pelo CLIENTE, que resolve
+    // na rede residencial/4G) entra antes do card degradado.
     if (isTikTok(hostname)) {
       const canonicalUrl = await resolveShortLink(targetUrl);
       const canonicalPath = new URL(canonicalUrl).pathname;
@@ -267,24 +269,36 @@ export async function GET(request: NextRequest) {
         );
         if (res.ok) {
           const data = await res.json();
-          return metaResponse({
-            url: canonicalUrl,
-            title: data.title || "Vídeo no TikTok",
-            description: data.author_name
-              ? `@${data.author_name} no TikTok`
-              : handle
-                ? `@${handle} no TikTok`
-                : null,
-            image: data.thumbnail_url || null,
-            siteName: "TikTok",
-            favicon: "https://www.tiktok.com/favicon.ico",
-            isVideo: true,
-          });
+          if (data.title) {
+            return metaResponse({
+              url: canonicalUrl,
+              title: data.title,
+              description: data.author_name ? `@${data.author_name} no TikTok` : null,
+              image: data.thumbnail_url || null,
+              siteName: "TikTok",
+              favicon: "https://www.tiktok.com/favicon.ico",
+              isVideo: true,
+            });
+          }
         }
       } catch (ttErr) {
         console.warn("Falha no oembed do TikTok:", ttErr);
       }
-      // oEmbed indisponível: card degradado com o handle da URL canônica
+      // oEmbed esvaziado/bloqueado: cache preenchido pelo cliente
+      const stored =
+        (await getStoredPreview(canonicalUrl)) || (await getStoredPreview(targetUrl));
+      if (stored) {
+        return metaResponse({
+          url: canonicalUrl,
+          title: stored.title,
+          description: stored.description || (handle ? `@${handle} no TikTok` : null),
+          image: stored.image,
+          siteName: stored.siteName || "TikTok",
+          favicon: "https://www.tiktok.com/favicon.ico",
+          isVideo: true,
+        });
+      }
+      // Último recurso: card degradado com o handle da URL canônica
       return metaResponse({
         url: canonicalUrl,
         title: "Vídeo no TikTok",
@@ -370,6 +384,18 @@ export async function GET(request: NextRequest) {
 
     const meta = parseOgFromHtml(html, targetUrl, hostname);
 
+    // Servidor voltou sem capa (Instagram e cia bloqueiam por IP)? O cache
+    // preenchido pelo CLIENTE (que resolve na rede residencial) completa
+    if (!meta.image) {
+      const stored = await getStoredPreview(targetUrl);
+      if (stored) {
+        meta.title = stored.title || meta.title;
+        meta.description = stored.description || meta.description;
+        meta.image = stored.image || meta.image;
+        meta.siteName = stored.siteName || meta.siteName;
+      }
+    }
+
     return metaResponse({
       url: targetUrl,
       ...meta,
@@ -382,5 +408,31 @@ export async function GET(request: NextRequest) {
       { error: "Não foi possível carregar prévia do link" },
       { status: 500 }
     );
+  }
+}
+
+/**
+ * POST /api/metadata — report de preview resolvido NO CLIENTE.
+ * O TikTok/Instagram bloqueiam o fetch do servidor por IP, mas o dispositivo
+ * do usuário (rede residencial/4G) resolve o oEmbed: o cliente reporta e o
+ * cache persistente serve web/desktop e os outros aparelhos.
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const body = (await request.json()) as {
+      url?: unknown;
+      title?: unknown;
+      description?: unknown;
+      image?: unknown;
+      siteName?: unknown;
+    };
+    const ok = await storePreview(body);
+    if (!ok) {
+      return NextResponse.json({ error: "Preview inválido" }, { status: 400 });
+    }
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    console.error("Erro ao salvar preview reportado pelo cliente:", error);
+    return NextResponse.json({ error: "Erro ao salvar preview" }, { status: 500 });
   }
 }

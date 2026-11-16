@@ -52,7 +52,28 @@ export async function fetchLinkMeta(url: string): Promise<LinkMeta | null> {
     // O dispositivo tenta o oEmbed direto — rede residencial/4G não é bloqueada
     if (!meta.image) {
       const direct = await fetchClientOEmbed(url);
-      meta = mergeClientOEmbed(meta, direct);
+      if (direct) {
+        meta = mergeClientOEmbed(meta, direct);
+        if (meta.image) {
+          // Reporta ao servidor o que o DISPOSITIVO resolveu: o cache
+          // persistente serve web/desktop e os outros aparelhos (o servidor
+          // sozinho nunca conseguiria essa capa). Fire-and-forget.
+          void fetch(`${api.baseUrl}/api/metadata`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${api.token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              url,
+              title: meta.title,
+              description: meta.description,
+              image: meta.image,
+              siteName: meta.siteName,
+            }),
+          }).catch(() => {});
+        }
+      }
     }
     cache.set(url, meta);
     return meta;
