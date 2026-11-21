@@ -11,7 +11,7 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useRouter, useFocusEffect } from "expo-router";
+import { useRouter, useFocusEffect, useRootNavigationState } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Client } from "@libsql/client";
 import TopBar from "../components/TopBar";
@@ -112,7 +112,7 @@ export default function HomeScreen() {
     if (cfg) scheduleQuietSync(cfg);
   }
 
-  // boot: banco + sessão + primeira sync
+  // boot: banco + sessão (a 1ª sync vem do AppState "active")
   useEffect(() => {
     (async () => {
       await getDb(); // força schema/abertura antes de qualquer tela
@@ -122,12 +122,11 @@ export default function HomeScreen() {
       setUser(u);
       setUrlInput(url);
       setBooted(true);
-      if (t) {
-        apiRef.current = { baseUrl: url, token: t };
-        setTimeout(() => void runSync(), 1200);
-      }
+      if (t) apiRef.current = { baseUrl: url, token: t };
+      // Sem setTimeout(runSync): o AppState "active" do boot já dispara a
+      // 1ª sync — os dois juntos competiam com o share que abre o app.
     })();
-  }, [runSync]);
+  }, []);
 
   // sync no ciclo de vida: app volta pro foreground → sincroniza
   useEffect(() => {
@@ -170,6 +169,8 @@ export default function HomeScreen() {
         apiRef.current = cfg;
         // Puxa as notas antes de trocar de tela para que a Home abra com dados pré-carregados
         await syncQuiet(cfg);
+        // Destrava a fila de share (se o app foi aberto por um compartilhamento)
+        authRequiredRef.current = false;
         setToken(t);
         setUser(u);
       } else {
@@ -400,7 +401,8 @@ export default function HomeScreen() {
         void reload();
 
         // Abre direto na tela da nota em MODO EDIÇÃO
-        router.push(`/note/${id}?mode=edit`);
+        // (com o Stack já montado — senão o push se perde, ver openSharedNote)
+        openSharedNote(id);
 
         // Se ainda não tinha título explícito, busca o título em segundo plano e atualiza
         if (!initialTitle) {
@@ -450,7 +452,7 @@ export default function HomeScreen() {
       }
       scheduleSync();
       void reload();
-      router.push(`/note/${id}?mode=edit`);
+      openSharedNote(id);
     } catch (e) {
       console.warn("Falha ao receber compartilhamento:", e);
       Alert.alert(
@@ -460,17 +462,80 @@ export default function HomeScreen() {
     }
   }
 
-  // Share sheet: cold start (getShared) e app já aberto (listener)
-  useEffect(() => {
-    void ShareReceiver.getShared().then((payload) => {
-      if (payload) void handleSharedItems(payload);
-    });
-    const sub = ShareReceiver.addListener("onShareReceived", (payload) => {
-      void handleSharedItems(payload);
-    });
-    return () => sub.remove();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  /** Abre a nota recém-criada a partir de um share (Stack já montado). */
+  function openSharedNote(id: string) {
+    router.push(`/note/${id}?mode=edit`);
+  }
+
+  // Share sheet: cold start (getShared) e app já aberto (listener).
+  //
+  // BUG (cold start): com o app fechado, o Android recria a Activity e o JS
+  // demora a subir — o router.push da nota chegava ao Stack SEM rota focada
+  // e era engolido (só o app abria; só a 2ª tentativa funcionava). Agora o
+  // share fica na fila até o Stack estar montado.
+  //
+  // Fila serializada: share e mídia em voo são pesados na thread JS; dois
+  // shares (ou o mesmo reentregue pelo nativo sem ack) nunca se atropelam.
+  const shareQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const routeReady = Boolean(useRootNavigationState()?.key);
+  const navReadyRef = useRef(routeReady);
+  const pendingShareRef = useRef<SharedPayload[]>([]);
+  const handledKeyRef = useRef<string | null>(null);
+  /** Login aberto (sem token): o share espera o login antes de virar nota. */
+  const authRequiredRef = useRef(false);
+
+  const ingestShares = useCallback((payloads: SharedPayload[]) => {
+    for (const payload of payloads) {
+      // Reentrega do cold start (ainda sem ack) não duplica a nota
+      const key = `${payload.text ?? ""}|${payload.subject ?? ""}|${payload.files
+        .map((f) => f.uri)
+        .join(",")}`;
+      if (key === handledKeyRef.current) continue;
+      handledKeyRef.current = key;
+      pendingShareRef.current.push(payload);
+    }
+    // Login aberto: nada de criar nota ainda — o push cairia na tela de
+    // login. O share fica na fila e sai quando o token aparecer.
+    if (authRequiredRef.current) return;
+    if (!navReadyRef.current || pendingShareRef.current.length === 0) return;
+    const batch = pendingShareRef.current;
+    pendingShareRef.current = [];
+    shareQueueRef.current = shareQueueRef.current
+      .then(async () => {
+        for (const payload of batch) await handleSharedItems(payload);
+        // só agora o nativo pode esquecer a fila e o intent
+        await ShareReceiver.ack();
+      })
+      .catch((e) => {
+        console.warn("Fila de compartilhamento falhou:", e);
+        // reenfileira pra não perder o share numa falha de banco momentânea
+        pendingShareRef.current.unshift(...batch);
+      });
   }, []);
+
+  /**
+   * Fila do share espera o Stack montar. Fica ANTES dos returns de "Abrindo…"
+   * e do login: um efeito declarado depois de um return condicional nunca
+   * é registrado nas primeiras renderizações — e era justo o boot (com o app
+   * frio, vindo do compartilhamento) o caso em que o share se perdia.
+   */
+  useEffect(() => {
+    navReadyRef.current = routeReady;
+    if (routeReady) ingestShares([]);
+  }, [routeReady, ingestShares]);
+
+  // Sem sessão: segura a fila. Com sessão: destrava e processa o que esperou.
+  useEffect(() => {
+    authRequiredRef.current = !token;
+    if (booted && token) ingestShares([]);
+  }, [booted, token, ingestShares]);
+
+  useEffect(() => {
+    // Registra o listener já: o nativo só entrega por evento depois disso
+    const sub = ShareReceiver.addListener("onShareReceived", (payload) => ingestShares([payload]));
+    void ShareReceiver.getShared().then((payloads) => ingestShares(payloads));
+    return () => sub.remove();
+  }, [ingestShares]);
 
   if (!booted) {
     return (

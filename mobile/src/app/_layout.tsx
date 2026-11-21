@@ -2,6 +2,15 @@ import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { DarkTheme, ThemeProvider } from "@react-navigation/native";
 
+/**
+ * A Home é a âncora do Stack: um router.push disparado por
+ * compartilhamento no cold start precisa de uma rota por baixo
+ * (senão o Stack nasce sem índice e o push se perde).
+ */
+export const unstable_settings = {
+  initialRouteName: "index",
+};
+
 export default function RootLayout() {
   return (
     <ThemeProvider

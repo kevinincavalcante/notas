@@ -20,28 +20,84 @@ import java.io.FileOutputStream
  * - Cold start: JS chama getShared() no mount.
  * - App já aberto (launchMode singleTask): OnNewIntent emite o evento
  *   "onShareReceived".
+ *
+ * Fila com ACK (não perder share no cold start):
+ * - Antes do JS pedir (getShared), OnNewIntent só ENFILEIRA — nada de
+ *   sendEvent: com o app morto o listener JS pode ainda não existir e o
+ *   evento sumia (a nota nunca era criada; só a 2ª tentativa funcionava).
+ * - Se o listener falhar mesmo depois do cold start, o payload fica na fila
+ *   e é reentregue no próximo getShared — nunca é descartado em silêncio.
+ * - O intent só é limpo no ack() (JS montou as notas) ou quando um novo
+ *   share chega; antes disso uma Activity recriada ainda o encontra.
  */
 class ShareReceiverModule : Module() {
+  /**
+   * Estado do PROCESSO, fora da instância: uma Activity recriada cria outro
+   * module, mas a fila entregue-e-não-confirmada precisa sobreviver.
+   */
+  private companion object {
+    val pending = mutableListOf<Map<String, Any?>>()
+    /** A fila já foi soberana nesta execução do app? */
+    var listMode = false
+    /** Entrega direta pro JS (setado onSubscriber; limpado no OnDestroy). */
+    var READY: ((Map<String, Any?>) -> Unit)? = null
+  }
+
   override fun definition() = ModuleDefinition {
     Name("ShareReceiver")
 
     Events("onShareReceived")
 
+    // O JS só chega aqui quando registra o listener do módulo (addListener):
+    // a partir daí OnNewIntent entrega direto, com sendEvent.
+    OnStartObserving("onShareReceived") {
+      READY = { sendEvent("onShareReceived", it) }
+    }
+
+    OnDestroy {
+      READY = null
+      listMode = false
+    }
+
     OnNewIntent { intent ->
       val payload = extract(intent)
-      if (payload != null) {
-        clearExtras(intent)
-        sendEvent("onShareReceived", payload)
-      }
+      if (payload != null) emit(payload)
     }
 
     AsyncFunction("getShared") { promise: Promise ->
-      val intent = (appContext.reactContext as? ReactApplicationContext)?.currentActivity?.intent
-      val payload = extract(intent)
-      if (payload != null) {
-        intent?.let { clearExtras(it) }
+      // Lista os payloads sem ack (Map pode virar ReadableMap na ponte —
+      // o JS normaliza) e, no cold start, também o intent da Activity.
+      val out: MutableList<Any?> = mutableListOf()
+      out.addAll(pending)
+      if (!listMode) {
+        listMode = true
+        extract(currentActivity()?.intent)?.let { out.add(it) }
       }
-      promise.resolve(payload)
+      promise.resolve(out)
+    }
+
+    // JS já transformou os shares em nota → pode limpar a fila e o intent
+    AsyncFunction("ack") {
+      pending.clear()
+      currentActivity()?.intent?.let { clearExtras(it) }
+    }
+  }
+
+  private fun currentActivity() =
+    (appContext.reactContext as? ReactApplicationContext)?.currentActivity
+
+  /**
+   * Guarda o payload, limpa o intent (pra não reprocessar no próximo resume)
+   * e entrega ao JS — direto se o listener já existe, ou pela fila.
+   */
+  private fun emit(payload: Map<String, Any?>) {
+    currentActivity()?.intent?.let { clearExtras(it) }
+    pending.add(payload)
+    val ready = READY ?: return
+    try {
+      ready(payload)
+    } catch (e: Exception) {
+      // continua na fila; sai no próximo getShared
     }
   }
 

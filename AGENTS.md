@@ -129,3 +129,7 @@ Resumo dos contratos que **não** podem ser violados:
    nunca descarte em silêncio.
 6. As suítes E2E do cofre **fazem snapshot/restore do `vault_meta` real** —
    nunca apagar o material do cofre do usuário em cleanup de teste.
+7. **Share intent não pode ser entregue "às cegas"** — com o app frio o JS
+   pode ainda não existir: o nativo enfileira, o JS busca (`getShared`),
+   processa e confirma (`ack`). Evento sem fila = share perdido no cold start
+   (detalhes em `docs/LICOES-MIDIA-COFRE.md` §8).

@@ -146,7 +146,33 @@ da imagem quebrada muda.
 string de exibição. E mídia "não aparece" ≠ mídia "foi perdida": confira o
 anexo no banco antes de concluir.
 
-## 8. Comandos úteis da época
+## 8. Share intent no cold start (app fechado) — "abre o app mas não cria a nota"
+
+Sintoma: com o app fechado, "Compartilhar → Notas" só abre o app; a 2ª
+tentativa (app já aberto) cria a nota normalmente.
+
+Não era a sync (ela já é serializada por `activeSyncPromise`). Eram três
+furos independentes, corrigidos juntos:
+
+1. **Push sem Stack** — o `router.push('/note/<id>')` do share disparava antes
+   do expo-router montar uma rota focada no cold start, e era engolido. Agora a
+   fila espera `useRootNavigationState().key` (e o `_layout` declara
+   `unstable_settings.initialRouteName = "index"` como âncora).
+2. **Evento nativo perdido** — o `OnNewIntent` emitia `onShareReceived` sem
+   ninguém ouvindo (JS ainda subindo) e o payload se perdia. Agora o nativo
+   **enfileira no processo**, entrega direto só depois do `OnStartObserving`
+   (listener JS registrado) e só limpa a fila/intent no **`ack()`**, chamado
+   pelo JS depois de criar a nota. Sem ack → reentrega idempotente.
+3. **Sync duplicada no boot** — `AppState active` + `setTimeout(1200)` na Home
+   disparavam dois ciclos no mesmo instante da abertura. Ficou só o do ciclo
+   de vida (`syncQuiet` continua deduplicando por conta própria).
+
+Regras: nenhuma entrega de share pode ser descartada em silêncio (fila +
+ack, nunca `sendEvent` cego); o share nunca vira nota com a tela de login
+aberta (`authRequiredRef` segura a fila até o login); e o push da nota só
+acontece com o Stack montado.
+
+## 9. Comandos úteis da época
 
 ```bash
 # Conferir padrão upsert→delete no hub (trocar LIMIT conforme precisar)
