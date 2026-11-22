@@ -14,6 +14,7 @@ import { autoList } from "../../lib/auto-list";
 import { fetchLinkMeta, isCardWorthy, type LinkMeta } from "../../lib/link-meta";
 import { extractUrls } from "../../../../lib/extract-urls";
 import {
+  appendVersionIfChanged,
   deleteNote,
   getDb,
   getNote,
@@ -27,7 +28,7 @@ import { notifyLocalChange, onSynced, scheduleQuietSync, type SyncApiConfig } fr
 import { getSyncApi } from "../../lib/api";
 import { displayUriFor, listAttachments } from "../../lib/attachments";
 import { decryptAttachmentRow, decryptNoteRow, getVaultDek } from "../../lib/vault";
-import { encryptString } from "../../../../lib/vault-crypto";
+import { encryptString, versionContentHash } from "../../../../lib/vault-crypto";
 import type { AttachmentRow } from "../../lib/db";
 
 /**
@@ -268,8 +269,7 @@ export default function NoteScreen() {
       return;
     }
 
-    // Nota vazia (título e corpo em branco, sem anexo) → descarta,
-    // igual o desktop (sem lixo "Sem título" no banco nem no sync).
+    // Nota vazia (título e corpo em branco, sem anexo) → não vira registro.
     // NUNCA descarta com mídia em voo (mediaInFlightRef) nem com pendências
     // na fila de uploads — era o que apagava a nota nova no intervalo entre
     // abrir a câmera e o anexo do cofre terminar de ser cifrado/salvo.
@@ -278,6 +278,7 @@ export default function NoteScreen() {
       latest.body.trim() === "" &&
       mediaInFlightRef.current === 0
     ) {
+      // Nota vazia de verdade: descarta (sem lixo "Sem título" no banco)
       const { client } = await getDb();
       const atts = await client.execute({
         sql: `SELECT COUNT(*) AS c FROM attachments WHERE note_id = ?`,
@@ -331,6 +332,20 @@ export default function NoteScreen() {
     setStatus("saving");
     const { client } = await getDb();
     const now = Date.now();
+
+    // Histórico: snapshot do estado ANTERIOR (em claro) antes de sobrescrever —
+    // é o que gera as versões de edições feitas no celular. Vai com o hash do
+    // plaintext; no cofre o ciphertext muda a cada cifração e sem o hash a
+    // deduplicação (e a barreira de estado vazio) não funcionaria.
+    if (Object.keys(plainPatch).length > 0) {
+      await appendVersionIfChanged(client, {
+        note_id: saved.id,
+        title: saved.title,
+        body: saved.body,
+        content_hash: vaultRef.current ? versionContentHash(saved.title, saved.body) : null,
+        created_at: saved.updated_at || now,
+      });
+    }
     await updateNote(client, saved.id, patch);
     savedRef.current = { ...saved, ...plainPatch, updated_at: now };
     setStatus("saved");

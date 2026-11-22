@@ -1,5 +1,6 @@
 import type { Client } from "@libsql/client";
 import type { SyncPush } from "@/lib/sync-types";
+import { isBlankVersion } from "@/lib/note-versions";
 
 /**
  * Miolo PURO do cliente de sync — compartilhado entre as réplicas:
@@ -335,15 +336,27 @@ export async function applyPull(
     note_id: string;
     title: string;
     body: string;
+    content_hash?: string | null;
+    is_instance_snapshot?: number | boolean;
     created_at: number;
   }[]) || []) {
     if (!ver?.id || !ver?.note_id || !notasLocais.has(ver.note_id)) continue;
+    if (isBlankVersion(ver)) continue;
     const resVer = await local.execute({
       sql: `
-        INSERT OR IGNORE INTO note_versions (id, note_id, title, body, created_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT OR IGNORE INTO note_versions
+          (id, note_id, title, body, content_hash, is_instance_snapshot, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       `,
-      args: [ver.id, ver.note_id, ver.title ?? "", ver.body ?? "", ver.created_at || Date.now()],
+      args: [
+        ver.id,
+        ver.note_id,
+        ver.title ?? "",
+        ver.body ?? "",
+        ver.content_hash ?? null,
+        ver.is_instance_snapshot ? 1 : 0,
+        ver.created_at || Date.now(),
+      ],
     });
     if (resVer.rowsAffected > 0) pulledVersions++;
   }

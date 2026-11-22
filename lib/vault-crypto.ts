@@ -125,6 +125,25 @@ export function isEncrypted(value: string | null | undefined): boolean {
   return typeof value === "string" && value.startsWith(CIPHER_PREFIX);
 }
 
+/**
+ * O campo é ciphertext de uma string VAZIA?
+ *
+ * O GCM sempre adiciona 16 bytes de tag: ciphertext de "" tem exatamente 16
+ * bytes. Isso permite ao servidor (que nunca decifra) reconhecer uma versão
+ * de conteúdo vazio sem a chave — era o que deixava passar versões vazias do
+ * cofre, já que o ciphertext de "" é uma string "não vazia".
+ */
+export function isEncryptedEmpty(value: string | null | undefined): boolean {
+  if (!isEncrypted(value)) return false;
+  const parts = String(value).slice(CIPHER_PREFIX.length).split(":");
+  if (parts.length !== 2) return false;
+  try {
+    return base64ToBytes(parts[1]).length === 16;
+  } catch {
+    return false;
+  }
+}
+
 /** Cifra um texto com a DEK → "enc1:<iv>:<ct>" (iv de 12 bytes aleatório). */
 export function encryptString(dek: Uint8Array, plaintext: string): string {
   const iv = randomBytes(12);
@@ -160,6 +179,35 @@ export function decryptBytes(dek: Uint8Array, data: Uint8Array): Uint8Array {
   const ct = data.slice(12);
   return gcm(dek, iv).decrypt(ct);
 }
+
+/**
+ * Hash determinístico (SHA-256 hex) do CONTEÚDO EM CLARO de uma versão.
+ *
+ * O ciphertext do cofre muda a cada cifração (IV aleatório), então comparar
+ * title/body cifrados nunca detecta "mesmo conteúdo". O cliente calcula este
+ * hash antes de cifrar e manda junto no PATCH → `note_versions.content_hash`,
+ * que é o que a deduplicação do histórico compara. Formato estável entre web,
+ * desktop e mobile: sha256(<título>\x1f<corpo>) em UTF-8.
+ */
+export function versionContentHash(title: string, body: string): string {
+  const input = utf8ToBytes(`${title || ""}\u001f${body || ""}`);
+  return bytesToHex(sha256(input));
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  let out = "";
+  for (let i = 0; i < bytes.length; i++) {
+    out += (bytes[i] & 0xff).toString(16).padStart(2, "0");
+  }
+  return out;
+}
+
+/**
+ * Hash do conteúdo VAZIO (título e corpo em branco). O servidor não consegue
+ * decifrar o cofre, mas comparando o hash que o cliente manda com esta
+ * constante ele sabe que a versão é de estado vazio — e não grava.
+ */
+export const EMPTY_CONTENT_HASH = versionContentHash("", "");
 
 // ---------------------------------------------------------------------------
 // KDF / envelope da DEK

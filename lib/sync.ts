@@ -3,6 +3,7 @@ import type { SyncPush, SyncResult, PushedNote } from "@/lib/sync-types";
 import { logChange } from "@/lib/sync-log";
 import { syncBodyAutoTags } from "@/lib/url-autotag";
 import { deleteAttachmentFile } from "@/lib/storage";
+import { appendVersionIfChanged, ensureVersionColumns, isBlankVersion, shouldSnapshotInstance } from "@/lib/note-versions";
 import type { Client } from "@libsql/client";
 
 /**
@@ -57,8 +58,12 @@ async function hardDeleteNote(client: Client, noteId: string): Promise<void> {
 }
 
 /** Aplica o push de uma réplica com LWW. Retorna ids que perderam o conflito. */
-async function applyPush(client: Client, push: SyncPush): Promise<string[]> {
+/** Exportado também para os testes do motor (scripts/test-versions.mts). */
+export async function applyPush(client: Client, push: SyncPush): Promise<string[]> {
   const conflicts: string[] = [];
+  // Banco antigo sem content_hash/is_instance_snapshot? Migra antes de tocar
+  // nas versões (o sync também funciona sem `npm run db:init`).
+  await ensureVersionColumns(client);
 
   // Tombstones primeiro: exclusão vence update concorrente (docs/SYNC.md, regra 3)
   for (const tomb of push.tombstones || []) {
@@ -121,36 +126,23 @@ async function applyPush(client: Client, push: SyncPush): Promise<string[]> {
 
     const localUpdatedAt = Number(localRes.rows[0].updated_at);
     if ((note.updated_at || 0) > localUpdatedAt) {
-      // Versão do estado anterior — mesma regra da rota web (PUT /api/notes/[id]):
-      // snapshot do que estava no remoto antes do update da réplica, só quando
-      // o conteúdo mudou, sem duplicar a última versão. Sem isso, edições
-      // feitas no mobile/desktop não geram histórico (a rota web não é usada).
-      const prev = localRes.rows[0];
-      const prevTitle = ((prev.title as string) || "").trim();
-      const prevBody = ((prev.body as string) || "").trim();
-      const newTitle = (note.title ?? "").trim();
-      const newBody = (note.body ?? "").trim();
-      if ((prevTitle || prevBody) && (prevTitle !== newTitle || prevBody !== newBody)) {
-        const lastRes = await client.execute({
-          sql: `SELECT title, body FROM note_versions WHERE note_id = ? ORDER BY created_at DESC LIMIT 1`,
-          args: [note.id],
+      // Snapshot do que estava no remoto antes deste push. É linha de timeline
+      // (o estado que ESTA réplica viu), não edição do usuário: vai marcada
+      // como is_instance_snapshot e passa pela barreira de estado vazio.
+      //
+      // NOTA DO COFRE FICA DE FORA: o estado anterior é ciphertext e o servidor
+      // não consegue dizer se era vazio nem comparar conteúdo (IV aleatório) —
+      // era daqui que saíam versões de histórico vazias do cofre. As edições
+      // do cofre já geram versão no cliente, com hash do plaintext.
+      if (shouldSnapshotInstance({ is_vault: isVault })) {
+        const prev = localRes.rows[0];
+        await appendVersionIfChanged(client, {
+          note_id: note.id,
+          title: (prev.title as string) || "",
+          body: (prev.body as string) || "",
+          created_at: localUpdatedAt,
+          is_instance_snapshot: true,
         });
-        let isDuplicate = false;
-        if (lastRes.rows.length > 0) {
-          const lastV = lastRes.rows[0];
-          isDuplicate =
-            ((lastV.title as string) || "").trim() === prevTitle &&
-            ((lastV.body as string) || "").trim() === prevBody;
-        }
-        if (!isDuplicate) {
-          await client.execute({
-            sql: `
-              INSERT INTO note_versions (id, note_id, title, body, created_at)
-              VALUES (?, ?, ?, ?, ?)
-            `,
-            args: [crypto.randomUUID(), note.id, prevTitle, prevBody, localUpdatedAt],
-          });
-        }
       }
       await client.execute({
         sql: `
@@ -257,12 +249,16 @@ async function applyPush(client: Client, push: SyncPush): Promise<string[]> {
   // sobrescreve (INSERT OR IGNORE deduplica re-envios da marca d'água).
   // IMPORTANTE: OR IGNORE não cobre violação de FK — a nota pode ter sido
   // apagada no remoto entre syncs, então só entra versão de nota viva aqui.
+  // Linha de estado vazio (nota recém-criada no cofre) não entra: é lixo de
+  // histórico, e versões antigas sem hash continuam sendo comparadas por texto.
   for (const ver of push.versions || []) {
     if (!ver?.id || !ver?.note_id) continue;
+    if (isBlankVersion(ver)) continue;
     await client.execute({
       sql: `
-        INSERT OR IGNORE INTO note_versions (id, note_id, title, body, created_at)
-        SELECT ?, ?, ?, ?, ?
+        INSERT OR IGNORE INTO note_versions
+          (id, note_id, title, body, content_hash, is_instance_snapshot, created_at)
+        SELECT ?, ?, ?, ?, ?, ?, ?
         WHERE EXISTS (SELECT 1 FROM notes WHERE id = ?)
       `,
       args: [
@@ -270,6 +266,8 @@ async function applyPush(client: Client, push: SyncPush): Promise<string[]> {
         ver.note_id,
         ver.title ?? "",
         ver.body ?? "",
+        ver.content_hash ?? null,
+        ver.is_instance_snapshot ? 1 : 0,
         ver.created_at || Date.now(),
         ver.note_id,
       ],
@@ -306,6 +304,9 @@ async function collectChanges(
   conflicts: string[],
   versionsWatermark: number
 ): Promise<Record<string, unknown>> {
+  // A consulta de versões abaixo usa as colunas novas — migra antes (o
+  // pull/bootstrap também precisa funcionar sem `npm run db:init`).
+  await ensureVersionColumns(client);
   const logRes = await client.execute({
     sql: `SELECT seq, entity, entity_id, op FROM change_log WHERE seq > ? ORDER BY seq ASC`,
     args: [cursor],
@@ -388,7 +389,7 @@ async function collectChanges(
   // (não dependem do change_log; watermark 0 = bootstrap traz tudo, o que
   // backfilla também versões antigas criadas antes do sync de versões existir)
   const versionsRes = await client.execute({
-    sql: `SELECT id, note_id, title, body, created_at FROM note_versions WHERE created_at >= ?`,
+    sql: `SELECT id, note_id, title, body, content_hash, is_instance_snapshot, created_at FROM note_versions WHERE created_at >= ?`,
     args: [versionsWatermark],
   });
 

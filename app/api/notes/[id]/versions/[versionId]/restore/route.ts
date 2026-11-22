@@ -2,14 +2,17 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/turso";
 import { syncBodyAutoTags } from "@/lib/url-autotag";
 import { logChange } from "@/lib/sync-log";
-import crypto from "crypto";
+import { appendVersionIfChanged } from "@/lib/note-versions";
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string; versionId: string }> }
 ) {
   try {
     const { id, versionId } = await params;
+    // O cliente do cofre manda o hash do plaintext do estado ATUAL (o
+    // servidor não consegue calcular com ciphertext).
+    const body = await request.json().catch(() => null);
 
     // Busca a versão solicitada
     const versionResult = await db.execute({
@@ -37,19 +40,16 @@ export async function POST(
       const restoreTitle = (version.title as string) || "";
       const restoreBody = (version.body as string) || "";
 
+      // Não repete o histórico com estado vazio nem com a mesma versão
+      // (hash do plaintext vindo no corpo, pra funcionar no cofre).
       if (curTitle !== restoreTitle || curBody !== restoreBody) {
-        await db.execute({
-          sql: `
-            INSERT INTO note_versions (id, note_id, title, body, created_at)
-            VALUES (?, ?, ?, ?, ?)
-          `,
-          args: [
-            crypto.randomUUID(),
-            id,
-            curTitle,
-            curBody,
-            (cur.updated_at as number) || now,
-          ],
+        await appendVersionIfChanged(db, {
+          note_id: id,
+          title: curTitle,
+          body: curBody,
+          content_hash:
+            typeof body?.prev_content_hash === "string" ? body.prev_content_hash : null,
+          created_at: (cur.updated_at as number) || now,
         });
       }
     }

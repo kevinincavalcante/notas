@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/turso";
-import crypto from "crypto";
 import { getTagsByNoteId } from "@/lib/tags";
 import { syncBodyAutoTags } from "@/lib/url-autotag";
 import { logChange } from "@/lib/sync-log";
 import { deleteAttachmentFile } from "@/lib/storage";
+import { appendVersionIfChanged } from "@/lib/note-versions";
 
 export async function GET(
   _request: Request,
@@ -59,7 +59,18 @@ export async function PATCH(
     const updates: string[] = [];
     const values: any[] = [];
 
-    // Se title ou body foram modificados, salva snapshot no histórico (sem duplicatas)
+    // Hash do CONTEÚDO EM CLARO da versão anterior e do novo (o cofre manda;
+    // nunca é persistido na nota, só no histórico). Fora de allowedFields.
+    const prevContentHash =
+      typeof body.prev_content_hash === "string" && body.prev_content_hash
+        ? body.prev_content_hash
+        : null;
+    const newContentHash =
+      typeof body.content_hash === "string" && body.content_hash ? body.content_hash : null;
+
+    // Se title ou body foram modificados, salva snapshot no histórico (sem
+    // duplicatas — no cofre a comparação é pelo hash do plaintext, já que o
+    // ciphertext muda a cada cifração por causa do IV aleatório).
     if ("title" in body || "body" in body) {
       const currentResult = await db.execute({
         sql: `SELECT title, body, updated_at FROM notes WHERE id = ?`,
@@ -68,46 +79,27 @@ export async function PATCH(
 
       if (currentResult.rows.length > 0) {
         const cur = currentResult.rows[0];
-        const curTitle = ((cur.title as string) || "").trim();
-        const curBody = ((cur.body as string) || "").trim();
-        const newTitle = "title" in body ? (body.title || "").trim() : curTitle;
-        const newBody = "body" in body ? (body.body || "").trim() : curBody;
+        const curTitle = (cur.title as string) || "";
+        const curBody = (cur.body as string) || "";
+        const newTitle = "title" in body ? (body.title || "") : curTitle;
+        const newBody = "body" in body ? (body.body || "") : curBody;
 
-        // Só cria versão se o conteúdo realmente mudou em relação ao estado atual
-        if (curTitle !== newTitle || curBody !== newBody) {
-          if (curTitle || curBody) {
-            // Verifica se a última versão no histórico já não possui exatamente esse mesmo conteúdo
-            const lastVersionRes = await db.execute({
-              sql: `SELECT title, body FROM note_versions WHERE note_id = ? ORDER BY created_at DESC LIMIT 1`,
-              args: [id],
-            });
+        // Mudou de verdade? Com os dois hashes (cofre) a resposta é exata;
+        // sem eles cai na comparação de texto (notas normais).
+        const changed =
+          prevContentHash && newContentHash
+            ? prevContentHash !== newContentHash
+            : curTitle.trim() !== String(newTitle).trim() ||
+              curBody.trim() !== String(newBody).trim();
 
-            let isDuplicate = false;
-            if (lastVersionRes.rows.length > 0) {
-              const lastV = lastVersionRes.rows[0];
-              const lastTitle = ((lastV.title as string) || "").trim();
-              const lastBody = ((lastV.body as string) || "").trim();
-              if (lastTitle === curTitle && lastBody === curBody) {
-                isDuplicate = true;
-              }
-            }
-
-            if (!isDuplicate) {
-              await db.execute({
-                sql: `
-                  INSERT INTO note_versions (id, note_id, title, body, created_at)
-                  VALUES (?, ?, ?, ?, ?)
-                `,
-                args: [
-                  crypto.randomUUID(),
-                  id,
-                  cur.title as string,
-                  cur.body as string,
-                  (cur.updated_at as number) || Date.now(),
-                ],
-              });
-            }
-          }
+        if (changed) {
+          await appendVersionIfChanged(db, {
+            note_id: id,
+            title: curTitle,
+            body: curBody,
+            content_hash: prevContentHash,
+            created_at: (cur.updated_at as number) || Date.now(),
+          });
         }
       }
     }

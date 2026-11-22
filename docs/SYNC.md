@@ -65,6 +65,19 @@ morrem junto com a nota. Então não precisam de LWW, tombstone nem log:
   conteúdo mudou, sem duplicar a última versão, `created_at` = `updated_at`
   do estado anterior). A réplica recebe a versão de volta pelo pull da
   watermark, então o histórico do celular/desktop se enche sozinho.
+  Esse snapshot vai marcado com `is_instance_snapshot = 1` (linha de timeline,
+  não edição do usuário).
+- **Nota do cofre não gera snapshot no `applyPush`**: o estado anterior é
+  ciphertext e o servidor não consegue saber se era vazio nem comparar
+  conteúdo (o IV é aleatório, então o mesmo texto vira ciphertext diferente a
+  cada cifração). Quem cria a versão do cofre é o próprio cliente, no save,
+  mandando `content_hash` (SHA-256 do plaintext) no PATCH — ver
+  `lib/note-versions.ts`.
+- **`content_hash` e estado vazio**: a deduplicação compara
+  `note_versions.content_hash` quando as duas pontas têm hash; sem hash cai na
+  comparação de texto. Versão de conteúdo vazio nunca entra (o hash de `""` +
+  `""` é barrado, e o ciphertext de vazio — 16 bytes de tag GCM — também é
+  reconhecido sem decifrar).
 
 ## Tags e vínculos: estado derivado (não sincronizado)
 

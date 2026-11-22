@@ -1,4 +1,5 @@
 import type { Client, InStatement } from "@libsql/client";
+import { EMPTY_CONTENT_HASH, isEncrypted, isEncryptedEmpty } from "../../../lib/vault-crypto";
 
 /**
  * Camada de dados local do celular — mesma estrutura do desktop:
@@ -229,6 +230,85 @@ export async function deleteNote(client: Client, id: string): Promise<void> {
   await client.execute({ sql: `DELETE FROM notes WHERE id = ?`, args: [id] });
   await client.execute({ sql: `DELETE FROM note_versions WHERE note_id = ?`, args: [id] });
   await logChange(client, "tombstone", id, "delete");
+}
+
+// ---- Histórico de versões ----
+
+/**
+ * Histórico de versões — mesmas regras de lib/note-versions.ts.
+ *
+ * `content_hash` é o hash do CONTEÚDO EM CLARO: no cofre title/body são
+ * ciphertext com IV aleatório, então só o hash identifica "mesmo conteúdo" e
+ * revela estado vazio (hash de ""+""). Estado vazio nunca entra no histórico.
+ *
+ * Não lança: histórico quebrado não pode derrubar o save da nota.
+ * @returns true se a linha entrou.
+ */
+export async function appendVersionIfChanged(
+  client: Client,
+  snapshot: {
+    note_id: string;
+    title: string;
+    body: string;
+    content_hash?: string | null;
+    created_at: number;
+    is_instance_snapshot?: boolean;
+  }
+): Promise<boolean> {
+  try {
+    const hash = snapshot.content_hash ? String(snapshot.content_hash) : "";
+    // Vazio (hash do vazio, ou ciphertext de "" nas duas pontas) não vira versão
+    if (hash === EMPTY_CONTENT_HASH) return false;
+    if (!hash) {
+      const t = snapshot.title || "";
+      const b = snapshot.body || "";
+      if (!t.trim() && !b.trim()) return false;
+      if (isEncrypted(t) && isEncrypted(b) && isEncryptedEmpty(t) && isEncryptedEmpty(b)) {
+        return false;
+      }
+    }
+    const lastRes = await client.execute({
+      sql: `SELECT title, body, content_hash, created_at
+            FROM note_versions WHERE note_id = ?
+            ORDER BY created_at DESC LIMIT 1`,
+      args: [snapshot.note_id],
+    });
+    const prev = lastRes.rows[0];
+    if (prev) {
+      const prevTitle = String(prev.title ?? "");
+      const prevBody = String(prev.body ?? "");
+      const prevHash = prev.content_hash ? String(prev.content_hash) : "";
+      const same =
+        prevHash && hash
+          ? prevHash === hash
+          : prevTitle.trim() === (snapshot.title || "").trim() &&
+            prevBody.trim() === (snapshot.body || "").trim();
+      if (same) return false;
+    }
+
+    // ids por sequência: o mobile pode rodar sem crypto.randomUUID
+    const id = `ver-${snapshot.note_id}-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
+    await client.execute({
+      sql: `
+        INSERT OR IGNORE INTO note_versions
+          (id, note_id, title, body, content_hash, is_instance_snapshot, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+      args: [
+        id,
+        snapshot.note_id,
+        snapshot.title ?? "",
+        snapshot.body ?? "",
+        snapshot.content_hash ?? null,
+        snapshot.is_instance_snapshot ? 1 : 0,
+        snapshot.created_at || Date.now(),
+      ],
+    });
+    return true;
+  } catch (e) {
+    console.warn("Falha ao gravar versão da nota:", e);
+    return false;
+  }
 }
 
 export async function rawExecute(client: Client, stmt: InStatement) {

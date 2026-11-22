@@ -72,6 +72,7 @@ O script já gera a linha com os escapes necessários pronta para ser copiada e 
 - **Busca**: notas do cofre ficam FORA do índice FTS5 (triggers filtram `is_vault`); busca do cofre é client-side em memória.
 - **UI**: aba `/vault` (destravar/criar senha/trocar senha/travar), "Mover para o cofre" no menu de contexto do Sidebar, auto-lock por inatividade (10 min).
 - **Mobile**: biometria via `expo-local-authentication` + DEK no SecureStore (`expo-secure-store`).
+- **Histórico**: no cofre o ciphertext muda a cada cifração (IV aleatório), então a deduplicação compara `note_versions.content_hash` — SHA-256 do **plaintext**, calculado no cliente e enviado no PATCH como `prev_content_hash`/`content_hash`. Estado vazio nunca vira versão (nem o ciphertext de `""`, que tem sempre 16 bytes de tag GCM). Regras em `lib/note-versions.ts`.
 - **Detalhes**: `docs/VAULT.md` · teste E2E: `npx tsx scripts/test-vault.mts`.
 
 ---
@@ -90,6 +91,12 @@ npm run db:init
 
 # Reconstruir índice FTS5 de busca (se a busca retornar vazio silenciosamente)
 npm run db:rebuild
+
+# Limpar lixo do histórico antigo (dry-run; use --apply para apagar)
+npm run db:purge-blank-versions
+
+# Regras do histórico de versões (dedup por hash, vazio, cofre)
+npm run test:versions
 
 # Gerar hash de senha
 node scripts/hash-password.mjs "senha"

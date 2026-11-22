@@ -1,4 +1,5 @@
 import type { Client } from "@libsql/client";
+import { migrateVersionColumns } from "./db-migrate";
 
 /**
  * Schema completo de uma réplica local (desktop/SQLite em arquivo).
@@ -39,6 +40,8 @@ export const SCHEMA_STATEMENTS: string[] = [
     note_id TEXT NOT NULL,
     title TEXT NOT NULL,
     body TEXT NOT NULL,
+    content_hash TEXT DEFAULT NULL,
+    is_instance_snapshot INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
   )`,
@@ -135,6 +138,7 @@ export async function ensureSchema(client: Client): Promise<void> {
     await client.execute(statement);
   }
   await migrateVaultColumns(client);
+  await migrateVersionColumns(client);
   await refreshFtsTriggers(client);
 }
 

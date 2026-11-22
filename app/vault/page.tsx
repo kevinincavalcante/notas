@@ -46,6 +46,13 @@ export default function VaultPage() {
   }, [vault.status, router]);
 
   const [notes, setNotes] = useState<Note[]>([]); // sempre descriptografadas na UI
+
+  /**
+   * Último estado visto de cada nota (título/corpo em claro) — usado ao fechar
+   * a aba para DESCARTAR a nota se ela estiver vazia. O cofre web não fazia
+   * isso: cada "nova nota" abandonada ficava no banco e no sync.
+   */
+  const latestNoteRef = useRef<Record<string, { title: string; body: string }>>({});
   const [, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
@@ -123,6 +130,11 @@ export default function VaultPage() {
     setSelectedNote(n);
   }
 
+  /**
+   * Fecha a aba e, se a nota ficou VAZIA (sem título, corpo e anexos),
+   * descarta do servidor. Antes, toda "nova nota" abandonada no cofre ficava
+   * no banco — e cada save dela ainda gerava versão vazia no histórico.
+   */
   function closeTab(tabId: string) {
     if (!openTabs.includes(tabId)) return;
     const idx = openTabs.indexOf(tabId);
@@ -132,6 +144,30 @@ export default function VaultPage() {
       const next = rest.length > 0 ? rest[Math.min(idx, rest.length - 1)] : null;
       setActiveTabId(next);
       setSelectedNote(next ? notes.find((n) => n.id === next) || null : null);
+    }
+    void discardIfEmpty(tabId);
+  }
+
+  /** Apaga a nota do servidor se ela estiver sem nenhum conteúdo (force = o
+   *  editor já confirmou que está vazia, mesmo que o estado local esteja atrás). */
+  async function discardIfEmpty(noteId: string, force = false) {
+    const current = notes.find((n) => n.id === noteId);
+    if (!current) return;
+    if ((current.attachments?.length ?? 0) > 0) return;
+    if (!force) {
+      const latest = latestNoteRef.current[noteId];
+      const title = (latest?.title ?? current.title ?? "").trim();
+      const body = (latest?.body ?? current.body ?? "").trim();
+      if (title || body) return;
+    }
+
+    delete latestNoteRef.current[noteId];
+    setNotes((prev) => prev.filter((n) => n.id !== noteId));
+    if (selectedNote?.id === noteId) setSelectedNote(null);
+    try {
+      await fetch(`/api/notes/${noteId}`, { method: "DELETE" });
+    } catch (err) {
+      console.warn("Falha ao descartar nota vazia do cofre:", err);
     }
   }
 
@@ -270,6 +306,15 @@ export default function VaultPage() {
     if (!noteId) return;
     const { skipPatch, ...fields } = updatedFields;
 
+    // Guarda o texto em claro mais recente (usado no descarte de nota vazia)
+    if (typeof fields.title === "string" || typeof fields.body === "string") {
+      const prev = latestNoteRef.current[noteId] || { title: "", body: "" };
+      latestNoteRef.current[noteId] = {
+        title: typeof fields.title === "string" ? fields.title : prev.title,
+        body: typeof fields.body === "string" ? fields.body : prev.body,
+      };
+    }
+
     setNotes((prev) =>
       prev.map((n) => (n.id === noteId ? { ...n, ...fields, updated_at: Date.now() } : n))
     );
@@ -279,7 +324,10 @@ export default function VaultPage() {
 
     if (skipPatch || !vault.dek) return;
 
-    // Campos de texto vão cifrados; flags ficam em claro (são só metadata)
+    // Campos de texto vão cifrados; flags ficam em claro (são só metadata).
+    // prev_content_hash: hash do CONTEÚDO ANTERIOR em claro — o servidor não
+    // consegue calculá-lo com ciphertext (IV aleatório) e é ele que evita
+    // versões repetidas/vazias no histórico.
     const payload: Record<string, unknown> = {};
     if (typeof fields.title === "string") payload.title = vault.encryptString(fields.title);
     if (typeof fields.body === "string") payload.body = vault.encryptString(fields.body);
@@ -287,6 +335,15 @@ export default function VaultPage() {
     if ("is_archived" in fields) payload.is_archived = fields.is_archived;
     if ("color" in fields) payload.color = fields.color;
     if (Object.keys(payload).length === 0) return;
+
+    if ("title" in payload || "body" in payload) {
+      const prevTitle = selectedNote?.title ?? "";
+      const prevBody = selectedNote?.body ?? "";
+      const nextTitle = typeof fields.title === "string" ? fields.title : prevTitle;
+      const nextBody = typeof fields.body === "string" ? fields.body : prevBody;
+      payload.prev_content_hash = vault.contentHash(prevTitle, prevBody);
+      payload.content_hash = vault.contentHash(nextTitle, nextBody);
+    }
 
     await fetch(`/api/notes/${noteId}`, {
       method: "PATCH",
@@ -611,6 +668,7 @@ export default function VaultPage() {
                     }
                   }}
                   onAfterAttachmentChange={() => void loadNotes()}
+                  onDiscardIfEmpty={(id) => void discardIfEmpty(id, true)}
                 />
               </div>
             );

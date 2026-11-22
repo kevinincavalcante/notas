@@ -10,6 +10,7 @@
     "start": "next start",
     "db:init": "node scripts/init-db.mjs",
     "db:rebuild": "node scripts/init-db.mjs --rebuild-fts",
+    "db:purge-blank-versions": "node scripts/purge-blank-versions.mjs",
     "test:sync": "tsx scripts/test-sync.mts",
     "test:auto-list": "tsx scripts/test-auto-list.mts",
     "apk": "bash scripts/build-apk.sh",
@@ -17,6 +18,7 @@
     "test:sync:mobile": "tsx scripts/test-sync-mobile.mts",
     "test:vault": "tsx scripts/test-vault.mts",
     "test:vault:sync": "tsx scripts/test-vault-sync.mts",
+    "test:versions": "tsx scripts/test-versions.mts",
     "electron:bundle": "esbuild electron/main.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist-electron/main.cjs && cp electron/preload.cjs dist-electron/",
     "electron:start": "npm run build && npm run electron:bundle && electron .",
     "electron:deb": "npm run build && npm run electron:bundle && electron-builder --linux deb"

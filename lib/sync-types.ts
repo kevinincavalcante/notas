@@ -42,6 +42,10 @@ export interface PushedVersion {
   note_id: string;
   title: string;
   body: string;
+  /** hash do CONTEÚDO EM CLARO (dedup no cofre, onde o ciphertext muda a cada cifração) */
+  content_hash?: string | null;
+  /** 1 = snapshot de timeline criado pelo sync, não edição do usuário */
+  is_instance_snapshot?: number | boolean;
   created_at: number;
 }
 

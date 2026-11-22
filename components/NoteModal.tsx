@@ -83,6 +83,11 @@ interface NoteModalProps {
   onAfterAttachmentChange?: () => void;
   /** Mapa de blob URLs já descriptografados (ex: vindos da lista do cofre) */
   attachmentSrcMap?: Record<string, string>;
+  /**
+   * Chamado no unmount quando a nota ficou VAZIA (sem título, corpo e anexos).
+   * O cofre web usa isso pra não deixar nota nova abandonada no banco.
+   */
+  onDiscardIfEmpty?: (noteId: string) => void;
 }
 
 export default function NoteModal({
@@ -96,6 +101,7 @@ export default function NoteModal({
   onRemoveAttachment,
   onAfterAttachmentChange,
   attachmentSrcMap,
+  onDiscardIfEmpty,
 }: NoteModalProps) {
   const { confirm, showToast } = useUI();
   const vault = useVault();
@@ -129,9 +135,29 @@ export default function NoteModal({
     latestStateRef.current = { title, body, color, isPinned, isArchived };
   }, [title, body, color, isPinned, isArchived]);
 
-  // Reseta os campos apenas ao abrir OUTRA nota (id muda)
+  // Aba fechada/desmontada com a nota VAZIA (sem texto e sem anexo): avisa o
+  // pai para descartar o registro. Mesmo contrato do NoteEditor da tela
+  // inicial — sem isso, cada "nova nota" abandonada no cofre virava lixo no
+  // banco (e no sync), junto com versões vazias no histórico.
+  const noteRef = useRef(note);
   useEffect(() => {
-    setTitle(note.title);
+    noteRef.current = note;
+  }, [note]);
+  const onDiscardRef = useRef(onDiscardIfEmpty);
+  useEffect(() => {
+    onDiscardRef.current = onDiscardIfEmpty;
+  });
+  useEffect(() => {
+    return () => {
+      const current = latestStateRef.current;
+      if (current.title.trim() || current.body.trim()) return;
+      if ((noteRef.current.attachments?.length ?? 0) > 0) return;
+      onDiscardRef.current?.(noteRef.current.id);
+    };
+  }, []);
+
+  // Reseta os campos apenas ao abrir OUTRA nota (id muda)
+  useEffect(() => {    setTitle(note.title);
     setBody(repairImageTitles(note.body));
     setColor(note.color);
     setIsPinned(note.is_pinned);
@@ -234,6 +260,14 @@ export default function NoteModal({
     try {
       const res = await fetch(`/api/notes/${note.id}/versions/${version.id}/restore`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // Cofre: hash do conteúdo ATUAL em claro — o servidor só vê ciphertext
+        // e precisa dele pra não duplicar/gravar versão vazia no histórico.
+        body: JSON.stringify(
+          isVaultNote && vault.dek
+            ? { prev_content_hash: vault.contentHash(title, body) }
+            : {}
+        ),
       });
       const data = await res.json();
       if (res.ok && data.note) {

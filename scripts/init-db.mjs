@@ -145,10 +145,26 @@ async function main() {
         note_id TEXT NOT NULL,
         title TEXT NOT NULL,
         body TEXT NOT NULL,
+        content_hash TEXT DEFAULT NULL,
+        is_instance_snapshot INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
         FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
       );
     `);
+
+    // Migração idempotente: content_hash / is_instance_snapshot (histórico do
+    // cofre — dedup pelo hash do plaintext; ver lib/db-migrate.ts)
+    const versionCols = await db.execute(`PRAGMA table_info(note_versions)`);
+    if (!versionCols.rows.some((row) => row.name === "content_hash")) {
+      await db.execute(`ALTER TABLE note_versions ADD COLUMN content_hash TEXT DEFAULT NULL`);
+      console.log("✅ Coluna 'content_hash' adicionada à tabela note_versions");
+    }
+    if (!versionCols.rows.some((row) => row.name === "is_instance_snapshot")) {
+      await db.execute(
+        `ALTER TABLE note_versions ADD COLUMN is_instance_snapshot INTEGER NOT NULL DEFAULT 0`
+      );
+      console.log("✅ Coluna 'is_instance_snapshot' adicionada à tabela note_versions");
+    }
 
     console.log("Criando índice para 'note_versions'...");
     await db.execute(`

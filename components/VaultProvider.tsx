@@ -17,6 +17,7 @@ import {
   decryptString,
   encryptBytes,
   decryptBytes,
+  versionContentHash,
   DEFAULT_ITERATIONS,
 } from "@/lib/vault-crypto";
 import { useUI } from "@/components/UIProvider";
@@ -62,6 +63,8 @@ interface VaultContextValue {
   decryptString: (s: string) => string;
   encryptBytes: (b: Uint8Array) => Uint8Array;
   decryptBytes: (b: Uint8Array) => Uint8Array;
+  /** Hash do conteúdo EM CLARO (dedup do histórico do cofre). */
+  contentHash: (title: string, body: string) => string;
 }
 
 const VaultContext = createContext<VaultContextValue | null>(null);
@@ -347,6 +350,7 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
       decryptString: (s: string) => decryptString(requireDek(), s),
       encryptBytes: (b: Uint8Array) => encryptBytes(requireDek(), b),
       decryptBytes: (b: Uint8Array) => decryptBytes(requireDek(), b),
+      contentHash: versionContentHash,
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [status, dek, busy, ensureUnlocked, unlock, setup, resetVault, lock, changePassword]
