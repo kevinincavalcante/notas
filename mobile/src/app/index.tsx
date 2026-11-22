@@ -46,6 +46,19 @@ import {
 import { getLastSync, notifyLocalChange, onSynced, scheduleQuietSync, setLocalClientProvider, syncQuiet, type SyncApiConfig } from "../lib/sync";
 
 /**
+ * Lupa desenhada com Views (sem dependência de fonte de ícone): anel +
+ * cabo a 45°, no estilo do botão de busca do Anytype.
+ */
+function SearchGlyph() {
+  return (
+    <View style={styles.glyph}>
+      <View style={styles.glyphLens} />
+      <View style={styles.glyphHandle} />
+    </View>
+  );
+}
+
+/**
  * Home — estilo OneNote: blocos com as notas recentes e chips de
  * marcadores deslizando na horizontal. Long-press: fixar/arquivar/excluir.
  */
@@ -604,10 +617,7 @@ export default function HomeScreen() {
       <TopBar
         user={user}
         onAvatar={() => router.push("/config")}
-        right={[
-          { label: "⌕", onPress: () => router.push("/search") },
-          { label: "🔒", onPress: () => router.push("/vault") },
-        ]}
+        right={[{ label: "🔒", onPress: () => router.push("/vault") }]}
       />
       <ChipsRow tags={tags} active={activeTag} onSelect={setActiveTag} />
 
@@ -732,6 +742,25 @@ export default function HomeScreen() {
         </Pressable>
       )}
 
+      {/* Busca flutuante no canto inferior esquerdo (estilo Anytype): sempre
+          ao alcance do polegar, sem roubar espaço da lista. Abre a tela de
+          pesquisa normal. Escondida no modo seleção, como o FAB. */}
+      {!selectionMode && (
+        <Pressable
+          style={({ pressed }) => [
+            styles.searchFab,
+            { position: "absolute", left: 20, bottom: 24 + insets.bottom },
+            pressed && { transform: [{ scale: 0.95 }] },
+          ]}
+          onPress={() => router.push("/search")}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Pesquisar notas"
+        >
+          <SearchGlyph />
+        </Pressable>
+      )}
+
       <ActionSheet visible={Boolean(sheetNote)} items={sheetItems} onClose={() => setSheetNote(null)} />
       <ActionSheet
         visible={createSheetOpen}
@@ -840,6 +869,47 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
     elevation: 6,
+  },
+  /** Botão flutuante de busca (canto inferior esquerdo, estilo Anytype). */
+  searchFab: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: "#27272a",
+    borderWidth: 1,
+    borderColor: "#3f3f46",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOpacity: 0.45,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+  /** Lupa desenhada: anel + cabo (sem depender de fonte de ícones). */
+  glyph: {
+    width: 24,
+    height: 24,
+  },
+  glyphLens: {
+    position: "absolute",
+    top: 2,
+    left: 2,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    borderWidth: 2,
+    borderColor: "#fafafa",
+  },
+  glyphHandle: {
+    position: "absolute",
+    top: 14,
+    left: 14,
+    width: 8,
+    height: 2,
+    borderRadius: 1,
+    backgroundColor: "#fafafa",
+    transform: [{ rotate: "45deg" }],
   },
   syncLine: {
     paddingHorizontal: 16,
