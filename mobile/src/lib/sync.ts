@@ -12,15 +12,41 @@ import { syncOnceHttp } from "../../../lib/sync-http";
 const subs = new Set<() => void>();
 
 /**
- * Provedor do banco local — setado no boot do app (evita importar o
- * expo-sqlite aqui, o que arrastaria react-native pro teste em Node).
+ * Provedor do banco local — registrado no boot (db.ts) para evitar importar
+ * expo-sqlite aqui, o que arrastaria react-native pro teste em Node.
+ *
+ * Fica DEFERIDO de propósito: um sync pode começar antes do banco abrir (o
+ * AppState "active" do cold start dispara junto com o boot). Antes isso
+ * virava o erro "banco local não inicializado" na cara do usuário; agora a
+ * chamada espera o provedor ser registrado e segue — o "toque pra tentar de
+ * novo" deixa de ser necessário.
  */
-let clientProvider: () => Promise<Client> = async () => {
-  throw new Error("banco local não inicializado");
-};
+let clientProvider: (() => Promise<Client>) | null = null;
+let resolveProvider: ((fn: () => Promise<Client>) => void) | null = null;
+const providerReady = new Promise<() => Promise<Client>>((resolve) => {
+  resolveProvider = resolve;
+});
 
 export function setLocalClientProvider(fn: () => Promise<Client>): void {
   clientProvider = fn;
+  resolveProvider?.(fn);
+  resolveProvider = null;
+}
+
+/** Espera o provedor (com teto, pra nunca pendurar um sync pra sempre). */
+async function getClientProvider(): Promise<() => Promise<Client>> {
+  if (clientProvider) return clientProvider;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      providerReady,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("banco local não inicializado")), 5000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /** Chama `fn` ao fim de cada sync ou alteração local (pra telas recarregarem). */
@@ -53,7 +79,8 @@ export async function syncQuiet(api: SyncApiConfig): Promise<boolean> {
 
   activeSyncPromise = (async () => {
     try {
-      const client = await clientProvider();
+      const provider = await getClientProvider();
+      const client = await provider();
       lastResult = await syncOnceHttp(client, api);
       lastError = null;
       subs.forEach((fn) => fn());

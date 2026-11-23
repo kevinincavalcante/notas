@@ -2,6 +2,7 @@ import { openDatabaseSync, type SQLiteDatabase } from "expo-sqlite";
 import type { Client } from "@libsql/client";
 import { ensureSchema } from "../../../lib/db-schema";
 import { createExpoClient } from "./sqlite-client";
+import { setLocalClientProvider } from "./sync";
 
 export * from "./db-core";
 
@@ -20,3 +21,10 @@ export function getDb(): Promise<{ db: SQLiteDatabase; client: Client }> {
   }
   return dbp;
 }
+
+/**
+ * Registra o provedor JÁ no import deste módulo (não espera a Home montar).
+ * Sem isso, um sync disparado pelo AppState no cold start (ou pelo share)
+ * podia rodar antes do banco abrir e mostrar "banco local não inicializado".
+ */
+setLocalClientProvider(() => getDb().then((d) => d.client));

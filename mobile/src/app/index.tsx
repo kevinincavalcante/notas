@@ -43,7 +43,7 @@ import {
   login,
   setApiUrl,
 } from "../lib/api";
-import { getLastSync, notifyLocalChange, onSynced, scheduleQuietSync, setLocalClientProvider, syncQuiet, type SyncApiConfig } from "../lib/sync";
+import { getLastSync, notifyLocalChange, onSynced, scheduleQuietSync, syncQuiet, type SyncApiConfig } from "../lib/sync";
 
 /**
  * Lupa desenhada com Views (sem dependência de fonte de ícone): anel +
@@ -129,7 +129,8 @@ export default function HomeScreen() {
   useEffect(() => {
     (async () => {
       await getDb(); // força schema/abertura antes de qualquer tela
-      setLocalClientProvider(() => getDb().then((d) => d.client));
+      // O provedor do banco já é registrado no import de lib/db.ts — um sync
+      // que chegue antes disso espera em vez de falhar.
       const [t, u, url] = await Promise.all([getStoredToken(), getStoredUser(), getApiUrl()]);
       setToken(t);
       setUser(u);
