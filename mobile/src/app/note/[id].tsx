@@ -10,7 +10,7 @@ import NoteReadMode from "../../components/note/NoteReadMode";
 import NoteEditToolbar, { RecordingBanner } from "../../components/note/NoteEditToolbar";
 import AttachmentChips from "../../components/note/AttachmentChips";
 import { useNoteMedia } from "../../hooks/useNoteMedia";
-import { autoList } from "../../lib/auto-list";
+import { autoList, isSingleInsertion } from "../../lib/auto-list";
 import { fetchLinkMeta, isCardWorthy, type LinkMeta } from "../../lib/link-meta";
 import { extractUrls } from "../../../../lib/extract-urls";
 import {
@@ -226,9 +226,11 @@ export default function NoteScreen() {
     };
   }, [body, mode]);
 
-  // lista numerada automática: texto anterior + flag do Enter
+  // lista numerada automática: texto anterior + seleção conhecida + override temporário
   const prevBodyRef = useRef("");
-  const enterRef = useRef(false);
+  const selectionRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 });
+  const selOverrideRef = useRef<{ start: number; end: number } | undefined>(undefined);
+  const selTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const savedRef = useRef<NoteRow | null>(null); // snapshot do que já foi gravado
   const bodyRef = useRef<TextInputInstance | null>(null);
@@ -401,6 +403,7 @@ export default function NoteScreen() {
     savedRef.current = view;
     latestRef.current = { title: view.title, body: view.body, color: view.color };
     prevBodyRef.current = view.body;
+    selectionRef.current = view.body === "" ? { start: 0, end: 0 } : { start: -1, end: -1 };
     setTitle(view.title);
     setBody(view.body);
     setColor(view.color);
@@ -451,36 +454,89 @@ export default function NoteScreen() {
     } else {
       setBody(value);
       latestRef.current.body = value;
+      prevBodyRef.current = value;
     }
     setStatus("unsaved");
   }
 
+  function clearSelOverride() {
+    if (selTimerRef.current) {
+      clearTimeout(selTimerRef.current);
+      selTimerRef.current = null;
+    }
+    if (selOverrideRef.current) {
+      selOverrideRef.current = undefined;
+      setSelOverride(undefined);
+    }
+  }
+
+  function pushSelOverride(cursor: number) {
+    if (selTimerRef.current) clearTimeout(selTimerRef.current);
+    const nextSel = { start: cursor, end: cursor };
+    selectionRef.current = nextSel;
+    selOverrideRef.current = nextSel;
+    setSelOverride(nextSel);
+    selTimerRef.current = setTimeout(() => {
+      selTimerRef.current = null;
+      if (selOverrideRef.current === nextSel) {
+        selOverrideRef.current = undefined;
+        setSelOverride(undefined);
+      }
+    }, 150);
+  }
+
   // lista numerada automática: intercepta a digitação e aplica as regras
   function onBodyChange(text: string) {
-    const edit = autoList(prevBodyRef.current, text, { enter: enterRef.current });
-    enterRef.current = false;
+    const prev = prevBodyRef.current;
+    const curSel = selectionRef.current;
+    const cursorBefore =
+      curSel.start >= 0 && curSel.start === curSel.end ? curSel.start : undefined;
+    const edit = autoList(prev, text, { cursorBefore });
     if (edit) {
-      setBody(edit.text);
-      prevBodyRef.current = edit.text;
-      if (edit.cursor >= 0) setSelOverride({ start: edit.cursor, end: edit.cursor });
+      if (edit.cursor >= 0) {
+        pushSelOverride(edit.cursor);
+      } else {
+        clearSelOverride();
+      }
       touch("body", edit.text);
       return;
     }
-    prevBodyRef.current = text;
+    clearSelOverride();
+    // Mantém selectionRef sincronizado durante digitação rápida antes do próximo onSelectionChange
+    if (cursorBefore !== undefined) {
+      if (isSingleInsertion(prev, text, cursorBefore)) {
+        selectionRef.current = { start: cursorBefore + 1, end: cursorBefore + 1 };
+      } else if (
+        prev.length - 1 === text.length &&
+        cursorBefore > 0 &&
+        text === prev.slice(0, cursorBefore - 1) + prev.slice(cursorBefore)
+      ) {
+        selectionRef.current = { start: cursorBefore - 1, end: cursorBefore - 1 };
+      } else {
+        selectionRef.current = { start: -1, end: -1 };
+      }
+    }
     touch("body", text);
   }
 
-  // sai do modo "cursor empurrado" na primeira seleção que não for a nossa
+  // Solta o controle de seleção assim que o TextInput confirma o cursor empurrado
   function onBodySelection(sel: { start: number; end: number }) {
-    setSelOverride((current) =>
-      current && current.start === sel.start && current.end === sel.end ? current : undefined
-    );
+    const target = selOverrideRef.current;
+    if (target) {
+      if (sel.start === target.start && sel.end === target.end) {
+        clearSelOverride();
+        selectionRef.current = sel;
+      }
+      return;
+    }
+    selectionRef.current = sel;
   }
 
   // sai da tela = salva o que ficou pendente
   useEffect(() => {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
+      if (selTimerRef.current) clearTimeout(selTimerRef.current);
       void flushSave();
     };
   }, [flushSave]);
@@ -571,6 +627,7 @@ export default function NoteScreen() {
     savedRef.current = view;
     latestRef.current = { title: view.title, body: view.body, color: view.color };
     prevBodyRef.current = view.body;
+    selectionRef.current = view.body === "" ? { start: 0, end: 0 } : { start: -1, end: -1 };
     setTitle(view.title);
     setBody(view.body);
     setColor(view.color);
@@ -703,9 +760,6 @@ export default function NoteScreen() {
               value={body}
               onChangeText={onBodyChange}
               onSelectionChange={(e) => onBodySelection(e.nativeEvent.selection)}
-              onKeyPress={(e) => {
-                if (e.nativeEvent.key === "Enter") enterRef.current = true;
-              }}
               selection={selOverride}
               placeholder="Digite…"
               placeholderTextColor="#52525b"
