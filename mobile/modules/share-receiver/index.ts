@@ -20,6 +20,7 @@ export interface SharedFile {
 }
 
 export interface SharedPayload {
+  id?: string;
   text: string | null;
   subject?: string | null;
   files: SharedFile[];
@@ -55,6 +56,7 @@ const native = (() => {
 function normalize(raw: unknown): SharedPayload | null {
   if (!raw || typeof raw !== "object") return null;
   const p = raw as Record<string, unknown>;
+  const id = typeof p.id === "string" && p.id ? p.id : undefined;
   const text = typeof p.text === "string" ? p.text : null;
   const subject = typeof p.subject === "string" ? p.subject : null;
   const files: SharedFile[] = Array.isArray(p.files)
@@ -72,7 +74,7 @@ function normalize(raw: unknown): SharedPayload | null {
       })
     : [];
   if (!text?.trim() && !subject?.trim() && files.length === 0) return null;
-  return { text, subject, files };
+  return { id, text, subject, files };
 }
 
 const ShareReceiver = {

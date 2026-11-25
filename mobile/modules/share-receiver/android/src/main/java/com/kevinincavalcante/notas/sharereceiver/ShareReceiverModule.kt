@@ -4,12 +4,12 @@ import android.content.ContentResolver
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
-import com.facebook.react.bridge.ReactApplicationContext
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
 import java.io.FileOutputStream
+import java.util.UUID
 
 /**
  * Recebe compartilhamentos de outros apps ("Compartilhar → Notas").
@@ -17,18 +17,16 @@ import java.io.FileOutputStream
  * - ACTION_SEND / ACTION_SEND_MULTIPLE chegam no MainActivity (intent filters
  *   no AndroidManifest). Aqui extraímos EXTRA_TEXT, EXTRA_SUBJECT e EXTRA_STREAM/ClipData,
  *   copiamos os arquivos de content:// pro cache do app e devolvemos ao JS.
- * - Cold start: JS chama getShared() no mount.
+ * - Cold start: JS chama getShared() no mount (e OnActivityEntersForeground cobre
+ *   qualquer janela entre o mount do módulo e a Activity pronta).
  * - App já aberto (launchMode singleTask): OnNewIntent emite o evento
  *   "onShareReceived".
  *
  * Fila com ACK (não perder share no cold start):
- * - Antes do JS pedir (getShared), OnNewIntent só ENFILEIRA — nada de
- *   sendEvent: com o app morto o listener JS pode ainda não existir e o
- *   evento sumia (a nota nunca era criada; só a 2ª tentativa funcionava).
- * - Se o listener falhar mesmo depois do cold start, o payload fica na fila
- *   e é reentregue no próximo getShared — nunca é descartado em silêncio.
- * - O intent só é limpo no ack() (JS montou as notas) ou quando um novo
- *   share chega; antes disso uma Activity recriada ainda o encontra.
+ * - Usa appContext.currentActivity (compatível com New Architecture / Bridgeless;
+ *   reactContext as? ReactApplicationContext retornava null no cold start).
+ * - Antes do JS confirmar com ack(), o payload fica em `pending` (no processo) e
+ *   é entregue no getShared() ou via sendEvent quando o listener existir.
  */
 class ShareReceiverModule : Module() {
   /**
@@ -36,10 +34,10 @@ class ShareReceiverModule : Module() {
    * module, mas a fila entregue-e-não-confirmada precisa sobreviver.
    */
   private companion object {
+    val queueLock = Any()
     val pending = mutableListOf<Map<String, Any?>>()
-    /** A fila já foi soberana nesta execução do app? */
-    var listMode = false
     /** Entrega direta pro JS (setado onSubscriber; limpado no OnDestroy). */
+    @Volatile
     var READY: ((Map<String, Any?>) -> Unit)? = null
   }
 
@@ -49,54 +47,71 @@ class ShareReceiverModule : Module() {
     Events("onShareReceived")
 
     // O JS só chega aqui quando registra o listener do módulo (addListener):
-    // a partir daí OnNewIntent entrega direto, com sendEvent.
+    // a partir daí OnNewIntent/OnActivityEntersForeground entregam direto.
     OnStartObserving("onShareReceived") {
       READY = { sendEvent("onShareReceived", it) }
     }
 
     OnDestroy {
       READY = null
-      listMode = false
     }
 
     OnNewIntent { intent ->
-      val payload = extract(intent)
+      val payload = synchronized(queueLock) {
+        extract(intent)?.also { clearExtras(intent) }
+      }
       if (payload != null) emit(payload)
     }
 
+    OnActivityEntersForeground {
+      consumeActivityIntent()?.let { emit(it) }
+    }
+
     AsyncFunction("getShared") { promise: Promise ->
-      // Lista os payloads sem ack (Map pode virar ReadableMap na ponte —
-      // o JS normaliza) e, no cold start, também o intent da Activity.
-      val out: MutableList<Any?> = mutableListOf()
-      out.addAll(pending)
-      if (!listMode) {
-        listMode = true
-        extract(currentActivity()?.intent)?.let { out.add(it) }
+      // No cold start, move o intent da Activity para `pending` (com lock)
+      // para nunca perder nem duplicar enquanto aguarda ack().
+      consumeActivityIntent()?.let { payload ->
+        synchronized(queueLock) {
+          pending.add(payload)
+        }
+      }
+      val out: List<Map<String, Any?>> = synchronized(queueLock) {
+        pending.toList()
       }
       promise.resolve(out)
     }
 
     // JS já transformou os shares em nota → pode limpar a fila e o intent
     AsyncFunction("ack") {
-      pending.clear()
-      currentActivity()?.intent?.let { clearExtras(it) }
+      synchronized(queueLock) {
+        pending.clear()
+      }
+      appContext.currentActivity?.intent?.let { clearExtras(it) }
     }
   }
 
-  private fun currentActivity() =
-    (appContext.reactContext as? ReactApplicationContext)?.currentActivity
+  private fun consumeActivityIntent(): Map<String, Any?>? {
+    return synchronized(queueLock) {
+      val activity = appContext.currentActivity ?: return@synchronized null
+      val intent = activity.intent ?: return@synchronized null
+      val payload = extract(intent) ?: return@synchronized null
+      clearExtras(intent)
+      payload
+    }
+  }
 
   /**
-   * Guarda o payload, limpa o intent (pra não reprocessar no próximo resume)
-   * e entrega ao JS — direto se o listener já existe, ou pela fila.
+   * Guarda o payload na fila e entrega ao JS — direto se o listener já existe,
+   * ou aguardando o próximo getShared().
    */
   private fun emit(payload: Map<String, Any?>) {
-    currentActivity()?.intent?.let { clearExtras(it) }
-    pending.add(payload)
+    synchronized(queueLock) {
+      pending.add(payload)
+    }
     val ready = READY ?: return
     try {
       ready(payload)
-    } catch (e: Exception) {
+    } catch (_: Exception) {
       // continua na fila; sai no próximo getShared
     }
   }
@@ -107,7 +122,7 @@ class ShareReceiverModule : Module() {
     val action = intent.action
     if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return null
 
-    val context = appContext.reactContext ?: return null
+    val context = appContext.reactContext ?: appContext.currentActivity ?: return null
     val type = intent.type ?: ""
 
     val text = intent.getStringExtra(Intent.EXTRA_TEXT)
@@ -130,30 +145,33 @@ class ShareReceiverModule : Module() {
       }
     }
 
-    val files = uris.mapNotNull { uri ->
+    val batchPrefix = System.currentTimeMillis()
+    val files = uris.mapIndexedNotNull { index, uri ->
       try {
         val name = queryName(context.contentResolver, uri)
-          ?: "compartilhado-${System.currentTimeMillis()}"
-        val safeName = name.replace(Regex("[^\\w.\\- ]"), "_")
+          ?: "compartilhado-$batchPrefix-$index"
+        val safeName = name.replace(Regex("[^\\w.\\- ]"), "_").ifBlank { "arquivo-$index" }
         val dir = File(context.cacheDir, "shared")
         dir.mkdirs()
-        val dest = File(dir, safeName)
+        // Prefixo único evita sobrescrever arquivos de shares anteriores com mesmo nome
+        val dest = File(dir, "$batchPrefix-$index-$safeName")
         context.contentResolver.openInputStream(uri)?.use { input ->
           FileOutputStream(dest).use { output -> input.copyTo(output) }
-        } ?: return@mapNotNull null
+        } ?: return@mapIndexedNotNull null
         val mime = context.contentResolver.getType(uri) ?: type.ifEmpty { "application/octet-stream" }
         mapOf(
           "uri" to Uri.fromFile(dest).toString(),
           "name" to safeName,
           "mime" to mime
         )
-      } catch (e: Exception) {
+      } catch (_: Exception) {
         null
       }
     }
 
     if (text.isNullOrBlank() && files.isEmpty() && subject.isNullOrBlank()) return null
     return mapOf(
+      "id" to UUID.randomUUID().toString(),
       "text" to text,
       "subject" to subject,
       "files" to files
@@ -169,7 +187,7 @@ class ShareReceiverModule : Module() {
           cursor.getString(idx)?.let { return it }
         }
       }
-    } catch (e: Exception) {
+    } catch (_: Exception) {
       // sem permissão pro displayName — segue pro fallback
     }
     return null
@@ -182,7 +200,8 @@ class ShareReceiverModule : Module() {
       intent.removeExtra(Intent.EXTRA_SUBJECT)
       intent.removeExtra(Intent.EXTRA_STREAM)
       intent.clipData = null
-    } catch (e: Exception) {
+      intent.action = Intent.ACTION_MAIN
+    } catch (_: Exception) {
       // best effort
     }
   }

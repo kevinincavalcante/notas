@@ -396,7 +396,7 @@ export default function HomeScreen() {
   }
 
   /** Itens compartilhados de outros apps ("Compartilhar → Notas"). */
-  async function handleSharedItems(payload: SharedPayload) {
+  async function handleSharedItems(payload: SharedPayload): Promise<boolean> {
     try {
       const { client } = await getDb();
       const { url: sharedUrl, title: extractedTitle } = parseSharedLink(payload.text, payload.subject);
@@ -430,7 +430,7 @@ export default function HomeScreen() {
             }
           });
         }
-        return;
+        return true;
       }
 
       // 2. Compartilhamento de outros arquivos/imagens/texto puro (sem URL)
@@ -464,15 +464,18 @@ export default function HomeScreen() {
       if (body.trim()) {
         await updateNote(client, id, { body });
       }
+      notifyLocalChange();
       scheduleSync();
       void reload();
       openSharedNote(id);
+      return true;
     } catch (e) {
       console.warn("Falha ao receber compartilhamento:", e);
       Alert.alert(
         "Compartilhar",
         e instanceof Error ? e.message : "Não foi possível criar a nota a partir do compartilhamento."
       );
+      return false;
     }
   }
 
@@ -493,32 +496,43 @@ export default function HomeScreen() {
   const shareQueueRef = useRef<Promise<void>>(Promise.resolve());
   const routeReady = Boolean(useRootNavigationState()?.key);
   const navReadyRef = useRef(routeReady);
+  const bootedRef = useRef(booted);
   const pendingShareRef = useRef<SharedPayload[]>([]);
-  const handledKeyRef = useRef<string | null>(null);
+  const handledKeysRef = useRef<Set<string>>(new Set());
   /** Login aberto (sem token): o share espera o login antes de virar nota. */
-  const authRequiredRef = useRef(false);
+  const authRequiredRef = useRef(!token);
 
   const ingestShares = useCallback((payloads: SharedPayload[]) => {
     for (const payload of payloads) {
-      // Reentrega do cold start (ainda sem ack) não duplica a nota
-      const key = `${payload.text ?? ""}|${payload.subject ?? ""}|${payload.files
-        .map((f) => f.uri)
-        .join(",")}`;
-      if (key === handledKeyRef.current) continue;
-      handledKeyRef.current = key;
+      // Reentrega do cold start (ainda sem ack) não duplica a nota, mas um
+      // novo compartilhamento do mesmo arquivo/texto traz um id distinto.
+      const key =
+        payload.id ||
+        `${payload.text ?? ""}|${payload.subject ?? ""}|${payload.files
+          .map((f) => f.uri)
+          .join(",")}`;
+      if (handledKeysRef.current.has(key)) continue;
+      handledKeysRef.current.add(key);
+      if (handledKeysRef.current.size > 50) {
+        const first = handledKeysRef.current.values().next().value;
+        if (first) handledKeysRef.current.delete(first);
+      }
       pendingShareRef.current.push(payload);
     }
-    // Login aberto: nada de criar nota ainda — o push cairia na tela de
-    // login. O share fica na fila e sai quando o token aparecer.
-    if (authRequiredRef.current) return;
+    // Login aberto ou boot em curso: segura a fila até a Home e o Stack estarem prontos
+    if (!bootedRef.current || authRequiredRef.current) return;
     if (!navReadyRef.current || pendingShareRef.current.length === 0) return;
     const batch = pendingShareRef.current;
     pendingShareRef.current = [];
     shareQueueRef.current = shareQueueRef.current
       .then(async () => {
-        for (const payload of batch) await handleSharedItems(payload);
-        // só agora o nativo pode esquecer a fila e o intent
-        await ShareReceiver.ack();
+        let allOk = true;
+        for (const payload of batch) {
+          const ok = await handleSharedItems(payload);
+          if (!ok) allOk = false;
+        }
+        // só limpa a fila nativa se todas as notas foram criadas com sucesso
+        if (allOk) await ShareReceiver.ack();
       })
       .catch((e) => {
         console.warn("Fila de compartilhamento falhou:", e);
@@ -538,8 +552,9 @@ export default function HomeScreen() {
     if (routeReady) ingestShares([]);
   }, [routeReady, ingestShares]);
 
-  // Sem sessão: segura a fila. Com sessão: destrava e processa o que esperou.
+  // Sem sessão ou antes do boot: segura a fila. Com boot + sessão: destrava.
   useEffect(() => {
+    bootedRef.current = booted;
     authRequiredRef.current = !token;
     if (booted && token) ingestShares([]);
   }, [booted, token, ingestShares]);
