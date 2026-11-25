@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, Menu } from "electron";
+import { app, BrowserWindow, ipcMain, shell, Menu, clipboard, type MenuItemConstructorOptions } from "electron";
 import http from "http";
 import { join } from "path";
 import { createClient } from "@libsql/client";
@@ -50,6 +50,7 @@ async function createWindow(url: string): Promise<BrowserWindow> {
 
   mainWindow = win;
   setupApplicationMenu(win);
+  setupContextMenu(win);
 
   // Links de preview/notas abrem no navegador do sistema, não dentro do app
   win.webContents.setWindowOpenHandler(({ url: external }) => {
@@ -59,6 +60,70 @@ async function createWindow(url: string): Promise<BrowserWindow> {
 
   await win.loadURL(url);
   return win;
+}
+
+/** Menu de contexto nativo (botão direito) — Electron não exibe um por padrão. */
+function setupContextMenu(win: BrowserWindow) {
+  win.webContents.on("context-menu", (_event, params) => {
+    if (win.isDestroyed()) return;
+    const template: MenuItemConstructorOptions[] = [];
+
+    if (params.isEditable) {
+      if (params.misspelledWord && params.dictionarySuggestions.length > 0) {
+        for (const suggestion of params.dictionarySuggestions.slice(0, 5)) {
+          template.push({
+            label: suggestion,
+            click: () => win.webContents.replaceMisspelling(suggestion),
+          });
+        }
+        template.push({ type: "separator" });
+      }
+
+      template.push(
+        { role: "undo", label: "Desfazer", enabled: params.editFlags.canUndo },
+        { role: "redo", label: "Refazer", enabled: params.editFlags.canRedo },
+        { type: "separator" },
+        { role: "cut", label: "Recortar", enabled: params.editFlags.canCut },
+        { role: "copy", label: "Copiar", enabled: params.editFlags.canCopy },
+        { role: "paste", label: "Colar", enabled: params.editFlags.canPaste },
+        { role: "selectAll", label: "Selecionar tudo", enabled: params.editFlags.canSelectAll }
+      );
+    } else if (params.selectionText.trim().length > 0) {
+      template.push({ role: "copy", label: "Copiar" });
+    }
+
+    if (params.linkURL && /^https?:\/\//i.test(params.linkURL)) {
+      if (template.length > 0) template.push({ type: "separator" });
+      template.push(
+        {
+          label: "Abrir link no navegador",
+          click: () => void shell.openExternal(params.linkURL),
+        },
+        {
+          label: "Copiar endereço do link",
+          click: () => clipboard.writeText(params.linkURL),
+        }
+      );
+    }
+
+    if (params.mediaType === "image") {
+      if (template.length > 0) template.push({ type: "separator" });
+      template.push({
+        label: "Copiar imagem",
+        click: () => win.webContents.copyImageAt(params.x, params.y),
+      });
+    }
+
+    if (template.length === 0) {
+      template.push(
+        { role: "selectAll", label: "Selecionar tudo" },
+        { type: "separator" },
+        { role: "reload", label: "Recarregar" }
+      );
+    }
+
+    Menu.buildFromTemplate(template).popup({ window: win });
+  });
 }
 
 /** Menu do app com atalhos de teclado nativos pra gerenciar abas. */
