@@ -51,12 +51,16 @@ interface VaultContextValue {
   /** DEK em memória — só existe com status "unlocked". */
   dek: Uint8Array | null;
   busy: boolean;
+  locking: boolean;
   /** Abre o modal de destravamento e resolve true se ficou destravado. */
   ensureUnlocked: () => Promise<boolean>;
   unlock: (password: string) => Promise<boolean>;
   setup: (password: string) => Promise<boolean>;
   resetVault: () => Promise<boolean>;
-  lock: () => void;
+  /** Salva pendências registradas (beforeLock) antes de zerar a DEK. */
+  lock: () => Promise<void>;
+  /** Registra callback assíncrono para rodar antes de travar o cofre (ex.: flush de notas). */
+  registerBeforeLock: (cb: () => Promise<void>) => () => void;
   changePassword: (current: string, next: string) => Promise<boolean>;
   /** Helpers de cifra — só chamáveis destravado (lançam erro se não). */
   encryptString: (s: string) => string;
@@ -83,6 +87,7 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
   const [dek, setDek] = useState<Uint8Array | null>(null);
   const [meta, setMeta] = useState<VaultMeta | null>(null);
   const [busy] = useState(false);
+  const [locking, setLocking] = useState(false);
 
   // Modal de destravamento (usado por ensureUnlocked quando chamado fora de /vault)
   const [modalOpen, setModalOpen] = useState(false);
@@ -116,7 +121,17 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // --- Auto-lock: inatividade zera a DEK da memória -------------------------
+  // --- Auto-lock e pré-lock: salva pendências antes de zerar a DEK -----------
+  const beforeLockRef = useRef<Set<() => Promise<void>>>(new Set());
+  const lockPromiseRef = useRef<Promise<void> | null>(null);
+
+  const registerBeforeLock = useCallback((cb: () => Promise<void>) => {
+    beforeLockRef.current.add(cb);
+    return () => {
+      beforeLockRef.current.delete(cb);
+    };
+  }, []);
+
   const lockRef = useRef<() => void>(() => {});
   lockRef.current = () => {
     setDek(null);
@@ -124,12 +139,35 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
     clearVaultMediaCache();
   };
 
+  const lock = useCallback(async (): Promise<void> => {
+    if (lockPromiseRef.current) return lockPromiseRef.current;
+    const p = (async () => {
+      setLocking(true);
+      try {
+        const cbs = Array.from(beforeLockRef.current);
+        if (cbs.length > 0) {
+          // Timeout de segurança: nunca impede o cofre de trancar se a rede travar
+          await Promise.race([
+            Promise.allSettled(cbs.map((fn) => fn())),
+            new Promise((r) => setTimeout(r, 5000)),
+          ]);
+        }
+      } finally {
+        lockRef.current();
+        setLocking(false);
+        lockPromiseRef.current = null;
+      }
+    })();
+    lockPromiseRef.current = p;
+    return p;
+  }, []);
+
   useEffect(() => {
     if (status !== "unlocked") return;
-    let timer = setTimeout(() => lockRef.current(), AUTO_LOCK_MS);
+    let timer = setTimeout(() => void lock(), AUTO_LOCK_MS);
     const reset = () => {
       clearTimeout(timer);
-      timer = setTimeout(() => lockRef.current(), AUTO_LOCK_MS);
+      timer = setTimeout(() => void lock(), AUTO_LOCK_MS);
     };
     const events: (keyof WindowEventMap)[] = ["pointerdown", "keydown", "scroll"];
     for (const ev of events) window.addEventListener(ev, reset, { passive: true });
@@ -137,7 +175,7 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
       clearTimeout(timer);
       for (const ev of events) window.removeEventListener(ev, reset);
     };
-  }, [status]);
+  }, [status, lock]);
 
   // --- Ações ----------------------------------------------------------------
 
@@ -240,10 +278,6 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
     return false;
   }, [showToast]);
 
-  const lock = useCallback(() => {
-    lockRef.current();
-  }, []);
-
   const changePassword = useCallback(
     async (current: string, next: string): Promise<boolean> => {
       if (!dek || !meta) return false;
@@ -340,11 +374,13 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
       status,
       dek,
       busy,
+      locking,
       ensureUnlocked,
       unlock,
       setup,
       resetVault,
       lock,
+      registerBeforeLock,
       changePassword,
       encryptString: (s: string) => encryptString(requireDek(), s),
       decryptString: (s: string) => decryptString(requireDek(), s),
@@ -353,7 +389,7 @@ export default function VaultProvider({ children }: { children: React.ReactNode 
       contentHash: versionContentHash,
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [status, dek, busy, ensureUnlocked, unlock, setup, resetVault, lock, changePassword]
+    [status, dek, busy, locking, ensureUnlocked, unlock, setup, resetVault, lock, registerBeforeLock, changePassword]
   );
 
   return (

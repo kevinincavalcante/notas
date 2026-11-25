@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { Note, Attachment, NoteVersion } from "@/types/note";
 import {
   Pin,
@@ -33,6 +33,7 @@ import {
   Eye,
   PenLine,
   FileText,
+  Check,
 } from "lucide-react";
 import AudioPlayer from "./AudioPlayer";
 import ColorPicker from "./ColorPicker";
@@ -49,6 +50,23 @@ import {
   uploadEncryptedFile,
 } from "@/lib/vault-client";
 import { decryptString, isEncrypted } from "@/lib/vault-crypto";
+
+function repairImageTitles(bodyText: string): string {
+  return bodyText.replace(
+    /\((\/api\/attachments\/[^)\s]+|https?:\/\/[^)\s]+)"(\d{1,3})"\)/g,
+    '$1 "$2")'
+  );
+}
+
+function seedFromNote(n: Note) {
+  return {
+    title: n.title,
+    body: repairImageTitles(n.body),
+    color: n.color,
+    is_pinned: n.is_pinned,
+    is_archived: n.is_archived,
+  };
+}
 
 /** Classificação de anexos (por mime com fallback na extensão do nome). */
 const isImageAttachment = (a: { mime_type?: string; file_name?: string }) =>
@@ -88,6 +106,8 @@ interface NoteModalProps {
    * O cofre web usa isso pra não deixar nota nova abandonada no banco.
    */
   onDiscardIfEmpty?: (noteId: string) => void;
+  /** Registra função de flush para o pai salvar pendências antes de travar o cofre. */
+  onRegisterFlush?: (flush: (() => Promise<void>) | null) => void;
 }
 
 export default function NoteModal({
@@ -102,12 +122,14 @@ export default function NoteModal({
   onAfterAttachmentChange,
   attachmentSrcMap,
   onDiscardIfEmpty,
+  onRegisterFlush,
 }: NoteModalProps) {
   const { confirm, showToast } = useUI();
   const vault = useVault();
   const isVaultNote = Boolean(note.is_vault);
   const [title, setTitle] = useState(note.title);
-  const [body, setBody] = useState(note.body);
+  const [body, setBody] = useState(() => repairImageTitles(note.body));
+  const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved">("saved");
   const [color, setColor] = useState(note.color);
   const [isPinned, setIsPinned] = useState(note.is_pinned);
   const [isArchived, setIsArchived] = useState(note.is_archived);
@@ -135,33 +157,157 @@ export default function NoteModal({
     latestStateRef.current = { title, body, color, isPinned, isArchived };
   }, [title, body, color, isPinned, isArchived]);
 
-  // Aba fechada/desmontada com a nota VAZIA (sem texto e sem anexo): avisa o
-  // pai para descartar o registro. Mesmo contrato do NoteEditor da tela
-  // inicial — sem isso, cada "nova nota" abandonada no cofre virava lixo no
-  // banco (e no sync), junto com versões vazias no histórico.
   const noteRef = useRef(note);
   useEffect(() => {
     noteRef.current = note;
   }, [note]);
+  const seedRef = useRef(seedFromNote(note));
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushSave = useCallback(
+    async (allowEmpty = false) => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+      const current = latestStateRef.current;
+      const seed = seedRef.current;
+      const changed =
+        current.title !== seed.title ||
+        current.body !== seed.body ||
+        current.color !== seed.color ||
+        current.isPinned !== seed.is_pinned ||
+        current.isArchived !== seed.is_archived;
+
+      if (!changed) return;
+
+      // Auto-save não grava estado vazio sem anexos (evita rascunho em branco no banco)
+      const semConteudo = !current.title.trim() && !current.body.trim();
+      const semAnexos = (noteRef.current.attachments?.length ?? 0) === 0;
+      if (!allowEmpty && semConteudo && semAnexos) return;
+
+      const prevSeed = seed;
+      seedRef.current = {
+        title: current.title,
+        body: current.body,
+        color: current.color,
+        is_pinned: current.isPinned,
+        is_archived: current.isArchived,
+      };
+      setSaveStatus("saving");
+      try {
+        await onUpdate({
+          title: current.title,
+          body: current.body,
+          color: current.color,
+          is_pinned: current.isPinned,
+          is_archived: current.isArchived,
+        });
+        setSaveStatus("saved");
+      } catch (err) {
+        seedRef.current = prevSeed;
+        setSaveStatus("unsaved");
+        throw err;
+      }
+    },
+    [onUpdate]
+  );
+
+  const flushSaveRef = useRef(flushSave);
+  useEffect(() => {
+    flushSaveRef.current = flushSave;
+  });
+
   const onDiscardRef = useRef(onDiscardIfEmpty);
   useEffect(() => {
     onDiscardRef.current = onDiscardIfEmpty;
   });
+
+  const onRegisterFlushRef = useRef(onRegisterFlush);
+  useEffect(() => {
+    onRegisterFlushRef.current = onRegisterFlush;
+  });
+
+  useEffect(() => {
+    const reg = onRegisterFlushRef.current;
+    if (!reg) return;
+    reg(() => flushSaveRef.current(false));
+    return () => reg(null);
+  }, [note.id]);
+
+  // Auto-save com debounce quando há alteração real em relação à última versão salva
+  useEffect(() => {
+    const seed = seedRef.current;
+    const changed =
+      title !== seed.title ||
+      body !== seed.body ||
+      color !== seed.color ||
+      isPinned !== seed.is_pinned ||
+      isArchived !== seed.is_archived;
+
+    if (!changed) return;
+
+    const semConteudo = !title.trim() && !body.trim();
+    const semAnexos = (note.attachments?.length ?? 0) === 0;
+    if (semConteudo && semAnexos) {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+      setSaveStatus("saved");
+      return;
+    }
+
+    setSaveStatus("unsaved");
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      void flushSaveRef.current(false).catch((err) => {
+        console.error("Erro no auto-save:", err);
+      });
+    }, 1500);
+
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+    };
+  }, [title, body, color, isPinned, isArchived, note.attachments]);
+
+  // Aba fechada/desmontada: descarta se vazia (sem texto e sem anexo);
+  // caso contrário faz flush do que ainda estava pendente no debounce.
   useEffect(() => {
     return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
       const current = latestStateRef.current;
-      if (current.title.trim() || current.body.trim()) return;
-      if ((noteRef.current.attachments?.length ?? 0) > 0) return;
-      onDiscardRef.current?.(noteRef.current.id);
+      const semConteudo = !current.title.trim() && !current.body.trim();
+      const semAnexos = (noteRef.current.attachments?.length ?? 0) === 0;
+      if (semConteudo && semAnexos && onDiscardRef.current) {
+        onDiscardRef.current(noteRef.current.id);
+        return;
+      }
+      void flushSaveRef.current(false).catch((err) => {
+        console.error("Erro ao salvar nota ao desmontar:", err);
+      });
     };
   }, []);
 
   // Reseta os campos apenas ao abrir OUTRA nota (id muda)
-  useEffect(() => {    setTitle(note.title);
+  useEffect(() => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    setTitle(note.title);
     setBody(repairImageTitles(note.body));
     setColor(note.color);
     setIsPinned(note.is_pinned);
     setIsArchived(note.is_archived);
+    seedRef.current = seedFromNote(note);
+    setSaveStatus("saved");
     setShowHistory(false);
     isClosingRef.current = false;
     // Em telas pequenas (mobile), o padrão mais funcional é "edit"
@@ -274,11 +420,24 @@ export default function NoteModal({
         // Cofre: o servidor aplica a versão (cifrada → cifrada) e devolve a
         // nota cifrada — descriptografa só pro estado da UI (skipPatch abaixo)
         const restored = isVaultNote && vault.dek ? decryptNoteFields(vault.dek, data.note) : data.note;
+        if (saveTimerRef.current) {
+          clearTimeout(saveTimerRef.current);
+          saveTimerRef.current = null;
+        }
+        const repairedBody = repairImageTitles(restored.body);
         setTitle(restored.title);
-        setBody(restored.body);
+        setBody(repairedBody);
         setColor(restored.color);
         setIsPinned(restored.is_pinned);
         setIsArchived(restored.is_archived);
+        seedRef.current = {
+          title: restored.title,
+          body: repairedBody,
+          color: restored.color,
+          is_pinned: restored.is_pinned,
+          is_archived: restored.is_archived,
+        };
+        setSaveStatus("saved");
 
         await onUpdate({
           title: restored.title,
@@ -299,22 +458,21 @@ export default function NoteModal({
   }
 
   function closeAndSave() {
-    const current = latestStateRef.current;
-    if (
-      current.title !== note.title ||
-      current.body !== note.body ||
-      current.color !== note.color ||
-      current.isPinned !== note.is_pinned ||
-      current.isArchived !== note.is_archived
-    ) {
-      onUpdate({
-        title: current.title,
-        body: current.body,
-        color: current.color,
-        is_pinned: current.isPinned,
-        is_archived: current.isArchived,
-      });
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
     }
+    const current = latestStateRef.current;
+    const semConteudo = !current.title.trim() && !current.body.trim();
+    const semAnexos = (noteRef.current.attachments?.length ?? 0) === 0;
+    if (semConteudo && semAnexos && onDiscardRef.current) {
+      onDiscardRef.current(noteRef.current.id);
+      onClose();
+      return;
+    }
+    void flushSaveRef.current(!onDiscardRef.current).catch((err) => {
+      console.error("Erro ao salvar nota ao fechar:", err);
+    });
     onClose();
   }
 
@@ -380,8 +538,20 @@ export default function NoteModal({
           const updatedBody =
             currentBody.slice(0, insertPos) + linkMarkdown + currentBody.slice(insertPos);
 
+          if (saveTimerRef.current) {
+            clearTimeout(saveTimerRef.current);
+            saveTimerRef.current = null;
+          }
           setBody(updatedBody);
           latestStateRef.current.body = updatedBody;
+          seedRef.current = {
+            title: latestStateRef.current.title,
+            body: updatedBody,
+            color: latestStateRef.current.color,
+            is_pinned: latestStateRef.current.isPinned,
+            is_archived: latestStateRef.current.isArchived,
+          };
+          setSaveStatus("saved");
           onUpdate({
             title: latestStateRef.current.title,
             body: updatedBody,
@@ -415,8 +585,20 @@ export default function NoteModal({
         const updatedBody =
           currentBody.slice(0, insertPos) + markdownImage + currentBody.slice(insertPos);
 
+        if (saveTimerRef.current) {
+          clearTimeout(saveTimerRef.current);
+          saveTimerRef.current = null;
+        }
         setBody(updatedBody);
         latestStateRef.current.body = updatedBody;
+        seedRef.current = {
+          title: latestStateRef.current.title,
+          body: updatedBody,
+          color: latestStateRef.current.color,
+          is_pinned: latestStateRef.current.isPinned,
+          is_archived: latestStateRef.current.isArchived,
+        };
+        setSaveStatus("saved");
 
         onUpdate({
           title: latestStateRef.current.title,
@@ -575,8 +757,20 @@ export default function NoteModal({
 
     const nextBody = body.replace(regex, replacement);
     if (nextBody !== body) {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
       setBody(nextBody);
       latestStateRef.current.body = nextBody;
+      seedRef.current = {
+        title: latestStateRef.current.title,
+        body: nextBody,
+        color: latestStateRef.current.color,
+        is_pinned: latestStateRef.current.isPinned,
+        is_archived: latestStateRef.current.isArchived,
+      };
+      setSaveStatus("saved");
       onUpdate({
         title: latestStateRef.current.title,
         body: nextBody,
@@ -725,13 +919,6 @@ export default function NoteModal({
       const newPos = start + text.length;
       el?.setSelectionRange(newPos, newPos);
     });
-  }
-
-  function repairImageTitles(bodyText: string): string {
-    return bodyText.replace(
-      /\((\/api\/attachments\/[^)\s]+|https?:\/\/[^)\s]+)"(\d{1,3})"\)/g,
-      '$1 "$2")'
-    );
   }
 
   async function handleDrop(e: React.DragEvent) {
@@ -1256,6 +1443,15 @@ export default function NoteModal({
           </div>
 
           <div className="flex items-center gap-3">
+            <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-mono text-slate-400">
+              {saveStatus === "saving" && <span className="text-amber-500">Salvando...</span>}
+              {saveStatus === "saved" && (
+                <span className="text-emerald-500 flex items-center gap-0.5">
+                  <Check className="w-3 h-3" /> Salvo
+                </span>
+              )}
+              {saveStatus === "unsaved" && <span>Alterado</span>}
+            </span>
             <div className="hidden sm:flex items-center gap-2 text-[11px] text-slate-400 font-mono">
               <span>{wordCount} palavras</span>
               <span>•</span>

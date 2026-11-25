@@ -46,6 +46,8 @@ export default function VaultPage() {
   }, [vault.status, router]);
 
   const [notes, setNotes] = useState<Note[]>([]); // sempre descriptografadas na UI
+  const notesRef = useRef<Note[]>(notes);
+  notesRef.current = notes;
 
   /**
    * Último estado visto de cada nota (título/corpo em claro) — usado ao fechar
@@ -53,6 +55,19 @@ export default function VaultPage() {
    * isso: cada "nova nota" abandonada ficava no banco e no sync.
    */
   const latestNoteRef = useRef<Record<string, { title: string; body: string }>>({});
+  /** Último texto salvo no servidor por nota (fonte exata de prev_content_hash). */
+  const lastSavedTextRef = useRef<Record<string, { title: string; body: string }>>({});
+  /** Flushers das abas abertas — chamados antes de trancar o cofre (botão ou auto-lock). */
+  const tabFlushersRef = useRef<Record<string, () => Promise<void>>>({});
+
+  useEffect(() => {
+    return vault.registerBeforeLock(async () => {
+      const flushers = Object.values(tabFlushersRef.current);
+      if (flushers.length > 0) {
+        await Promise.allSettled(flushers.map((fn) => fn()));
+      }
+    });
+  }, [vault]);
   const [, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
@@ -151,7 +166,7 @@ export default function VaultPage() {
   /** Apaga a nota do servidor se ela estiver sem nenhum conteúdo (force = o
    *  editor já confirmou que está vazia, mesmo que o estado local esteja atrás). */
   async function discardIfEmpty(noteId: string, force = false) {
-    const current = notes.find((n) => n.id === noteId);
+    const current = notesRef.current.find((n) => n.id === noteId);
     if (!current) return;
     if ((current.attachments?.length ?? 0) > 0) return;
     if (!force) {
@@ -162,6 +177,7 @@ export default function VaultPage() {
     }
 
     delete latestNoteRef.current[noteId];
+    delete lastSavedTextRef.current[noteId];
     setNotes((prev) => prev.filter((n) => n.id !== noteId));
     if (selectedNote?.id === noteId) setSelectedNote(null);
     try {
@@ -221,6 +237,9 @@ export default function VaultPage() {
       if (activeRes.ok && archivedRes.ok) {
         const cipher = [...(activeData.notes || []), ...(archivedData.notes || [])];
         const plain = cipher.map((n: Note) => decryptNote(vault.dek!, n));
+        for (const n of plain) {
+          lastSavedTextRef.current[n.id] = { title: n.title, body: n.body };
+        }
         setNotes(plain);
         return plain;
       }
@@ -285,6 +304,7 @@ export default function VaultPage() {
       const data = await res.json();
       if (res.ok && data.note) {
         const plain = decryptNote(vault.dek, data.note);
+        lastSavedTextRef.current[plain.id] = { title: plain.title, body: plain.body };
         setNotes((prev) => [plain, ...prev]);
         openNote(plain);
       } else {
@@ -322,7 +342,17 @@ export default function VaultPage() {
       setSelectedNote((n) => (n ? { ...n, ...fields } : n));
     }
 
-    if (skipPatch || !vault.dek) return;
+    if (skipPatch) {
+      if (typeof fields.title === "string" || typeof fields.body === "string") {
+        const prev = lastSavedTextRef.current[noteId] || { title: "", body: "" };
+        lastSavedTextRef.current[noteId] = {
+          title: typeof fields.title === "string" ? fields.title : prev.title,
+          body: typeof fields.body === "string" ? fields.body : prev.body,
+        };
+      }
+      return;
+    }
+    if (!vault.dek) return;
 
     // Campos de texto vão cifrados; flags ficam em claro (são só metadata).
     // prev_content_hash: hash do CONTEÚDO ANTERIOR em claro — o servidor não
@@ -336,20 +366,35 @@ export default function VaultPage() {
     if ("color" in fields) payload.color = fields.color;
     if (Object.keys(payload).length === 0) return;
 
+    let prevSaved: { title: string; body: string } | null = null;
     if ("title" in payload || "body" in payload) {
-      const prevTitle = selectedNote?.title ?? "";
-      const prevBody = selectedNote?.body ?? "";
-      const nextTitle = typeof fields.title === "string" ? fields.title : prevTitle;
-      const nextBody = typeof fields.body === "string" ? fields.body : prevBody;
-      payload.prev_content_hash = vault.contentHash(prevTitle, prevBody);
+      const noteFromList = notesRef.current.find((n) => n.id === noteId);
+      prevSaved = lastSavedTextRef.current[noteId] ?? {
+        title: noteFromList?.title ?? "",
+        body: noteFromList?.body ?? "",
+      };
+      const nextTitle = typeof fields.title === "string" ? fields.title : prevSaved.title;
+      const nextBody = typeof fields.body === "string" ? fields.body : prevSaved.body;
+      payload.prev_content_hash = vault.contentHash(prevSaved.title, prevSaved.body);
       payload.content_hash = vault.contentHash(nextTitle, nextBody);
+      lastSavedTextRef.current[noteId] = { title: nextTitle, body: nextBody };
     }
 
-    await fetch(`/api/notes/${noteId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    try {
+      const res = await fetch(`/api/notes/${noteId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        if (prevSaved) lastSavedTextRef.current[noteId] = prevSaved;
+        showToast("Falha ao salvar nota do cofre.", "error");
+        throw new Error(`HTTP ${res.status}`);
+      }
+    } catch (err) {
+      if (prevSaved) lastSavedTextRef.current[noteId] = prevSaved;
+      throw err;
+    }
   }
 
   async function handleDeleteNote(noteId: string) {
@@ -361,6 +406,9 @@ export default function VaultPage() {
     });
     if (!confirmed) return;
 
+    delete latestNoteRef.current[noteId];
+    delete lastSavedTextRef.current[noteId];
+    delete tabFlushersRef.current[noteId];
     setNotes((prev) => prev.filter((n) => n.id !== noteId));
     closeTabForRemoved(noteId);
     await fetch(`/api/notes/${noteId}`, { method: "DELETE" });
@@ -542,12 +590,17 @@ export default function VaultPage() {
             </button>
             <button
               type="button"
-              onClick={() => vault.lock()}
-              title="Travar o cofre agora"
-              className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 dark:text-slate-300 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg transition"
+              onClick={() => void vault.lock()}
+              disabled={vault.locking}
+              title="Salvar pendências e travar o cofre agora"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 dark:text-slate-300 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg transition disabled:opacity-60"
             >
-              <LockOpen className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Travar</span>
+              {vault.locking ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <LockOpen className="w-3.5 h-3.5" />
+              )}
+              <span className="hidden sm:inline">{vault.locking ? "Salvando…" : "Travar"}</span>
             </button>
             <button
               type="button"
@@ -635,8 +688,12 @@ export default function VaultPage() {
                   isOpen={true}
                   attachmentSrcMap={cardMedia}
                   onClose={() => closeTab(tabId)}
-                  onUpdate={handleUpdateNote}
+                  onUpdate={(fields) => handleUpdateNote(fields, tabNote.id)}
                   onDelete={() => handleDeleteNote(tabNote.id)}
+                  onRegisterFlush={(fn) => {
+                    if (fn) tabFlushersRef.current[tabId] = fn;
+                    else delete tabFlushersRef.current[tabId];
+                  }}
                   onAddAttachment={(att) => {
                     setNotes((prev) =>
                       prev.map((n) =>
