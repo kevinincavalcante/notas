@@ -481,6 +481,7 @@ export default function HomeScreen() {
 
   /** Abre a nota recém-criada a partir de um share (Stack já montado). */
   function openSharedNote(id: string) {
+    console.warn("[share] abrindo nota:", id);
     router.push(`/note/${id}?mode=edit`);
   }
 
@@ -494,10 +495,11 @@ export default function HomeScreen() {
   // Fila serializada: share e mídia em voo são pesados na thread JS; dois
   // shares (ou o mesmo reentregue pelo nativo sem ack) nunca se atropelam.
   const shareQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const routeReady = Boolean(useRootNavigationState()?.key);
+  const rootNavState = useRootNavigationState();
+  const routeReady = Boolean(rootNavState?.key && rootNavState.routes?.length);
   const navReadyRef = useRef(routeReady);
   const bootedRef = useRef(booted);
-  const pendingShareRef = useRef<SharedPayload[]>([]);
+  const pendingShareRef = useRef<Array<{ payload: SharedPayload; key: string }>>([]);
   const handledKeysRef = useRef<Set<string>>(new Set());
   /** Login aberto (sem token): o share espera o login antes de virar nota. */
   const authRequiredRef = useRef(!token);
@@ -517,7 +519,12 @@ export default function HomeScreen() {
         const first = handledKeysRef.current.values().next().value;
         if (first) handledKeysRef.current.delete(first);
       }
-      pendingShareRef.current.push(payload);
+      pendingShareRef.current.push({ payload, key });
+    }
+    if (payloads.length > 0) {
+      console.warn(
+        `[share] ingestShares: +${payloads.length} pending=${pendingShareRef.current.length} booted=${bootedRef.current} auth=${authRequiredRef.current} nav=${navReadyRef.current}`
+      );
     }
     // Login aberto ou boot em curso: segura a fila até a Home e o Stack estarem prontos
     if (!bootedRef.current || authRequiredRef.current) return;
@@ -526,20 +533,34 @@ export default function HomeScreen() {
     pendingShareRef.current = [];
     shareQueueRef.current = shareQueueRef.current
       .then(async () => {
+        const ackIds: string[] = [];
         let allOk = true;
-        for (const payload of batch) {
-          const ok = await handleSharedItems(payload);
-          if (!ok) allOk = false;
+        for (const item of batch) {
+          const ok = await handleSharedItems(item.payload);
+          if (ok) {
+            if (item.payload.id) ackIds.push(item.payload.id);
+          } else {
+            allOk = false;
+            handledKeysRef.current.delete(item.key);
+          }
         }
-        // só limpa a fila nativa se todas as notas foram criadas com sucesso
-        if (allOk) await ShareReceiver.ack();
+        // Limpa do nativo apenas os itens confirmados (ou tudo se todos passaram sem id)
+        if (ackIds.length > 0) {
+          await ShareReceiver.ack(ackIds);
+        } else if (allOk) {
+          await ShareReceiver.ack();
+        }
       })
       .catch((e) => {
         console.warn("Fila de compartilhamento falhou:", e);
         // reenfileira pra não perder o share numa falha de banco momentânea
+        for (const item of batch) handledKeysRef.current.delete(item.key);
         pendingShareRef.current.unshift(...batch);
       });
   }, []);
+
+  const ingestSharesRef = useRef(ingestShares);
+  ingestSharesRef.current = ingestShares;
 
   /**
    * Fila do share espera o Stack montar. Fica ANTES dos returns de "Abrindo…"
@@ -549,22 +570,41 @@ export default function HomeScreen() {
    */
   useEffect(() => {
     navReadyRef.current = routeReady;
-    if (routeReady) ingestShares([]);
-  }, [routeReady, ingestShares]);
+    if (routeReady) ingestSharesRef.current([]);
+  }, [routeReady]);
 
   // Sem sessão ou antes do boot: segura a fila. Com boot + sessão: destrava.
   useEffect(() => {
     bootedRef.current = booted;
     authRequiredRef.current = !token;
-    if (booted && token) ingestShares([]);
-  }, [booted, token, ingestShares]);
+    if (booted && token) ingestSharesRef.current([]);
+  }, [booted, token]);
 
   useEffect(() => {
+    const pullShared = (source: string) => {
+      void ShareReceiver.getShared().then((payloads) => {
+        if (payloads.length > 0) console.warn(`[share] ${source} -> ${payloads.length} item(s)`);
+        ingestSharesRef.current(payloads);
+      });
+    };
+
     // Registra o listener já: o nativo só entrega por evento depois disso
-    const sub = ShareReceiver.addListener("onShareReceived", (payload) => ingestShares([payload]));
-    void ShareReceiver.getShared().then((payloads) => ingestShares(payloads));
-    return () => sub.remove();
-  }, [ingestShares]);
+    const sub = ShareReceiver.addListener("onShareReceived", (payload) => {
+      console.warn("[share] onShareReceived:", payload.id ?? "no-id");
+      ingestSharesRef.current([payload]);
+    });
+    pullShared("mount");
+
+    // Se o app voltou de inatividade com algo pendente na fila nativa, drena agora
+    const appSub = AppState.addEventListener("change", (s) => {
+      if (s === "active") pullShared("active");
+    });
+
+    return () => {
+      sub.remove();
+      appSub.remove();
+    };
+  }, []);
 
   if (!booted) {
     return (

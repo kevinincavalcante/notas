@@ -1,8 +1,10 @@
 package com.kevinincavalcante.notas
 import expo.modules.splashscreen.SplashScreenManager
 
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import com.kevinincavalcante.notas.sharereceiver.ShareReceiverModule
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -21,6 +23,15 @@ class MainActivity : ReactActivity() {
     SplashScreenManager.registerOnActivity(this)
     // @generated end expo-splashscreen
     super.onCreate(null)
+    ShareReceiverModule.captureIntent(this, intent)
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    // Atualiza getIntent() e captura o share antes do ReactActivityDelegateWrapper/ReactHostImpl,
+    // evitando perda quando o ReactContext ainda não está pronto ou foi recriado.
+    setIntent(intent)
+    ShareReceiverModule.captureIntent(this, intent)
+    super.onNewIntent(intent)
   }
 
   /**

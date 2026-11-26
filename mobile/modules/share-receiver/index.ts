@@ -29,8 +29,8 @@ export interface SharedPayload {
 type ShareReceiverNative = {
   /** Payloads pendentes (+ intent de cold start), todos sem ack ainda */
   getShared(): Promise<unknown[]>;
-  /** Marca como processado: o nativo limpa a fila e o intent */
-  ack(): Promise<void>;
+  /** Marca como processado: o nativo remove os ids confirmados (ou tudo se vazio) */
+  ack(ids?: string[] | null): Promise<void>;
 } & {
   addListener(
     name: "onShareReceived",
@@ -89,10 +89,10 @@ const ShareReceiver = {
       return [];
     }
   },
-  async ack(): Promise<void> {
+  async ack(ids?: string[]): Promise<void> {
     if (!native) return;
     try {
-      await native.ack();
+      await native.ack(ids ?? null);
     } catch {
       // fica na fila nativa: pior caso, reentrega no próximo boot (idempotente)
     }
